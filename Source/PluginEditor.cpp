@@ -1055,7 +1055,6 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     modeSlider.setAllowNumericPopup (false);
     modSlider.setAllowNumericPopup (false);
 
-    // v10M: ButtonAttachment + manual onClick for UI→parameter sync
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
                            const char* paramId,
                            juce::Button& button)
@@ -1301,7 +1300,6 @@ void ECHOTRAudioProcessorEditor::timerCallback()
     if (suppressSizePersistence)
         return;
 
-    // v12: Poll MIDI note display and repaint if changed
     const auto newMidiDisplay = audioProcessor.getCurrentTimeDisplay();
     if (newMidiDisplay != cachedMidiDisplay)
     {
@@ -3230,7 +3228,6 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
 
 juce::String ECHOTRAudioProcessorEditor::getTimeText() const
 {
-    // v12: Show MIDI note name when a note is active (use cached value from timer)
     if (cachedMidiDisplay.isNotEmpty())
         return cachedMidiDisplay + " TIME";
     
@@ -3252,7 +3249,6 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
 
 juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
 {
-    // v12: Show MIDI note name when a note is active (use cached value from timer)
     if (cachedMidiDisplay.isNotEmpty())
         return cachedMidiDisplay;
     
@@ -3260,7 +3256,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     if (isSyncOn)
     {
         const int idx = (int) timeSlider.getValue();
-        return audioProcessor.getTimeSyncNameShort (idx);
+        return audioProcessor.getTimeSyncName (idx);
     }
     
     const float ms = (float) timeSlider.getValue();
@@ -3717,7 +3713,6 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
 
     if (getSyncLabelArea().contains (p))
     {
-        // v10W: Toggle parameter directly (ButtonAttachment keeps button synced)
         if (auto* param = audioProcessor.apvts.getParameter(ECHOTRAudioProcessor::kParamSync))
         {
             const float currentValue = param->getValue();
@@ -3730,29 +3725,19 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
 
     if (getAutoFbkLabelArea().contains (p))
     {
-        DBG(">>> [CLICK AUTO] Label clicked");
-        // v10W: Toggle parameter directly (ButtonAttachment keeps button synced)
         if (auto* param = audioProcessor.apvts.getParameter(ECHOTRAudioProcessor::kParamAutoFbk))
         {
             const float currentValue = param->getValue();
             const float newValue = currentValue > 0.5f ? 0.0f : 1.0f;
-            DBG(">>> [CLICK AUTO] current=" + juce::String(currentValue, 4) + " | new=" + juce::String(newValue, 4));
             param->beginChangeGesture();
             param->setValueNotifyingHost(newValue);
             param->endChangeGesture();
-            const float afterValue = param->getValue();
-            DBG(">>> [CLICK AUTO] after=" + juce::String(afterValue, 4));
-        }
-        else
-        {
-            DBG(">>> [CLICK AUTO] ERROR: param is NULL!");
         }
         return;
     }
 
     if (getMidiLabelArea().contains (p))
     {
-        // v10W: Toggle parameter directly (ButtonAttachment keeps button synced)
         if (auto* param = audioProcessor.apvts.getParameter(ECHOTRAudioProcessor::kParamMidi))
         {
             const float currentValue = param->getValue();

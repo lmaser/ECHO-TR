@@ -72,7 +72,6 @@ public:
 	// Tempo sync divisions (30 total)
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
-	static juce::String getTimeSyncNameShort(int index);
 	
 	// Helper: Convert tempo sync division to milliseconds
 	float tempoSyncToMs (int syncIndex, double bpm) const;
@@ -82,7 +81,6 @@ public:
 	float getCurrentDelayMs() const;
 	juce::String getCurrentTimeDisplay() const;
 
-	// v10X: AudioProcessorValueTreeState::Listener
 	void parameterChanged (const juce::String& parameterID, float newValue) override;
 
 	void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -153,7 +151,7 @@ private:
 		static constexpr const char* editorHeight = "uiEditorHeight";
 		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
 		static constexpr const char* fxTailEnabled = "uiFxTailEnabled";
-		static constexpr const char* midiPort = "midiPort";  // MIDI port selection (0 = none, 1-127 = port)
+		static constexpr const char* midiPort = "midiPort";
 		static constexpr std::array<const char*, 4> customPalette {
 			"uiCustomPalette0", "uiCustomPalette1", "uiCustomPalette2", "uiCustomPalette3"
 		};
@@ -179,10 +177,9 @@ private:
 	// MIDI tracking
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
-	std::atomic<int> midiPort { 0 };  // 0 = disabled ("---"), 1-16 = MIDI channel
-	bool prevMidiNoteActive = false;  // v12: for MIDI→manual transition smoothing
-	bool prevMidiEnabled = false;     // v13: track MIDI button state for toggle detection
-	// v16b: Removed unused crossfade members (wetCrossfade, crossfadeActive, crossfadeFadingIn, midiReleaseFade)
+	std::atomic<int> midiPort { 0 };
+	bool prevMidiNoteActive = false;
+	bool prevMidiEnabled = false;
 
 	// Parameter atomic pointers
 	std::atomic<float>* timeMsParam = nullptr;
