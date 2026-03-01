@@ -172,7 +172,7 @@ private:
 	// MIDI tracking
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
-	std::atomic<int> midiPort { 0 };  // 0 = no port ("---"), 1-127 = port number
+	std::atomic<int> midiPort { 0 };  // 0 = disabled ("---"), 1-16 = MIDI channel
 
 	// Parameter atomic pointers
 	std::atomic<float>* timeMsParam = nullptr;

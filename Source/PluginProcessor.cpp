@@ -1,9 +1,36 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include <cstdio>
+#include <fstream>
 
 namespace
 {
+	// MIDI Debug logging to file
+	static std::atomic<int> logCounter { 0 };
+	static juce::File logFile;
+	
+	void initMidiLog()
+	{
+		if (logFile == juce::File())
+		{
+			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
+			logFile = desktop.getChildFile ("ECHO-TR_MIDI_DEBUG.txt");
+			logFile.deleteFile();
+			logFile.appendText ("=== ECHO-TR MIDI DEBUG LOG ===\n\n");
+		}
+	}
+	
+	void logMidi (const juce::String& message)
+	{
+		initMidiLog();
+		const int count = logCounter.fetch_add (1);
+		if (count < 500) // Limitar a 500 líneas para no llenar el disco
+		{
+			auto timestamp = juce::Time::getCurrentTime().toString (true, true, true, true);
+			logFile.appendText ("[" + timestamp + "] " + message + "\n");
+		}
+	}
+
 	inline float loadAtomicOrDefault (std::atomic<float>* p, float def) noexcept
 	{
 		return p != nullptr ? p->load (std::memory_order_relaxed) : def;
@@ -188,6 +215,12 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 {
 	juce::ignoreUnused (samplesPerBlock);
 	currentSampleRate = sampleRate;
+	
+	// LOG: Confirmar que el plugin acepta MIDI
+	logMidi ("=== PREPARE TO PLAY ===");
+	logMidi ("Sample Rate: " + juce::String(sampleRate, 1) + " Hz");
+	logMidi ("acceptsMidi(): " + juce::String(acceptsMidi() ? "TRUE" : "FALSE"));
+	logMidi ("JucePlugin_WantsMidiInput: " + juce::String(JucePlugin_WantsMidiInput));
 	
 	// Allocate delay buffer: POWER OF 2 for efficient wrapping with bitwise AND
 	// Use kTimeMsMaxSync (20s) to support long sync divisions like 8/1
@@ -432,15 +465,63 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
 	const int selectedMidiPort = midiPort.load (std::memory_order_relaxed); // 0 = disabled, 1-16 = MIDI channel
 	
-	if (midiEnabled && selectedMidiPort > 0)
+	// LOG: Estado general cada 100 bloques con TODAS las variables críticas
+	static int blockCounter = 0;
+	if (++blockCounter % 100 == 0)
 	{
+		const float midiFreq = currentMidiFrequency.load (std::memory_order_relaxed);
+		const float manualTime = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
+		const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
+		
+		logMidi ("midiEnabled=" + juce::String((int)midiEnabled) + 
+		         " | selectedPort=" + juce::String(selectedMidiPort) + 
+		         " | midiMessages.count=" + juce::String(midiMessages.getNumEvents()) +
+		         " | lastNote=" + juce::String(lastMidiNote.load()) +
+		         " | midiFreq=" + juce::String(midiFreq, 2) + " Hz" +
+		         " | manualTime=" + juce::String(manualTime, 1) + " ms" +
+		         " | syncEnabled=" + juce::String((int)syncEnabled) +
+		         " | sampleRate=" + juce::String(currentSampleRate, 0));
+	}
+	
+	// LOG: Cada mensaje MIDI (sin filtrar para ver todo lo que llega)
+	if (midiMessages.getNumEvents() > 0)
+	{
+		for (const auto metadata : midiMessages)
+		{
+			const auto msg = metadata.getMessage();
+			juce::String msgInfo = "MIDI MSG: ch=" + juce::String(msg.getChannel());
+			
+			if (msg.isNoteOn())
+				msgInfo += " NoteON n=" + juce::String(msg.getNoteNumber()) + " v=" + juce::String(msg.getVelocity());
+			else if (msg.isNoteOff())
+				msgInfo += " NoteOFF n=" + juce::String(msg.getNoteNumber());
+			else
+				msgInfo += " OTHER type=" + juce::String::toHexString(msg.getRawData()[0]);
+			
+			logMidi (msgInfo);
+		}
+	}
+	
+	if (midiEnabled)
+	{
+		// LOG: Track how many messages are processed vs filtered
+		static int processedCount = 0;
+		static int filteredCount = 0;
+		
 		for (const auto metadata : midiMessages)
 		{
 			const auto msg = metadata.getMessage();
 			
 			// Filter by MIDI channel: msg.getChannel() returns 1-16
-			if (msg.getChannel() != selectedMidiPort)
+			// selectedMidiPort=0 means accept ALL channels (omni mode)
+			// selectedMidiPort=1-16 means only accept that specific channel
+			if (selectedMidiPort > 0 && msg.getChannel() != selectedMidiPort)
+			{
+				filteredCount++;
+				if (filteredCount % 10 == 0)
+					logMidi ("FILTERED: " + juce::String(filteredCount) + " msgs (ch=" + juce::String(msg.getChannel()) + " != port=" + juce::String(selectedMidiPort) + ")");
 				continue; // Skip messages from other channels
+			}
 			
 			if (msg.isNoteOn())
 			{
@@ -451,6 +532,10 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				// MIDI note to frequency: freq = 440 * 2^((note - 69) / 12)
 				const float frequency = 440.0f * std::pow (2.0f, (noteNumber - 69) / 12.0f);
 				currentMidiFrequency.store (frequency, std::memory_order_relaxed);
+				
+				processedCount++;
+				logMidi ("ACCEPTED #" + juce::String(processedCount) + ": Note " + juce::String(noteNumber) + 
+				         " (ch=" + juce::String(msg.getChannel()) + ") -> freq=" + juce::String(frequency, 2) + " Hz");
 			}
 			else if (msg.isNoteOff())
 			{
@@ -459,6 +544,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					lastMidiNote.store (-1, std::memory_order_relaxed);
 					currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+					logMidi ("CLEARED: Note " + juce::String(msg.getNoteNumber()) + " OFF (ch=" + juce::String(msg.getChannel()) + ")");
 				}
 			}
 		}
@@ -485,6 +571,15 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
 	const int mode = loadIntParamOrDefault (modeParam, 1); // 0=MONO, 1=STEREO, 2=PING-PONG
 	
+	// LOG: Debugging - show midi note active state
+	static int debugCounter = 0;
+	if (++debugCounter % 100 == 0 && midiEnabled)
+	{
+		logMidi ("CALC: midiNoteActive=" + juce::String((int)midiNoteActive) +
+		         " | lastMidiNote=" + juce::String(lastMidiNote.load()) +
+		         " | midiFreq=" + juce::String(currentMidiFrequency.load(), 2) + " Hz");
+	}
+	
 	// Calculate target delay time
 	float targetDelayMs = timeMsValue;
 	
@@ -497,6 +592,13 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			// Period in milliseconds = 1000 / frequency
 			targetDelayMs = 1000.0f / frequency;
+			
+			// LOG: Show when MIDI actually controls delay time
+			static int midiCalcCounter = 0;
+			if (++midiCalcCounter % 50 == 0)
+			{
+				logMidi ("MIDI ACTIVE! freq=" + juce::String(frequency, 2) + " Hz -> delayMs=" + juce::String(targetDelayMs, 4));
+			}
 		}
 	}
 	else if (syncEnabled)

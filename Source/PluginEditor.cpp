@@ -3862,7 +3862,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const int versionW = juce::jmax (0, versionRight - versionX);
 
         if (versionW > 0)
-            g.drawText ("v1.0b", versionX, versionY, versionW, versionH,
+            g.drawText ("v1.0a", versionX, versionY, versionW, versionH,
                 juce::Justification::bottomRight, false);
 
         g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
