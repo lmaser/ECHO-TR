@@ -75,6 +75,11 @@ public:
 	
 	// Helper: Convert tempo sync division to milliseconds
 	float tempoSyncToMs (int syncIndex, double bpm) const;
+	
+	// MIDI helpers
+	static juce::String getMidiNoteName (int midiNote);
+	float getCurrentDelayMs() const;
+	juce::String getCurrentTimeDisplay() const;
 
 	void prepareToPlay (double sampleRate, int samplesPerBlock) override;
 	void releaseResources() override;
@@ -128,6 +133,9 @@ public:
 	void setUiFxTailEnabled (bool shouldEnableFxTail);
 	bool getUiFxTailEnabled() const noexcept;
 
+	void setMidiPort (int portNumber);
+	int getMidiPort() const noexcept;
+
 	void setUiCustomPaletteColour (int index, juce::Colour colour);
 	juce::Colour getUiCustomPaletteColour (int index) const noexcept;
 
@@ -141,6 +149,7 @@ private:
 		static constexpr const char* editorHeight = "uiEditorHeight";
 		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
 		static constexpr const char* fxTailEnabled = "uiFxTailEnabled";
+		static constexpr const char* midiPort = "midiPort";  // MIDI port selection (0 = none, 1-127 = port)
 		static constexpr std::array<const char*, 4> customPalette {
 			"uiCustomPalette0", "uiCustomPalette1", "uiCustomPalette2", "uiCustomPalette3"
 		};
@@ -160,9 +169,10 @@ private:
 	// Feedback state (per channel)
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
-	// MIDI tracking (for future implementation)
+	// MIDI tracking
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
+	std::atomic<int> midiPort { 0 };  // 0 = no port ("---"), 1-127 = port number
 
 	// Parameter atomic pointers
 	std::atomic<float>* timeMsParam = nullptr;

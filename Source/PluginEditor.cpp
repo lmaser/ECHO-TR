@@ -1013,7 +1013,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     addAndMakeVisible (midiButton);
 
     // Initialize MIDI port display
-    midiPortDisplay.setText ("---", juce::dontSendNotification);
+    const int savedPort = audioProcessor.getMidiPort();
+    midiPortDisplay.setText (savedPort == 0 ? "---" : juce::String (savedPort), juce::dontSendNotification);
     midiPortDisplay.setJustificationType (juce::Justification::centred);
     midiPortDisplay.setInterceptsMouseClicks (false, false);
     midiPortDisplay.setBorderSize (juce::BorderSize<int> (0));  // No border, we draw it manually
@@ -2556,7 +2557,8 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     const auto scheme = schemes[(size_t) currentSchemeIndex];
 
     const juce::String suffixText = "PORT";
-    const juce::String currentValue = (currentMidiPort == 0) ? "---" : juce::String (currentMidiPort);
+    const int port = audioProcessor.getMidiPort();
+    const juce::String currentValue = (port == 0) ? "---" : juce::String (port);
     
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
     aw->setLookAndFeel (&lnf);
@@ -2766,7 +2768,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
             
             if (txt == "---" || txt.isEmpty())
             {
-                safeThis->currentMidiPort = 0;
+                safeThis->audioProcessor.setMidiPort (0);
                 safeThis->midiPortDisplay.setText ("---", juce::dontSendNotification);
                 return;
             }
@@ -2774,7 +2776,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
             int port = txt.getIntValue();
             if (port >= 1 && port <= 127)
             {
-                safeThis->currentMidiPort = port;
+                safeThis->audioProcessor.setMidiPort (port);
                 safeThis->midiPortDisplay.setText (juce::String (port), juce::dontSendNotification);
             }
         }),

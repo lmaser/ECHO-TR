@@ -256,16 +256,18 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	// CRITICAL: Smooth delay time ONCE per block, NOT per sample (eliminates CPU spikes)
-	// Tape-style smoothing: 0.995 = ~44ms time constant (smoother pitch shifting)
-	const float smoothCoeff = 0.995f;
-	smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
-	const float blockDelay = smoothedDelaySamples; // Use constant delay for entire block
+	// Exponential smoothing per-sample: smooth gradual changes without abrupt jumps
+	// Coefficient 0.9997 = ~330ms time constant (smooth but responsive)
+	const float smoothCoeff = 0.9997f;
+	const float targetDelay = delaySamples;
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
-		// Calculate read position (constant delay throughout block)
-		float readPosF = (float) writePos - blockDelay;
+		// Exponential smoothing: smooth_new = smooth_old * coeff + target * (1-coeff)
+		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		
+		// Calculate read position with smoothly varying delay
+		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
@@ -323,14 +325,14 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	// Smooth ONCE per block (tape-style: 0.995 = ~44ms)
-	const float smoothCoeff = 0.995f;
-	smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
-	const float blockDelay = smoothedDelaySamples;
+	// Exponential smoothing per-sample: smooth gradual changes without abrupt jumps
+	const float smoothCoeff = 0.9997f;
+	const float targetDelay = delaySamples;
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
-		float readPosF = (float) writePos - blockDelay;
+		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
@@ -376,14 +378,14 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	// Smooth ONCE per block (tape-style: 0.995 = ~44ms)
-	const float smoothCoeff = 0.995f;
-	smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
-	const float blockDelay = smoothedDelaySamples;
+	// Exponential smoothing per-sample: smooth gradual changes without abrupt jumps
+	const float smoothCoeff = 0.9997f;
+	const float targetDelay = delaySamples;
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
-		float readPosF = (float) writePos - blockDelay;
+		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
@@ -421,11 +423,52 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 
 void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
-	juce::ignoreUnused (midiMessages);
 	juce::ScopedNoDenormals noDenormals;
 
 	const int numChannels = juce::jmin (buffer.getNumChannels(), 2);
 	const int numSamples = buffer.getNumSamples();
+	
+	// Process MIDI messages for note tracking
+	const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
+	const int selectedMidiPort = midiPort.load (std::memory_order_relaxed); // 0 = disabled, 1-16 = MIDI channel
+	
+	if (midiEnabled && selectedMidiPort > 0)
+	{
+		for (const auto metadata : midiMessages)
+		{
+			const auto msg = metadata.getMessage();
+			
+			// Filter by MIDI channel: msg.getChannel() returns 1-16
+			if (msg.getChannel() != selectedMidiPort)
+				continue; // Skip messages from other channels
+			
+			if (msg.isNoteOn())
+			{
+				// Store the note number and calculate its frequency
+				const int noteNumber = msg.getNoteNumber();
+				lastMidiNote.store (noteNumber, std::memory_order_relaxed);
+				
+				// MIDI note to frequency: freq = 440 * 2^((note - 69) / 12)
+				const float frequency = 440.0f * std::pow (2.0f, (noteNumber - 69) / 12.0f);
+				currentMidiFrequency.store (frequency, std::memory_order_relaxed);
+			}
+			else if (msg.isNoteOff())
+			{
+				// Clear MIDI note if it matches the one we're tracking
+				if (msg.getNoteNumber() == lastMidiNote.load (std::memory_order_relaxed))
+				{
+					lastMidiNote.store (-1, std::memory_order_relaxed);
+					currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+				}
+			}
+		}
+	}
+	else
+	{
+		// MIDI disabled, clear tracking
+		lastMidiNote.store (-1, std::memory_order_relaxed);
+		currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+	}
 
 	// Clear extra output channels
 	for (int i = numChannels; i < buffer.getNumChannels(); ++i)
@@ -437,13 +480,26 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	// Read parameters ONCE per block
 	const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
+	const bool midiNoteActive = midiEnabled && (lastMidiNote.load (std::memory_order_relaxed) >= 0);
 	const float timeMsValue = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
 	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
 	const int mode = loadIntParamOrDefault (modeParam, 1); // 0=MONO, 1=STEREO, 2=PING-PONG
 	
 	// Calculate target delay time
 	float targetDelayMs = timeMsValue;
-	if (syncEnabled)
+	
+	// Priority: MIDI note > Sync > Manual time
+	if (midiNoteActive)
+	{
+		// MIDI note is active: calculate delay time from frequency (period)
+		const float frequency = currentMidiFrequency.load (std::memory_order_relaxed);
+		if (frequency > 0.1f) // Sanity check
+		{
+			// Period in milliseconds = 1000 / frequency
+			targetDelayMs = 1000.0f / frequency;
+		}
+	}
+	else if (syncEnabled)
 	{
 		// Get tempo from host
 		auto posInfo = getPlayHead();
@@ -476,14 +532,14 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Clamp feedback strictly (0 means NO feedback, no smoothing past 0)
 	targetFeedback = juce::jlimit (0.0f, 0.99f, targetFeedback);
 	
-	// AUTO FEEDBACK: Apply exponential curve + multiplier for better control range
-	// Problem: With linear feedback, only 0-6% is useful (reaches clamp too fast)
-	// Solution: Apply exponential curve first, then multiply by auto feedback factor
+	// AUTO FEEDBACK: Apply aggressive exponential curve + multiplier for maximum control range
+	// Problem: With x^2.5, only 0-21% is useful (reaches clamp too fast)
+	// Solution: Use x^4.0 for more dramatic curve, extending useful range to ~40-50%
 	if (autoFbkEnabled && targetFeedback > 0.001f && targetDelayMs > 1.0f)
 	{
-		// Step 1: Apply exponential curve to feedback (x^2.5) for more resolution at low values
-		// This gives: 10% linear → 3.2% exponential, 50% linear → 35% exponential
-		const float exponentialFeedback = std::pow (targetFeedback, 2.5f);
+		// Step 1: Apply aggressive exponential curve (x^4.0) for maximum resolution at low values
+		// This gives: 10% linear → 0.01% exponential, 50% linear → 6.25% exponential
+		const float exponentialFeedback = std::pow (targetFeedback, 4.0f);
 		
 		// Step 2: Calculate auto feedback multiplier based on delay time
 		const float referenceDelay = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
@@ -807,6 +863,22 @@ bool ECHOTRAudioProcessor::getUiFxTailEnabled() const noexcept
 	return uiFxTailEnabled.load (std::memory_order_relaxed) != 0;
 }
 
+void ECHOTRAudioProcessor::setMidiPort (int portNumber)
+{
+	const int port = juce::jlimit (0, 127, portNumber);
+	midiPort.store (port, std::memory_order_relaxed);
+	apvts.state.setProperty (UiStateKeys::midiPort, port, nullptr);
+}
+
+int ECHOTRAudioProcessor::getMidiPort() const noexcept
+{
+	const auto fromState = apvts.state.getProperty (UiStateKeys::midiPort);
+	if (! fromState.isVoid())
+		return (int) fromState;
+	
+	return midiPort.load (std::memory_order_relaxed);
+}
+
 void ECHOTRAudioProcessor::setUiCustomPaletteColour (int index, juce::Colour colour)
 {
 	if (index >= 0 && index < 4)
@@ -844,6 +916,66 @@ juce::Colour ECHOTRAudioProcessor::getUiCustomPaletteColour (int index) const no
 	}
 
 	return juce::Colour (uiCustomPalette[(size_t) index].load (std::memory_order_relaxed));
+}
+
+//==============================================================================
+// MIDI helpers
+
+juce::String ECHOTRAudioProcessor::getMidiNoteName (int midiNote)
+{
+	if (midiNote < 0 || midiNote > 127)
+		return "";
+	
+	const char* noteNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+	const int octave = (midiNote / 12) - 1;
+	const int noteIndex = midiNote % 12;
+	
+	return juce::String (noteNames[noteIndex]) + juce::String (octave);
+}
+
+float ECHOTRAudioProcessor::getCurrentDelayMs() const
+{
+	const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
+	const int midiNote = lastMidiNote.load (std::memory_order_relaxed);
+	const bool midiNoteActive = midiEnabled && (midiNote >= 0);
+	
+	// Priority: MIDI note > Sync > Manual time
+	if (midiNoteActive)
+	{
+		const float frequency = currentMidiFrequency.load (std::memory_order_relaxed);
+		if (frequency > 0.1f)
+			return 1000.0f / frequency;
+	}
+	
+	const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
+	if (syncEnabled)
+	{
+		const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
+		double bpm = 120.0;
+		auto posInfo = getPlayHead();
+		if (posInfo != nullptr)
+		{
+			auto pos = posInfo->getPosition();
+			if (pos.hasValue() && pos->getBpm().hasValue())
+				bpm = *pos->getBpm();
+		}
+		return tempoSyncToMs (timeSyncValue, bpm);
+	}
+	
+	return loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
+}
+
+juce::String ECHOTRAudioProcessor::getCurrentTimeDisplay() const
+{
+	const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
+	const int midiNote = lastMidiNote.load (std::memory_order_relaxed);
+	const bool midiNoteActive = midiEnabled && (midiNote >= 0);
+	
+	if (midiNoteActive)
+		return getMidiNoteName (midiNote);
+	
+	// Return empty string to let editor show normal time display
+	return "";
 }
 
 //==============================================================================

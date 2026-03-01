@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="GJ1UMg" name="ECHO-TR" projectType="audioplug" useAppConfig="0"
-              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1">
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1"
+              pluginWantsMidiInput="1">
   <MAINGROUP id="hcRIdB" name="ECHO-TR">
     <GROUP id="{F203E3A1-F3E4-B394-BDC1-B15CCC3926B8}" name="Source">
       <FILE id="Is1dp6" name="PluginProcessor.cpp" compile="1" resource="0"

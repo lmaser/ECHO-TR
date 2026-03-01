@@ -109,7 +109,6 @@ private:
     juce::ToggleButton autoFbkButton;
 
     juce::Label midiPortDisplay;
-    int currentMidiPort = 0;  // 0 = '---', 1-127 = port number
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
