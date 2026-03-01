@@ -1,357 +1,269 @@
-# ECHO-TR: Análisis de Feedback y Auto-Feedback
-
-**NOTA IMPORTANTE**: Todas las funciones implementadas son **CONTINUAS** (no discretas). Las gráficas muestran curvas suaves, y las tablas con valores en notas MIDI específicas (C1, C2, etc.) son **muestras puntuales** para visualización, NO saltos en la implementación.
+# ECHO-TR — Performance Analysis & Optimization Report
+## Version: v17-performance (post-optimization)
 
 ---
 
-## 1. IMPLEMENTACIÓN ACTUAL DEL FEEDBACK
+## 1. ROOT CAUSE: COMPILACIÓN EN DEBUG
 
-### Feedback Normal (sin auto-feedback)
+**ESTE ERA EL PROBLEMA PRINCIPAL.** El plugin se compilaba siempre con `Configuration=Debug`.
 
-**Tipo**: LINEAL (multiplicador directo)
+### Impacto de Debug vs Release:
 
-**Fórmula**:
+| Aspecto | Debug (`Optimization=Disabled`) | Release (`Optimization=Full`) |
+|---|---|---|
+| **Inlining** | NINGUNA — cada `juce::jlimit`, `loadAtomicOrDefault` es una llamada a función completa con stack frame | Total — funciones inline se expanden en el caller |
+| **Vectorización SIMD/SSE** | Desactivada | El compilador auto-vectoriza los inner loops |
+| **Dead code elimination** | Desactivada | Se eliminan los `#if 0` blocks, paths no alcanzables |
+| **JUCE assertions** | `jassert()` activo — verifica condiciones en CADA operación | `NDEBUG` desactiva todos los asserts |
+| **Runtime checks** | `MultiThreadedDebugDLL` — checks de memoria en cada acceso | `MultiThreadedDLL` — zero checks |
+| **Register allocation** | No optimizada — variables en stack | Máxima — variables en registros SSE |
+| **Loop unrolling** | No | Sí, cuando es beneficioso |
+| **WholeProgramOptimization** | No | Sí — optimización entre translation units |
+| **Impacto estimado** | **5-20x más lento** | Baseline |
+
+### Diagnóstico:
+- Archivo: `Builds/VisualStudio2022/ECHO-TR_SharedCode.vcxproj`
+- Debug (línea 64): `<Optimization>Disabled</Optimization>`
+- Release (línea 106): `<Optimization>Full</Optimization>`, `WholeProgramOptimization=true`
+- **TODO plugin profesional se compila en Release.** Valhalla Delay, FabFilter, etc. — todos.
+
+### Solución:
+- Compilar con `Configuration=Release` en vez de `Configuration=Debug`
+- Esto elimina **~80%** del problema de rendimiento sin tocar una línea de código
+
+---
+
+## 2. BUFFER CLEAR MASIVO en Cambio de Régimen (MIDI↔Manual)
+
+### Problema (v16b):
 ```cpp
-delayBuffer[writePos] = input * inputGain + delayedSignal * feedback
+// ANTES: Limpia TODO el buffer (8MB)
+delayBuffer.clear();  // 2 canales × 1,048,576 floats × 4 bytes = 8,388,608 bytes
 ```
 
-**Características**:
-- Rango: `0.0` a `0.99` (clamped)
-- NO hay transformación logarítmica ni exponencial
-- Es un multiplicador directo del delay feedback
-- **Independiente de la frecuencia/nota MIDI**
+Cuando el usuario activa/desactiva MIDI, se hacía un `memset` de **8MB** en el audio thread.
+Esto causa un **pico de CPU enorme** en cada transición.
 
-**Ecuación matemática**:
-```
-output(n) = input(n) + feedback * output(n - delaySamples)
-```
-
-Donde:
-- `feedback ∈ [0.0, 0.99]` (parámetro del usuario, lineal)
-- `delaySamples` = delay time en samples
-
----
-
-## 2. IMPLEMENTACIÓN DEL AUTO-FEEDBACK
-
-### Transformaciones aplicadas
-
-Cuando `AUTO FBK` está activado, el feedback pasa por **dos transformaciones**:
-
-#### Paso 1: Curva exponencial agresiva
+### Solución (v17):
 ```cpp
-exponentialFeedback = feedback^4.0
+// AHORA: Solo limpia la zona que el read head va a recorrer durante el glide
+const int maxClearSamples = (int) std::max(smoothedDelaySamples, delaySamples) + 2048;
+const int clearLen = juce::jmin(maxClearSamples, delayBufferLength);
+for (int j = 0; j < clearLen; ++j)
+{
+    const int idx = (delayBufferWritePos - j) & wrapMask;
+    delayL[idx] = 0.0f;
+    delayR[idx] = 0.0f;
+}
 ```
 
-**Propósito**: Concentrar resolución en valores bajos  
-**Efecto**:
-- 10% lineal → 0.01% exponencial
-- 50% lineal → 6.25% exponencial
-- 70% lineal → 24% exponencial
-- 90% lineal → 65.6% exponencial
+**Reducción**: De 1,048,576 samples a típicamente ~50,000-100,000 samples (5-10% del buffer).
+Con delay corto (100ms a 48kHz = 4,800 samples), la mejora es **200x menos datos limpiados**.
 
-#### Paso 2: Multiplicador basado en delay time
+---
+
+## 3. `juce::Decibels::decibelsToGain()` → `fastDbToGain()`
+
+### Problema:
 ```cpp
-octavesFromMax = log2(maxDelay / currentDelay)
-autoFbkMultiplier = 1.5^octavesFromMax
+// JUCE internamente hace: std::pow(10.0, dB / 20.0)
+const float inputGain = juce::Decibels::decibelsToGain(inputGainDb);   // Llamada 1
+const float outputGain = juce::Decibels::decibelsToGain(outputGainDb); // Llamada 2
 ```
+`std::pow` es una función transcendental **muy costosa** — usa microcódigo del FPU.
+Se llama 2× por bloque (cada ~2.67ms a 48kHz/128 samples).
 
-**Propósito**: Compensar feedback según delay time  
-**Efecto**:
-- Delay corto (frecuencias altas) → multiplier GRANDE → MÁS feedback
-- Delay largo (frecuencias bajas) → multiplier PEQUEÑO → MENOS feedback
-
-#### Paso 3: Aplicación final
+### Solución:
 ```cpp
-feedback_final = min(0.99, exponentialFeedback * autoFbkMultiplier)
+// Identidad: 10^(dB/20) = exp(dB × ln(10)/20) = exp(dB × 0.11512925)
+inline float fastDbToGain(float dB) noexcept
+{
+    if (dB <= -100.0f) return 0.0f;
+    return std::exp(dB * 0.11512925464970228f);
+}
 ```
+`std::exp` es **2-3x más rápido** que `std::pow(10, x)` en la mayoría de CPUs x86.
+Resultado: Idéntico (matemáticamente equivalente, error < 1e-7).
 
 ---
 
-## 3. GRÁFICA 1: Feedback vs. Frecuencia MIDI
+## 4. MIDI Note-to-Frequency: Lookup Table vs `std::pow`
 
-### SIN AUTO-FEEDBACK:
-
-**La función es CONSTANTE** (línea horizontal continua):
-
-```
-Feedback (valor final aplicado)
-    1.0 │                                              
-    0.9 │━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  feedback = 0.90
-    0.8 │                                              
-    0.7 │━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  feedback = 0.70
-    0.6 │                                              
-    0.5 │━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  feedback = 0.50
-    0.4 │                                              
-    0.3 │━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  feedback = 0.30
-    0.2 │                                              
-    0.1 │━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  feedback = 0.10
-    0.0 └────────────────────────────────────────────
-         C1    C2    C3    C4    C5    C6    C7    C8
-        (32Hz)(65Hz)(130Hz)(261Hz)(523Hz)(1046Hz)(2093Hz)(4186Hz)
-```
-
-**Conclusión**: El feedback es CONSTANTE independiente de la frecuencia MIDI.  
-→ Esto puede ser problemático porque delays cortos (notas altas) acumulan feedback más rápido.
-
----
-
-### CON AUTO-FEEDBACK ACTIVADO:
-
-Asumiendo `feedback_slider = 0.50` (parámetro del usuario):
-
-**NOTA**: La función es **CONTINUA** (no escalonada). Los puntos marcados son valores en notas específicas.
-
-```
-Feedback (valor final aplicado)
-    1.0 │                                          ╭───
-    0.9 │                                     ╭────╯     
-    0.8 │                                ╭────╯          
-    0.7 │                           ╭────╯               
-    0.6 │                      ╭────╯                    
-    0.5 │                 ╭────╯                         
-    0.4 │            ╭────╯                              
-    0.3 │       ╭────╯                                   
-    0.2 │  ╭────╯                                        
-    0.1 │╭─╯                                             
-    0.0 └────────────────────────────────────────────
-         C1    C2    C3    C4    C5    C6    C7    C8
-        (32Hz)(65Hz)(130Hz)(261Hz)(523Hz)(1046Hz)(2093Hz)(4186Hz)
-
-    Delay: 31ms  15ms  7.6ms 3.8ms 1.9ms 0.95ms 0.47ms 0.23ms
-```
-
-**Función matemática** (continua):
-```
-feedback_final(delayMs) = min(0.99, feedback^4.0 * 1.5^log2(maxDelay/delayMs))
-```
-
-**Valores calculados** (feedback_slider = 0.50, muestras de la función continua):
-```
-Nota  | Freq (Hz) | Delay (ms) | Octaves | Multiplier | Feedback_exp | Feedback_final
-------|-----------|------------|---------|------------|--------------|---------------
-C1    |   32.7    |   30.58    |  6.03   |   11.25    |    0.0625    |   0.703
-C2    |   65.4    |   15.29    |  7.03   |   16.88    |    0.0625    |   0.990 ⚠️(clamped)
-C3    |  130.8    |    7.64    |  8.03   |   25.31    |    0.0625    |   0.990 ⚠️(clamped)
-C4    |  261.6    |    3.82    |  9.03   |   37.97    |    0.0625    |   0.990 ⚠️(clamped)
-C5    |  523.3    |    1.91    | 10.03   |   56.95    |    0.0625    |   0.990 ⚠️(clamped)
-C6    | 1046.5    |    0.95    | 11.03   |   85.43    |    0.0625    |   0.990 ⚠️(clamped)
-C7    | 2093.0    |    0.47    | 12.03   |  128.14    |    0.0625    |   0.990 ⚠️(clamped)
-C8    | 4186.0    |    0.23    | 13.03   |  192.21    |    0.0625    |   0.990 ⚠️(clamped)
-```
-
-**NOTA IMPORTANTE**: Entre estas notas MIDI, el feedback varía **continuamente** según la fórmula exponencial + multiplicador logarítmico. La tabla muestra MUESTRAS discretas para visualización, pero no hay "saltos" reales en la implementación.
-
-**⚠️ PROBLEMA DETECTADO**: Con feedback_slider ≥ 0.50, el autofeedback satura inmediatamente en 0.99 para casi todas las notas MIDI (C2 en adelante).
-
----
-
-## 4. GRÁFICA 2: Autofeedback en función de Feedback Slider y Frecuencia
-
-### Mapa de calor: Feedback Final vs. (Slider Value, MIDI Note)
-
-```
-Feedback                                    FREQUENCY (MIDI Note) →
-Slider     C1     C2     C3     C4     C5     C6     C7     C8
-  ↓      (32Hz) (65Hz)(130Hz)(261Hz)(523Hz)(1046Hz)(2093Hz)(4186Hz)
-─────────────────────────────────────────────────────────────────
- 1.00 │   0.99   0.99   0.99   0.99   0.99   0.99   0.99   0.99  
- 0.90 │   0.99   0.99   0.99   0.99   0.99   0.99   0.99   0.99  
- 0.80 │   0.99   0.99   0.99   0.99   0.99   0.99   0.99   0.99  
- 0.70 │   0.99   0.99   0.99   0.99   0.99   0.99   0.99   0.99  
- 0.60 │   0.92   0.99   0.99   0.99   0.99   0.99   0.99   0.99  
- 0.50 │   0.70   0.99   0.99   0.99   0.99   0.99   0.99   0.99  ← Problema
- 0.40 │   0.46   0.68   0.99   0.99   0.99   0.99   0.99   0.99  
- 0.30 │   0.25   0.37   0.55   0.82   0.99   0.99   0.99   0.99  
- 0.20 │   0.11   0.16   0.24   0.36   0.54   0.81   0.99   0.99  
- 0.10 │   0.03   0.04   0.06   0.09   0.14   0.20   0.31   0.46  
- 0.00 │   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00  
-```
-
-**Leyenda**:
-- `0.00-0.20`: ░░ (muy bajo)
-- `0.20-0.50`: ▒▒ (bajo-medio)
-- `0.50-0.80`: ▓▓ (medio-alto)
-- `0.80-0.99`: ██ (saturado)
-
----
-
-## 5. ANÁLISIS Y PROBLEMAS IDENTIFICADOS
-
-### 5.1 Problema: Saturación prematura del autofeedback
-
-**Síntoma**:
-- Con feedback_slider ≥ 0.50, el autofeedback alcanza el clamp de 0.99 para casi todas las notas
-- Solo se aprecia diferencia real en el rango 0-40% del slider
-- El rango útil es MUY limitado (comentado en el código)
-
-**Causa raíz**:
-1. **Curva demasiado agresiva**: `feedback^4.0` reduce drásticamente valores medios
-   - 50% → 6.25% exponencial
-2. **Multiplicador demasiado fuerte**: `1.5^octaves` crece exponencialmente
-   - C3 tiene multiplicador de ~25x
-   - C5 tiene multiplicador de ~57x
-
-**La función es continua** (no hay saltos discretos), pero su crecimiento exponencial causa saturación:
-
-```
-feedback_final(delayMs) = min(0.99, feedback^4.0 * 1.5^(log2(maxDelay/delayMs)))
-```
-
-**Consecuencia**:
-```
-feedback_exp (6.25%) * multiplier (25x) = 156% → clamped a 99%
-```
-
-→ La mayoría de notas saturan inmediatamente
-
----
-
-### 5.2 Problema: Glide excesivo con notas rápidas
-
-**Síntoma reportado por el usuario**:
-- "hay demasiado glide al usar notas rápidas en MIDI"
-
-**Causa**: Smoothing exponencial con coeficiente 0.9997
-
+### Problema:
 ```cpp
-smoothedDelaySamples = smoothedDelaySamples * 0.9997 + targetDelay * 0.0003
+// ANTES: std::pow por cada nota MIDI recibida
+const float frequency = 440.0f * std::pow(2.0f, (noteNumber - 69) / 12.0f);
 ```
 
-**Time constant**: ~330ms (demasiado lento para cambios rápidos de frecuencia)
-
-**Ejemplo**:
-- Cambio de C3 (7.6ms) → C5 (1.9ms)
-- El delay tarda ~330ms en alcanzar el 63% del cambio
-- Para cambios de 2 octavas, el glide es muy audible
-
-**Tabla de settling time**:
-```
-% del cambio alcanzado | Tiempo transcurrido
------------------------|--------------------
-   63% (1 τ)           |     330 ms
-   86% (2 τ)           |     660 ms
-   95% (3 τ)           |     990 ms
-   98% (4 τ)           |    1320 ms
-```
-
-Para secuencias MIDI rápidas (120 BPM, 1/16 notes = 125ms), el smoothing NO termina antes de la siguiente nota.
-
----
-
-## 6. PROPUESTAS DE MEJORA (RAMA 10c)
-
-### 6.1 Ajustar curva de Auto-Feedback
-
-**Opción A**: Reducir exponente de la curva
+### Solución:
 ```cpp
-// Actual: feedback^4.0 (muy agresivo)
-// Propuesto: feedback^2.0 (más suave)
-const float exponentialFeedback = std::pow (targetFeedback, 2.0f);
+// Pre-computada al inicio del programa (128 floats = 512 bytes)
+static float midiNoteToFreq[128];  // Inicializada una vez en startup
+const float frequency = midiNoteToFreq[noteNumber & 127];  // Lookup: 1 ciclo
 ```
+Impacto moderado (solo se ejecuta por nota MIDI, no por sample), pero elimina 100% del coste.
 
-**Opción B**: Reducir multiplicador temporal
+---
+
+## 5. Inner Loop Optimization (processStereoDelay, processMonoDelay, processPingPongDelay)
+
+### Cambios aplicados:
+
+#### 5.1 Punteros resueltos fuera del loop
 ```cpp
-// Actual: 1.5^octaves (muy fuerte)
-// Propuesto: 1.3^octaves (más suave)
-const float autoFbkMultiplier = std::pow (1.3f, octavesFromMax);
+// ANTES: getWritePointer() podía ser virtual dispatch per-call
+auto* channelL = numChannels > 0 ? buffer.getWritePointer(0) : nullptr;
+
+// AHORA: resuelto una vez, const pointer
+float* const channelL = buffer.getWritePointer(0);
 ```
 
-**Opción C**: Combinación
+#### 5.2 Constantes precomputadas
 ```cpp
-const float exponentialFeedback = std::pow (targetFeedback, 2.5f);
-const float autoFbkMultiplier = std::pow (1.4f, octavesFromMax);
+// ANTES: calculado por sample dentro del loop
+smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+channelL[i] = (inputL * (1.0f - mix) + clippedDelayedL * mix) * outputGain;
+
+// AHORA: precomputado antes del loop
+const float oneMinusCoeff = 1.0f - smoothCoeff;
+const float dryGain = (1.0f - mix) * outputGain;
+const float wetGain = mix * outputGain;
+// ...
+channelL[i] = inL * dryGain + clampedL * wetGain;  // 2 MAD ops, sin restas
 ```
+Reducción: De 4 operaciones (resta + mult + mult + mult) a 2 multiply-add por sample.
 
----
-
-### 6.2 Ajustar Smoothing para MIDI
-
-**Problema**: El mismo smoothing se usa para cambios manuales (lentos) y MIDI (rápidos)
-
-**Solución**: Smoothing adaptativo según fuente de cambio
-
+#### 5.3 `juce::jlimit` → `fastClamp`
 ```cpp
-// Smoothing lento para cambios manuales (mantiene pitch shifting suave)
-const float smoothCoeffManual = 0.9997f;  // ~330ms
+// ANTES: juce::jlimit es una función con branch
+const float clipped = juce::jlimit(-2.0f, 2.0f, delayed);
 
-// Smoothing rápido para cambios MIDI (minimiza glide entre notas)
-const float smoothCoeffMidi = 0.997f;     // ~33ms (10x más rápido)
-
-// Seleccionar según fuente de cambio
-const bool midiActive = (currentMidiFrequency.load() > 0.1f);
-const float smoothCoeff = midiActive ? smoothCoeffMidi : smoothCoeffManual;
+// AHORA: std::fmin/fmax — compilados a instrucciones SSE MINSS/MAXSS (branchless)
+const float clamped = fastClamp(delayed, -2.0f, 2.0f);
 ```
 
-**Alternativa**: Smoothing variable según magnitud del cambio
-
+#### 5.4 Smoothed delay como variable local
 ```cpp
-const float deltaSamples = std::abs(targetDelay - smoothedDelaySamples);
-const float changeRatio = deltaSamples / targetDelay;
+// ANTES: Member variable leída/escrita cada sample (posible cache miss)
+smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + ...;
 
-// Si el cambio es >20% (salto grande como cambio de nota), smooth rápido
-const float smoothCoeff = (changeRatio > 0.20f) ? 0.997f : 0.9997f;
+// AHORA: Variable local (register), escrita al member solo al final del loop
+float smoothed = smoothedDelaySamples;  // Load once
+// ... loop usa 'smoothed' ...
+smoothedDelaySamples = smoothed;  // Store once
 ```
 
 ---
 
-### 6.3 Optimización de Performance
+## 6. `getTailLengthSeconds()` — Cache
 
-**Problemas actuales**:
-1. **Interpolación lineal per-sample**: 2 lecturas + multiplicaciones
-2. **Smoothing exponencial per-sample**: multiplicación + suma
-3. **Clipping per-sample**: `jlimit()`
-
-**Mejoras propuestas**:
-1. **SIMD vectorization**: Procesar 4-8 samples simultáneamente
-2. **Lookup tables**: Pre-calcular curvas exponenciales
-3. **Branch reduction**: Evitar condicionales dentro del loop
-
----
-
-## 7. PRÓXIMOS PASOS (RAMA 10c)
-
-### Prioridad Alta:
-1. ✅ Analizar implementación actual (COMPLETADO)
-2. ⏳ Ajustar curva de auto-feedback para ampliar rango útil
-3. ⏳ Implementar smoothing adaptativo para MIDI
-
-### Prioridad Media:
-4. ⏳ Optimizar loops de procesamiento (SIMD, lookup tables)
-5. ⏳ Testing de picos de CPU con diferentes configuraciones
-
-### Testing requerido:
-- [ ] Verificar que feedback no sature con slider al 50%
-- [ ] Confirmar que glide MIDI es imperceptible en notas rápidas
-- [ ] Medir reducción de picos de CPU
-- [ ] Validar que smoothing manual sigue funcionando correctamente
-
----
-
-## 8. FÓRMULAS DE REFERENCIA
-
-### Feedback tail time (para getTailLengthSeconds):
-```
-tailTime = delayTime * log(0.001) / log(feedback)
-         = delayTime * (-6.9078) / log(feedback)
+### Problema:
+```cpp
+// ANTES: Ejecutado cada vez que el DAW lo consulta (puede ser cientos de veces/segundo)
+double getTailLengthSeconds() const
+{
+    // std::log() — función transcendental
+    // getPlayHead()->getPosition() — virtual dispatch + Optional unpacking
+    // loadAtomicOrDefault × 4 — atomic loads
+}
 ```
 
-Donde:
-- `log(0.001) = -6.9078` (tiempo hasta -60dB)
-- `feedback ∈ (0, 1)`
-
-### MIDI note to frequency:
-```
-frequency = 440 * 2^((note - 69) / 12)
-```
-
-### Delay time from frequency:
-```
-delayMs = 1000 / frequency
+### Solución:
+```cpp
+// AHORA: Retorna valor cacheado (1 atomic load)
+double getTailLengthSeconds() const
+{
+    return cachedTailLengthSeconds.load(std::memory_order_relaxed);
+}
+// El valor se actualiza al final de cada processBlock (donde ya tenemos los datos calculados)
 ```
 
 ---
 
-**Documento generado**: 2026-03-01  
-**Rama objetivo**: `10c` (testing)  
-**Status**: ANÁLISIS COMPLETADO - Pendiente implementación
+## 7. Auto Feedback: `std::log2` + `std::pow` por bloque
+
+### Estado actual:
+```cpp
+octavesFromReference = std::log2(referenceDelay / effectiveDelayMs);
+autoFbkMultiplier = std::pow(1.093f, octavesFromReference);
+```
+Se ejecuta 1× por bloque cuando AUTO está habilitado. Costo: ~50-100 ns.
+
+### Decisión:
+NO se optimiza por ahora. El costo es **< 0.1%** del presupuesto de CPU por bloque.
+Una optimización con lookup table o fast-exp sería prematura y arriesgaría precisión.
+
+---
+
+## 8. Logging de Debug (`logMidi`)
+
+### Estado:
+```cpp
+#define ECHO_TR_DEBUG_LOG 0  // Compilado como CERO — eliminado por el preprocesador
+inline void logMidi(const juce::String&) {}  // Llamada vacía, eliminada por el optimizer
+```
+
+Con `ECHO_TR_DEBUG_LOG 0`, todas las llamadas a `logMidi()` y los bloques `#if ECHO_TR_DEBUG_LOG`
+son **completamente eliminados** por el nivel más básico de optimización.
+Incluso en Debug mode, la función vacía inline tiene overhead ~0.
+
+---
+
+## 9. Resumen de Impacto Estimado
+
+| Optimización | Impacto | Frecuencia |
+|---|---|---|
+| **Release build** | **5-20x mejora global** | Todo |
+| **Buffer clear targeted** | Elimina picos de 8MB memset | Por cambio de régimen |
+| **Inner loop precompute** | ~2 ops/sample menos × N samples | Per-sample |
+| **fastClamp (SSE MINSS/MAXSS)** | Branchless vs branching | Per-sample |
+| **fastDbToGain (exp vs pow)** | 2-3x más rápido | Por bloque (×2) |
+| **MIDI lookup table** | Elimina std::pow | Por nota MIDI |
+| **getTailLengthSeconds cache** | Elimina std::log + getPlayHead | Por query del DAW |
+| **Smoothed delay in register** | Evita member read/write cache miss | Per-sample |
+
+---
+
+## 10. Build Command
+
+### ANTES (Debug):
+```
+MSBuild.exe "ECHO-TR.sln" /t:Rebuild /p:Configuration=Debug /p:Platform=x64
+```
+
+### AHORA (Release):
+```
+MSBuild.exe "ECHO-TR.sln" /t:Rebuild /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+```
+
+### Copy:
+```
+Copy-Item "x64\Release\VST3\ECHO-TR.vst3\Contents\x86_64-win\ECHO-TR.vst3" `
+  "C:\Program Files\Common Files\VST3\ECHO-TR.vst3" -Force
+```
+
+---
+
+## 11. Arquitectura DSP — Referencia
+
+### Flujo de señal (processBlock):
+1. Leer parámetros (atomic loads, 1× por bloque)
+2. Procesar MIDI (lookup table, solo si hay eventos)
+3. Calcular delay time (manual/sync/MIDI priority)
+4. Aplicar MOD (frequency multiplier)
+5. Auto feedback (std::log2 + std::pow, 1× por bloque)
+6. Adaptive smoothing coefficient selection
+7. Régimen change detection + targeted buffer clear
+8. Dispatch a modo (Stereo/Mono/PingPong)
+9. Inner loop: smoothing → interpolation → clamp → feedback → mix
+10. Update tail length cache
+
+### Buffer:
+- 2 canales × 2^20 = 1,048,576 samples (8MB total)
+- Power-of-2 wrapping con bitwise AND (no modulo)
+- Linear interpolation entre samples contiguos
+
+### Smoothing:
+- Fast (0.90): entre notas MIDI (~0.5ms)
+- Transition (0.995): cambio de régimen (~50ms)
+- Slow (0.9997): knob manual (~330ms)

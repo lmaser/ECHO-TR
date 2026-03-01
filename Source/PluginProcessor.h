@@ -170,6 +170,9 @@ private:
 	// Tape-style delay time smoothing (for pitch shifting effect)
 	float smoothedDelaySamples = 0.0f;
 	
+	// Cached tail length (updated per processBlock, avoids std::log + getPlayHead per DAW query)
+	std::atomic<double> cachedTailLengthSeconds { 0.5 };
+	
 	// Feedback state (per channel)
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
@@ -179,11 +182,7 @@ private:
 	std::atomic<int> midiPort { 0 };  // 0 = disabled ("---"), 1-16 = MIDI channel
 	bool prevMidiNoteActive = false;  // v12: for MIDI→manual transition smoothing
 	bool prevMidiEnabled = false;     // v13: track MIDI button state for toggle detection
-	float midiReleaseFade = 1.0f;     // v12: crossfade on MIDI release (0=muted, 1=full)
-	// v13: Wet crossfade for MIDI→manual transitions (eliminates transient spikes)
-	float wetCrossfade = 1.0f;           // 1.0=full wet, 0.0=muted wet
-	bool crossfadeActive = false;        // true during fade-out/fade-in cycle
-	bool crossfadeFadingIn = false;      // false=fading out, true=fading in
+	// v16b: Removed unused crossfade members (wetCrossfade, crossfadeActive, crossfadeFadingIn, midiReleaseFade)
 
 	// Parameter atomic pointers
 	std::atomic<float>* timeMsParam = nullptr;
