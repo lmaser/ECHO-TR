@@ -2,8 +2,8 @@
 
 <br/><br/>
 
-<!-- Placeholder for screenshot -->
-<!-- <img width="449" height="450" alt="image" src="" /> -->
+<img width="840" height="602" alt="image" src="https://github.com/user-attachments/assets/18c66779-09e8-4cac-995c-f174839efc2d" />
+
 
 <br/><br/>
 
