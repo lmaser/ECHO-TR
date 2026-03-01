@@ -115,6 +115,7 @@ private:
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
     std::unique_ptr<SliderAttachment> timeAttachment;
+    std::unique_ptr<SliderAttachment> timeSyncAttachment;  // For tempo sync mode
     std::unique_ptr<SliderAttachment> feedbackAttachment;
     std::unique_ptr<SliderAttachment> modeAttachment;
     std::unique_ptr<SliderAttachment> modAttachment;
@@ -273,6 +274,8 @@ private:
 
     void applyPersistedUiStateFromProcessor (bool applySize, bool applyPaletteAndFx);
     void applyLabelTextColour (juce::Label& label, juce::Colour colour);
+    
+    void updateTimeSliderForSyncMode (bool syncEnabled);
 
     friend void embedAlertWindowInOverlay (ECHOTRAudioProcessorEditor* editor,
                                            juce::AlertWindow* aw,

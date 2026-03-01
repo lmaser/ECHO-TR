@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <cstdio>
 
 namespace
 {
@@ -112,7 +113,48 @@ bool ECHOTRAudioProcessor::isMidiEffect() const
 
 double ECHOTRAudioProcessor::getTailLengthSeconds() const
 {
-	return 0.0;
+	// Calculate tail length based on delay time and feedback
+	// This ensures DAWs don't cut off the delay tail prematurely
+	const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
+	const float timeMsValue = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
+	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
+	const float feedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
+	
+	// Get delay time
+	float delayMs = timeMsValue;
+	if (syncEnabled)
+	{
+		// Use last known BPM or default
+		double bpm = 120.0;
+		auto posInfo = getPlayHead();
+		if (posInfo != nullptr)
+		{
+			auto pos = posInfo->getPosition();
+			if (pos.hasValue() && pos->getBpm().hasValue())
+				bpm = *pos->getBpm();
+		}
+		delayMs = tempoSyncToMs (timeSyncValue, bpm);
+	}
+	
+	// Clamp to valid range (different limits for manual vs sync mode)
+	const float maxAllowedDelayMs = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
+	delayMs = juce::jlimit (0.0f, maxAllowedDelayMs, delayMs);
+	
+	// Calculate tail: time for signal to decay to -60dB (~0.001 amplitude)
+	// Formula: tailTime = delayTime * log(0.001) / log(feedback)
+	// But we need to handle edge cases
+	if (feedback < 0.01f || delayMs < 0.5f)
+		return 0.5; // Minimum 0.5s tail for very low feedback
+	
+	if (feedback > 0.99f)
+		return 30.0; // Cap at 30 seconds for very high feedback (supports long sync delays)
+	
+	const double delaySeconds = delayMs / 1000.0;
+	const double numRepeatsTo60dB = std::log (0.001) / std::log (feedback);
+	const double tailSeconds = delaySeconds * numRepeatsTo60dB;
+	
+	// Clamp to reasonable range
+	return juce::jlimit (0.5, 30.0, tailSeconds);
 }
 
 int ECHOTRAudioProcessor::getNumPrograms()
@@ -147,12 +189,32 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	juce::ignoreUnused (samplesPerBlock);
 	currentSampleRate = sampleRate;
 	
-	// TODO: Initialize delay buffers and DSP state
+	// Allocate delay buffer: POWER OF 2 for efficient wrapping with bitwise AND
+	// Use kTimeMsMaxSync (20s) to support long sync divisions like 8/1
+	const int requestedSamples = (int) std::ceil (sampleRate * (kTimeMsMaxSync / 1000.0)) + 1024;
+	// Round up to next power of 2
+	int powerOf2 = 1;
+	while (powerOf2 < requestedSamples)
+		powerOf2 <<= 1;
+	
+	delayBufferLength = powerOf2;
+	delayBuffer.setSize (2, delayBufferLength);
+	delayBuffer.clear();
+	delayBufferWritePos = 0;
+	
+	// Reset feedback state
+	feedbackState[0] = 0.0f;
+	feedbackState[1] = 0.0f;
+	
+	// Initialize tape-style delay time smoothing
+	smoothedDelaySamples = 0.0f;
 }
 
 void ECHOTRAudioProcessor::releaseResources()
 {
-	// TODO: Release delay buffers
+	delayBuffer.setSize (0, 0);
+	delayBufferLength = 0;
+	delayBufferWritePos = 0;
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -176,28 +238,324 @@ bool ECHOTRAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 }
 #endif
 
+//==============================================================================
+// Optimized delay processing functions
+
+void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+                                                float delaySamples, float feedback, float inputGain, 
+                                                float outputGain, float mix)
+{
+	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
+	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
+	
+	// Get raw pointers to delay buffer for maximum performance
+	auto* delayL = delayBuffer.getWritePointer (0);
+	auto* delayR = delayBuffer.getWritePointer (1);
+	
+	// Power-of-2 wrap mask for efficient modulo with bitwise AND
+	const int wrapMask = delayBufferLength - 1;
+	int writePos = delayBufferWritePos;
+	
+	// CRITICAL: Smooth delay time ONCE per block, NOT per sample (eliminates CPU spikes)
+	// Tape-style smoothing: 0.995 = ~44ms time constant (smoother pitch shifting)
+	const float smoothCoeff = 0.995f;
+	smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
+	const float blockDelay = smoothedDelaySamples; // Use constant delay for entire block
+	
+	for (int i = 0; i < numSamples; ++i)
+	{
+		// Calculate read position (constant delay throughout block)
+		float readPosF = (float) writePos - blockDelay;
+		if (readPosF < 0.0f)
+			readPosF += (float) delayBufferLength;
+		
+		const int readPos0 = (int) readPosF;
+		const int readPos1 = (readPos0 + 1) & wrapMask; // Bitwise AND = faster than modulo
+		const float frac = readPosF - (float) readPos0;
+		
+		// Process left channel
+		if (channelL != nullptr)
+		{
+			const float inputL = channelL[i];
+			const float sample0 = delayL[readPos0];
+			const float sample1 = delayL[readPos1];
+			const float delayedL = sample0 + frac * (sample1 - sample0);
+			
+			// Clip to prevent spikes
+			const float clippedDelayedL = juce::jlimit (-2.0f, 2.0f, delayedL);
+			
+			delayL[writePos] = inputL * inputGain + clippedDelayedL * feedback;
+			channelL[i] = (inputL * (1.0f - mix) + clippedDelayedL * mix) * outputGain;
+		}
+		
+		// Process right channel
+		if (channelR != nullptr)
+		{
+			const float inputR = channelR[i];
+			const float sample0 = delayR[readPos0];
+			const float sample1 = delayR[readPos1];
+			const float delayedR = sample0 + frac * (sample1 - sample0);
+			
+			// Clip to prevent spikes
+			const float clippedDelayedR = juce::jlimit (-2.0f, 2.0f, delayedR);
+			
+			delayR[writePos] = inputR * inputGain + clippedDelayedR * feedback;
+			channelR[i] = (inputR * (1.0f - mix) + clippedDelayedR * mix) * outputGain;
+		}
+		
+		// Power-of-2 wrap: bitwise AND instead of conditional (faster)
+		writePos = (writePos + 1) & wrapMask;
+	}
+	
+	delayBufferWritePos = writePos;
+}
+
+void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+                                              float delaySamples, float feedback, float inputGain,
+                                              float outputGain, float mix)
+{
+	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
+	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
+	
+	auto* delayL = delayBuffer.getWritePointer (0);
+	auto* delayR = delayBuffer.getWritePointer (1);
+	
+	const int wrapMask = delayBufferLength - 1;
+	int writePos = delayBufferWritePos;
+	
+	// Smooth ONCE per block (tape-style: 0.995 = ~44ms)
+	const float smoothCoeff = 0.995f;
+	smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
+	const float blockDelay = smoothedDelaySamples;
+	
+	for (int i = 0; i < numSamples; ++i)
+	{
+		float readPosF = (float) writePos - blockDelay;
+		if (readPosF < 0.0f)
+			readPosF += (float) delayBufferLength;
+		
+		const int readPos0 = (int) readPosF;
+		const int readPos1 = (readPos0 + 1) & wrapMask;
+		const float frac = readPosF - (float) readPos0;
+		
+		const float sample0 = delayL[readPos0];
+		const float sample1 = delayL[readPos1];
+		const float delayed = sample0 + frac * (sample1 - sample0);
+		
+		// Clip to prevent spikes
+		const float clippedDelayed = juce::jlimit (-2.0f, 2.0f, delayed);
+		
+		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
+		const float inputR = channelR != nullptr ? channelR[i] : inputL;
+		const float inputMid = (inputL + inputR) * 0.5f;
+		
+		const float toWrite = inputMid * inputGain + clippedDelayed * feedback;
+		delayL[writePos] = toWrite;
+		delayR[writePos] = toWrite;
+		
+		const float output = (inputMid * (1.0f - mix) + clippedDelayed * mix) * outputGain;
+		if (channelL != nullptr) channelL[i] = output;
+		if (channelR != nullptr) channelR[i] = output;
+		
+		writePos = (writePos + 1) & wrapMask;
+	}
+	
+	delayBufferWritePos = writePos;
+}
+
+void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+                                                  float delaySamples, float feedback, float inputGain,
+                                                  float outputGain, float mix)
+{
+	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
+	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
+	
+	auto* delayL = delayBuffer.getWritePointer (0);
+	auto* delayR = delayBuffer.getWritePointer (1);
+	
+	const int wrapMask = delayBufferLength - 1;
+	int writePos = delayBufferWritePos;
+	
+	// Smooth ONCE per block (tape-style: 0.995 = ~44ms)
+	const float smoothCoeff = 0.995f;
+	smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
+	const float blockDelay = smoothedDelaySamples;
+	
+	for (int i = 0; i < numSamples; ++i)
+	{
+		float readPosF = (float) writePos - blockDelay;
+		if (readPosF < 0.0f)
+			readPosF += (float) delayBufferLength;
+		
+		const int readPos0 = (int) readPosF;
+		const int readPos1 = (readPos0 + 1) & wrapMask;
+		const float frac = readPosF - (float) readPos0;
+		
+		const float sampleL0 = delayL[readPos0];
+		const float sampleL1 = delayL[readPos1];
+		const float delayedL = sampleL0 + frac * (sampleL1 - sampleL0);
+		
+		const float sampleR0 = delayR[readPos0];
+		const float sampleR1 = delayR[readPos1];
+		const float delayedR = sampleR0 + frac * (sampleR1 - sampleR0);
+		
+		// Clip to prevent spikes
+		const float clippedDelayedL = juce::jlimit (-2.0f, 2.0f, delayedL);
+		const float clippedDelayedR = juce::jlimit (-2.0f, 2.0f, delayedR);
+		
+		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
+		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
+		const float inputMono = (inputL + inputR) * 0.5f;
+		
+		delayL[writePos] = inputMono * inputGain + clippedDelayedR * feedback;
+		delayR[writePos] = clippedDelayedL * feedback;
+		
+		if (channelL != nullptr) channelL[i] = (inputL * (1.0f - mix) + clippedDelayedL * mix) * outputGain;
+		if (channelR != nullptr) channelR[i] = (inputR * (1.0f - mix) + clippedDelayedR * mix) * outputGain;
+		
+		writePos = (writePos + 1) & wrapMask;
+	}
+	
+	delayBufferWritePos = writePos;
+}
+
 void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ignoreUnused (midiMessages);
 	juce::ScopedNoDenormals noDenormals;
 
-	auto totalNumInputChannels  = getTotalNumInputChannels();
-	auto totalNumOutputChannels = getTotalNumOutputChannels();
+	const int numChannels = juce::jmin (buffer.getNumChannels(), 2);
+	const int numSamples = buffer.getNumSamples();
 
 	// Clear extra output channels
-	for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-		buffer.clear (i, 0, buffer.getNumSamples());
+	for (int i = numChannels; i < buffer.getNumChannels(); ++i)
+		buffer.clear (i, 0, numSamples);
 
-	// TODO: Implement delay DSP
-	// For now, pass through audio
+	// If delay buffer not ready, pass through
+	if (delayBufferLength == 0 || currentSampleRate <= 0.0)
+		return;
+
+	// Read parameters ONCE per block
+	const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
+	const float timeMsValue = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
+	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
+	const int mode = loadIntParamOrDefault (modeParam, 1); // 0=MONO, 1=STEREO, 2=PING-PONG
 	
-	// Read parameters
-	// const float timeMs = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
-	// const int timeSync = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
-	// const float feedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
-	// const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
-	// const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
-	// const bool autoFbk = loadBoolParamOrDefault (autoFbkParam, false);
+	// Calculate target delay time
+	float targetDelayMs = timeMsValue;
+	if (syncEnabled)
+	{
+		// Get tempo from host
+		auto posInfo = getPlayHead();
+		double bpm = 120.0;
+		if (posInfo != nullptr)
+		{
+			auto pos = posInfo->getPosition();
+			if (pos.hasValue() && pos->getBpm().hasValue())
+				bpm = *pos->getBpm();
+		}
+		targetDelayMs = tempoSyncToMs (timeSyncValue, bpm);
+	}
+	
+	// Clamp delay time to valid range (different limits for manual vs sync mode)
+	const float maxAllowedDelayMs = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
+	targetDelayMs = juce::jlimit (0.0f, maxAllowedDelayMs, targetDelayMs);
+	
+	// Read other parameters
+	float targetFeedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
+	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);
+	const float inputGainDb = loadAtomicOrDefault (inputParam, kInputDefault);
+	const float outputGainDb = loadAtomicOrDefault (outputParam, kOutputDefault);
+	const float mixValue = loadAtomicOrDefault (mixParam, kMixDefault);
+	const float modValue = loadAtomicOrDefault (modParam, kModDefault);
+	
+	// Convert dB to linear ONCE
+	const float inputGain = juce::Decibels::decibelsToGain (inputGainDb);
+	const float outputGain = juce::Decibels::decibelsToGain (outputGainDb);
+	
+	// Clamp feedback strictly (0 means NO feedback, no smoothing past 0)
+	targetFeedback = juce::jlimit (0.0f, 0.99f, targetFeedback);
+	
+	// AUTO FEEDBACK: Apply exponential curve + multiplier for better control range
+	// Problem: With linear feedback, only 0-6% is useful (reaches clamp too fast)
+	// Solution: Apply exponential curve first, then multiply by auto feedback factor
+	if (autoFbkEnabled && targetFeedback > 0.001f && targetDelayMs > 1.0f)
+	{
+		// Step 1: Apply exponential curve to feedback (x^2.5) for more resolution at low values
+		// This gives: 10% linear → 3.2% exponential, 50% linear → 35% exponential
+		const float exponentialFeedback = std::pow (targetFeedback, 2.5f);
+		
+		// Step 2: Calculate auto feedback multiplier based on delay time
+		const float referenceDelay = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
+		const float octavesFromMax = std::log2 (referenceDelay / targetDelayMs);
+		const float autoFbkMultiplier = std::pow (1.5f, octavesFromMax);
+		
+		// Step 3: Apply multiplier and clamp
+		targetFeedback = juce::jmin (0.99f, exponentialFeedback * autoFbkMultiplier);
+	}
+	
+	// Calculate frequency multiplier from MOD (pitch bend effect)
+	// MOD = 0.0 → ÷4 (0.25x freq, longer delay, lower pitch)
+	// MOD = 0.5 → ×1 (1.0x freq, normal)
+	// MOD = 1.0 → ×4 (4.0x freq, shorter delay, higher pitch)
+	float freqMultiplier;
+	if (modValue < 0.5f)
+	{
+		// 0.0→0.5 maps to 0.25→1.0
+		freqMultiplier = 0.25f + (modValue * 1.5f);
+	}
+	else
+	{
+		// 0.5→1.0 maps to 1.0→4.0
+		freqMultiplier = 1.0f + ((modValue - 0.5f) * 6.0f);
+	}
+	
+	// Calculate delay in samples ONCE (not per sample!)
+	float delaySamples = juce::jmax (0.0f, (float) currentSampleRate * (targetDelayMs / 1000.0f));
+	
+	// Apply pitch bend (MOD): divide delay by frequency multiplier
+	// Higher frequency = shorter delay = higher pitch
+	// Lower frequency = longer delay = lower pitch
+	delaySamples /= freqMultiplier;
+	
+	// Clamp to buffer size
+	const float maxDelaySamples = (float) (delayBufferLength - 2);
+	delaySamples = juce::jmin (delaySamples, maxDelaySamples);
+	delaySamples = juce::jmax (0.0f, delaySamples);
+	
+	// TRUE BYPASS: only bypass if delay is essentially zero (< 1 sample)
+	if (delaySamples < 1.0f)
+	{
+		// Pure dry signal (no delay, no feedback, no phasing)
+		for (int ch = 0; ch < numChannels; ++ch)
+		{
+			auto* channelData = buffer.getWritePointer (ch);
+			for (int i = 0; i < numSamples; ++i)
+			{
+				channelData[i] *= outputGain;
+			}
+		}
+		// Reset smoothing for clean bypass
+		smoothedDelaySamples = 0.0f;
+		return;
+	}
+	
+	// Process block efficiently (NO SMOOTHING for max performance)
+	if (mode == 0) // MONO
+	{
+		processMonoDelay (buffer, numSamples, numChannels, delaySamples, 
+		                  targetFeedback, inputGain, outputGain, mixValue);
+	}
+	else if (mode == 2) // PING-PONG
+	{
+		processPingPongDelay (buffer, numSamples, numChannels, delaySamples,
+		                      targetFeedback, inputGain, outputGain, mixValue);
+	}
+	else // STEREO (default)
+	{
+		processStereoDelay (buffer, numSamples, numChannels, delaySamples,
+		                    targetFeedback, inputGain, outputGain, mixValue);
+	}
 }
 
 //==============================================================================
@@ -239,16 +597,30 @@ void ECHOTRAudioProcessor::setCurrentProgramStateInformation (const void* data, 
 }
 
 //==============================================================================
-// Tempo sync division names
+// Tempo sync division names (order: triplet → normal → dotted for each base division)
 juce::StringArray ECHOTRAudioProcessor::getTimeSyncChoices()
 {
 	return {
-		// Straight (10)
-		"1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1/1", "2/1", "4/1", "8/1",
-		// Dotted (10)
-		"1/64.", "1/32.", "1/16.", "1/8.", "1/4.", "1/2.", "1/1.", "2/1.", "4/1.", "8/1.",
-		// Triplet (10)
-		"1/64T", "1/32T", "1/16T", "1/8T", "1/4T", "1/2T", "1/1T", "2/1T", "4/1T", "8/1T"
+		// 1/64: triplet, normal, dotted
+		"1/64T", "1/64", "1/64.",
+		// 1/32: triplet, normal, dotted
+		"1/32T", "1/32", "1/32.",
+		// 1/16: triplet, normal, dotted
+		"1/16T", "1/16", "1/16.",
+		// 1/8: triplet, normal, dotted
+		"1/8T", "1/8", "1/8.",
+		// 1/4: triplet, normal, dotted
+		"1/4T", "1/4", "1/4.",
+		// 1/2: triplet, normal, dotted
+		"1/2T", "1/2", "1/2.",
+		// 1/1: triplet, normal, dotted
+		"1/1T", "1/1", "1/1.",
+		// 2/1: triplet, normal, dotted
+		"2/1T", "2/1", "2/1.",
+		// 4/1: triplet, normal, dotted
+		"4/1T", "4/1", "4/1.",
+		// 8/1: triplet, normal, dotted
+		"8/1T", "8/1", "8/1."
 	};
 }
 
@@ -262,13 +634,40 @@ juce::String ECHOTRAudioProcessor::getTimeSyncName (int index)
 
 juce::String ECHOTRAudioProcessor::getTimeSyncNameShort (int index)
 {
-	// Remove the "1/" prefix for short display
-	auto fullName = getTimeSyncName (index);
+	// Return the full division name (no shortening)
+	return getTimeSyncName (index);
+}
+
+//==============================================================================
+float ECHOTRAudioProcessor::tempoSyncToMs (int syncIndex, double bpm) const
+{
+	if (bpm <= 0.0)
+		bpm = 120.0; // Fallback BPM if host doesn't provide tempo
 	
-	if (fullName.startsWith ("1/"))
-		return fullName.substring (2); // "1/16T" -> "16T"
+	// Clamp index to valid range
+	syncIndex = juce::jlimit (0, 29, syncIndex);
 	
-	return fullName; // "2/1", "4/1", "8/1" stay as is
+	// Base divisions: 1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1/1, 2/1, 4/1, 8/1
+	const float divisions[] = { 64.0f, 32.0f, 16.0f, 8.0f, 4.0f, 2.0f, 1.0f, 0.5f, 0.25f, 0.125f };
+	
+	// New order: every 3 indices = triplet, normal, dotted
+	const int baseIndex = syncIndex / 3;  // Which base division (0-9)
+	const int modifier = syncIndex % 3;   // 0=triplet, 1=normal, 2=dotted
+	
+	// Calculate straight quarter note duration in ms
+	const float quarterNoteMs = (float) (60000.0 / bpm);
+	
+	// Calculate base duration (relative to quarter note)
+	float durationMs = quarterNoteMs * (4.0f / divisions[baseIndex]);
+	
+	// Apply modifiers
+	if (modifier == 0)      // Triplet
+		durationMs *= (2.0f / 3.0f);
+	else if (modifier == 2) // Dotted
+		durationMs *= 1.5f;
+	// modifier == 1 (normal) stays as is
+	
+	return durationMs;
 }
 
 //==============================================================================
@@ -290,7 +689,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		kParamFeedback, "Feedback",
 		juce::NormalisableRange<float> (kFeedbackMin, kFeedbackMax, 0.0f, 1.0f), kFeedbackDefault));
 
-	// Mode (only STEREO for now)
+	// Mode: 0=MONO, 1=STEREO, 2=PING-PONG
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamMode, "Mode",
 		juce::NormalisableRange<float> ((float)kModeMin, (float)kModeMax, 1.0f, 1.0f), kModeDefault));

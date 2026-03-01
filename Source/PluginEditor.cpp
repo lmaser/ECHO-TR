@@ -1031,7 +1031,18 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         slider.setDoubleClickReturnValue (true, defaultValue);
     };
 
-    bindSlider (timeAttachment, ECHOTRAudioProcessor::kParamTimeMs, timeSlider, kDefaultTimeMs);
+    // Create both time attachments but only one will be active at a time
+    const bool syncEnabled = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamSync)->load() > 0.5f;
+    if (syncEnabled)
+    {
+        bindSlider (timeSyncAttachment, ECHOTRAudioProcessor::kParamTimeSync, timeSlider, (double) ECHOTRAudioProcessor::kTimeSyncDefault);
+        timeSlider.setRange (0.0, 29.0, 1.0);  // 30 divisions
+    }
+    else
+    {
+        bindSlider (timeAttachment, ECHOTRAudioProcessor::kParamTimeMs, timeSlider, kDefaultTimeMs);
+    }
+    
     bindSlider (feedbackAttachment, ECHOTRAudioProcessor::kParamFeedback, feedbackSlider, kDefaultFeedback);
     bindSlider (modeAttachment, ECHOTRAudioProcessor::kParamMode, modeSlider, 0.0);
     bindSlider (modAttachment, ECHOTRAudioProcessor::kParamMod, modSlider, 0.5);
@@ -1054,7 +1065,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindButton (autoFbkAttachment, ECHOTRAudioProcessor::kParamAutoFbk, autoFbkButton);
     bindButton (midiAttachment, ECHOTRAudioProcessor::kParamMidi, midiButton);
 
-    const std::array<const char*, 6> uiMirrorParamIds {
+    const std::array<const char*, 7> uiMirrorParamIds {
+        ECHOTRAudioProcessor::kParamSync,        // Listen for sync mode changes
         ECHOTRAudioProcessor::kParamUiPalette,
         ECHOTRAudioProcessor::kParamUiFxTail,
         ECHOTRAudioProcessor::kParamUiColor0,
@@ -1098,7 +1110,8 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
 {
     stopTimer();
 
-    const std::array<const char*, 6> uiMirrorParamIds {
+    const std::array<const char*, 7> uiMirrorParamIds {
+        ECHOTRAudioProcessor::kParamSync,
         ECHOTRAudioProcessor::kParamUiPalette,
         ECHOTRAudioProcessor::kParamUiFxTail,
         ECHOTRAudioProcessor::kParamUiColor0,
@@ -1221,8 +1234,24 @@ void ECHOTRAudioProcessorEditor::moved()
     anchorEditorOwnedPromptWindows (*this, lnf);
 }
 
-void ECHOTRAudioProcessorEditor::parameterChanged (const juce::String& parameterID, float)
+void ECHOTRAudioProcessorEditor::parameterChanged (const juce::String& parameterID, float newValue)
 {
+    // Handle SYNC mode changes
+    if (parameterID == ECHOTRAudioProcessor::kParamSync)
+    {
+        const bool syncEnabled = newValue > 0.5f;
+        juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
+        juce::MessageManager::callAsync ([safeThis, syncEnabled]()
+        {
+            if (safeThis == nullptr)
+                return;
+            safeThis->updateTimeSliderForSyncMode (syncEnabled);
+            safeThis->refreshLegendTextCache();
+            safeThis->repaint();
+        });
+        return;
+    }
+    
     // Width/height should trigger applying size; other UI params should update palette/fx/colors.
     const bool isSizeParam = parameterID == ECHOTRAudioProcessor::kParamUiWidth
                          || parameterID == ECHOTRAudioProcessor::kParamUiHeight;
@@ -1315,6 +1344,72 @@ void ECHOTRAudioProcessorEditor::applyPersistedUiStateFromProcessor (bool applyS
 
         if (paletteChanged || paletteSwitchChanged || fxChanged)
             repaint();
+    }
+}
+
+void ECHOTRAudioProcessorEditor::updateTimeSliderForSyncMode (bool syncEnabled)
+{
+    // Get current BPM for conversion
+    auto posInfo = audioProcessor.getPlayHead();
+    double bpm = 120.0;
+    if (posInfo != nullptr)
+    {
+        auto pos = posInfo->getPosition();
+        if (pos.hasValue() && pos->getBpm().hasValue())
+            bpm = *pos->getBpm();
+    }
+    
+    if (syncEnabled)
+    {
+        // Switching from MS to SYNC: convert current MS to nearest sync division
+        const float currentMs = static_cast<float> (timeSlider.getValue());
+        
+        // Find closest sync division
+        int bestSyncIndex = ECHOTRAudioProcessor::kTimeSyncDefault;
+        float bestDiff = std::abs (currentMs - audioProcessor.tempoSyncToMs (bestSyncIndex, bpm));
+        
+        for (int i = 0; i < 30; ++i)
+        {
+            const float syncMs = audioProcessor.tempoSyncToMs (i, bpm);
+            const float diff = std::abs (currentMs - syncMs);
+            if (diff < bestDiff)
+            {
+                bestDiff = diff;
+                bestSyncIndex = i;
+            }
+        }
+        
+        // Destroy MS attachment and create SYNC attachment
+        timeAttachment.reset();
+        timeSyncAttachment = std::make_unique<SliderAttachment> (audioProcessor.apvts, 
+                                                                  ECHOTRAudioProcessor::kParamTimeSync, 
+                                                                  timeSlider);
+        timeSlider.setRange (0.0, 29.0, 1.0);  // 30 sync divisions
+        timeSlider.setDoubleClickReturnValue (true, (double) ECHOTRAudioProcessor::kTimeSyncDefault);
+        
+        // Update parameter value
+        if (auto* param = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamTimeSync))
+            param->setValueNotifyingHost (param->convertTo0to1 ((float) bestSyncIndex));
+    }
+    else
+    {
+        // Switching from SYNC to MS: convert current sync division to MS
+        const int currentSyncIndex = (int) timeSlider.getValue();
+        const float targetMs = audioProcessor.tempoSyncToMs (currentSyncIndex, bpm);
+        
+        // Destroy SYNC attachment and create MS attachment
+        timeSyncAttachment.reset();
+        timeAttachment = std::make_unique<SliderAttachment> (audioProcessor.apvts, 
+                                                              ECHOTRAudioProcessor::kParamTimeMs, 
+                                                              timeSlider);
+        timeSlider.setRange (ECHOTRAudioProcessor::kTimeMsMin, 
+                            ECHOTRAudioProcessor::kTimeMsMax, 
+                            0.0);
+        timeSlider.setDoubleClickReturnValue (true, kDefaultTimeMs);
+        
+        // Update parameter value
+        if (auto* param = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamTimeMs))
+            param->setValueNotifyingHost (param->convertTo0to1 (targetMs));
     }
 }
 
@@ -1954,6 +2049,7 @@ static void layoutGraphicsPopupContent (juce::AlertWindow& aw)
 
 void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s)
 {
+    // All sliders use the same numeric input style
     // make sure the LNF is using the current scheme in case it changed
     lnf.setScheme (schemes[(size_t) currentSchemeIndex]);
 
@@ -1965,7 +2061,17 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     // is not part of the editable field. use the full nomenclature from the
     // helpers (long form) rather than the previous abbreviations.
     juce::String suffix;
-    if (&s == &timeSlider)           suffix = " MS";
+    const bool isTimeSyncMode = (&s == &timeSlider && syncButton.getToggleState());
+    if (&s == &timeSlider)
+    {
+        if (isTimeSyncMode)
+        {
+            // No suffix in sync mode (divisions have no units)
+            suffix = "";
+        }
+        else
+            suffix = " MS";
+    }
     else if (&s == &feedbackSlider)  suffix = " % FEEDBACK";
     else if (&s == &modeSlider)      suffix = " MODE";
     else if (&s == &modSlider)       suffix = " % MOD";
@@ -2048,6 +2154,36 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             if (val > maxVal)
                 return juce::String(); // reject insertion that exceeds limit
 
+            return result;
+        }
+    };
+    
+    // Special filter for sync mode: allows division names (e.g., "1/8T") or numeric indices
+    struct SyncDivisionInputFilter : juce::TextEditor::InputFilter
+    {
+        int maxLen;
+        
+        SyncDivisionInputFilter (int maxLength) : maxLen (maxLength) {}
+        
+        juce::String filterNewText (juce::TextEditor& editor,
+                                    const juce::String& newText) override
+        {
+            juce::ignoreUnused (editor);
+            juce::String result;
+            
+            for (auto c : newText)
+            {
+                // Allow digits, '/', 'T', 't', '.'
+                if (juce::CharacterFunctions::isDigit (c) || c == '/' || 
+                    c == 'T' || c == 't' || c == '.')
+                {
+                    result += c;
+                }
+                
+                if (maxLen > 0 && result.length() >= maxLen)
+                    break;
+            }
+            
             return result;
         }
     };
@@ -2146,10 +2282,21 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
         if (&s == &timeSlider)
         {
-            minVal = 0.0;
-            maxVal = 10000.0;  // 10 seconds max
-            maxDecs = 2;
-            maxLen = 8; // "10000.00"
+            if (isTimeSyncMode)
+            {
+                // In sync mode: allow typing division names or indices (0-29)
+                minVal = 0.0;
+                maxVal = 29.0;
+                maxDecs = 0;
+                maxLen = 6; // "1/64T." or "29"
+            }
+            else
+            {
+                minVal = 0.0;
+                maxVal = 10000.0;  // 10 seconds max
+                maxDecs = 2;
+                maxLen = 8; // "10000.00"
+            }
         }
         else if (&s == &feedbackSlider)
         {
@@ -2195,7 +2342,12 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         }
 
         bool isPercent = (&s == &feedbackSlider || &s == &modSlider || &s == &mixSlider);
-        te->setInputFilter (new NumericInputFilter (minVal, maxVal, maxLen, maxDecs, isPercent), true);
+        
+        // Use special filter for time slider in sync mode
+        if (&s == &timeSlider && isTimeSyncMode)
+            te->setInputFilter (new SyncDivisionInputFilter (maxLen), true);
+        else
+            te->setInputFilter (new NumericInputFilter (minVal, maxVal, maxLen, maxDecs, isPercent), true);
 
         // limit text to appropriate decimals and move the suffix when text changes
         te->onTextChange = [te, layoutValueAndSuffix, maxDecs]() mutable
@@ -2337,22 +2489,59 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             const auto txt = aw->getTextEditorContents ("val").trim();
             auto normalised = txt.replaceCharacter (',', '.');
 
-            juce::String t = normalised.trimStart();
-            while (t.startsWithChar ('+'))
-                t = t.substring (1).trimStart();
-            const juce::String numericToken = t.initialSectionContainingOnly ("0123456789.,-");
-            double v = numericToken.getDoubleValue();
+            double v = 0.0;
+            
+            // Special handling for TIME slider in sync mode: parse division name or index
+            if (safeThis != nullptr && sliderPtr == &safeThis->timeSlider 
+                && safeThis->syncButton.getToggleState())
+            {
+                // Try to parse as division name first
+                int foundIndex = -1;
+                auto choices = safeThis->audioProcessor.getTimeSyncChoices();
+                for (int i = 0; i < choices.size(); ++i)
+                {
+                    if (txt.equalsIgnoreCase (choices[i]) || 
+                        txt.equalsIgnoreCase (choices[i].replace ("/", "")))
+                    {
+                        foundIndex = i;
+                        break;
+                    }
+                }
+                
+                // If not found, try to parse as numeric index
+                if (foundIndex < 0)
+                {
+                    juce::String t = normalised.trimStart();
+                    while (t.startsWithChar ('+'))
+                        t = t.substring (1).trimStart();
+                    const juce::String numericToken = t.initialSectionContainingOnly ("0123456789");
+                    foundIndex = numericToken.getIntValue();
+                }
+                
+                // Clamp to valid range
+                v = (double) juce::jlimit (0, 29, foundIndex);
+            }
+            else
+            {
+                // Standard numeric parsing for all other sliders
+                juce::String t = normalised.trimStart();
+                while (t.startsWithChar ('+'))
+                    t = t.substring (1).trimStart();
+                const juce::String numericToken = t.initialSectionContainingOnly ("0123456789.,-");
+                v = numericToken.getDoubleValue();
 
-            // user typed percent for feedback/mod/mix; convert to slider's [0,1] range
-            if (safeThis != nullptr && (sliderPtr == &safeThis->feedbackSlider
-                                     || sliderPtr == &safeThis->modSlider
-                                     || sliderPtr == &safeThis->mixSlider))
-                v *= 0.01;
+                // user typed percent for feedback/mod/mix; convert to slider's [0,1] range
+                if (safeThis != nullptr && (sliderPtr == &safeThis->feedbackSlider
+                                         || sliderPtr == &safeThis->modSlider
+                                         || sliderPtr == &safeThis->mixSlider))
+                    v *= 0.01;
+            }
 
             const auto range = sliderPtr->getRange();
             double clamped = juce::jlimit (range.getStart(), range.getEnd(), v);
 
-            if (safeThis != nullptr && sliderPtr == &safeThis->timeSlider)
+            if (safeThis != nullptr && sliderPtr == &safeThis->timeSlider 
+                && !safeThis->syncButton.getToggleState())
             {
                 clamped = roundToDecimals (clamped, 2);
             }
@@ -3056,12 +3245,26 @@ juce::String ECHOTRAudioProcessorEditor::getFeedbackTextShort() const
 
 juce::String ECHOTRAudioProcessorEditor::getModeText() const
 {
-    return "STEREO MODE";
+    const int mode = (int) modeSlider.getValue();
+    switch (mode)
+    {
+        case 0: return "MONO MODE";
+        case 1: return "STEREO MODE";
+        case 2: return "PING-PONG MODE";
+        default: return "STEREO MODE";
+    }
 }
 
 juce::String ECHOTRAudioProcessorEditor::getModeTextShort() const
 {
-    return "STR MODE";
+    const int mode = (int) modeSlider.getValue();
+    switch (mode)
+    {
+        case 0: return "MONO";
+        case 1: return "STR";
+        case 2: return "PP";
+        default: return "STR";
+    }
 }
 
 juce::String ECHOTRAudioProcessorEditor::getModText() const

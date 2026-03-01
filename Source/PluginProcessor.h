@@ -36,20 +36,21 @@ public:
 
 	// Parameter ranges and defaults
 	static constexpr float kTimeMsMin = 0.0f;
-	static constexpr float kTimeMsMax = 2000.0f;
+	static constexpr float kTimeMsMax = 2000.0f;  // 2 seconds max for manual mode
+	static constexpr float kTimeMsMaxSync = 20000.0f;  // 20 seconds max for sync mode (allows long divisions like 8/1)
 	static constexpr float kTimeMsDefault = 500.0f;
 
 	static constexpr int kTimeSyncMin = 0;
 	static constexpr int kTimeSyncMax = 29;
-	static constexpr int kTimeSyncDefault = 12; // 1/8 straight
+	static constexpr int kTimeSyncDefault = 10; // 1/8 (normal, not triplet/dotted)
 
 	static constexpr float kFeedbackMin = 0.0f;
 	static constexpr float kFeedbackMax = 1.0f;
 	static constexpr float kFeedbackDefault = 0.35f;
 
 	static constexpr int kModeMin = 0;
-	static constexpr int kModeMax = 3; // Future: STEREO, PING-PONG, etc.
-	static constexpr float kModeDefault = 0.0f;
+	static constexpr int kModeMax = 2; // 0=MONO, 1=STEREO, 2=PING-PONG
+	static constexpr float kModeDefault = 1.0f; // STEREO by default
 
 	static constexpr float kModMin = 0.0f;  // ÷4
 	static constexpr float kModMax = 1.0f;  // x4
@@ -71,6 +72,9 @@ public:
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
 	static juce::String getTimeSyncNameShort(int index);
+	
+	// Helper: Convert tempo sync division to milliseconds
+	float tempoSyncToMs (int syncIndex, double bpm) const;
 
 	void prepareToPlay (double sampleRate, int samplesPerBlock) override;
 	void releaseResources() override;
@@ -80,6 +84,17 @@ public:
 #endif
 
 	void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+	
+	// Optimized delay processing functions
+	void processStereoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+	                          float delaySamples, float feedback, float inputGain, 
+	                          float outputGain, float mix);
+	void processMonoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+	                        float delaySamples, float feedback, float inputGain,
+	                        float outputGain, float mix);
+	void processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+	                            float delaySamples, float feedback, float inputGain,
+	                            float outputGain, float mix);
 
 	juce::AudioProcessorEditor* createEditor() override;
 	bool hasEditor() const override;
@@ -131,8 +146,19 @@ private:
 		};
 	};
 
-	// DSP state (placeholder for delay implementation)
+	// DSP state
 	double currentSampleRate = 44100.0;
+	
+	// Delay buffers (circular buffers for stereo)
+	juce::AudioBuffer<float> delayBuffer;
+	int delayBufferWritePos = 0;
+	int delayBufferLength = 0;
+	
+	// Tape-style delay time smoothing (for pitch shifting effect)
+	float smoothedDelaySamples = 0.0f;
+	
+	// Feedback state (per channel)
+	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
 	// MIDI tracking (for future implementation)
 	std::atomic<float> currentMidiFrequency { 0.0f };
