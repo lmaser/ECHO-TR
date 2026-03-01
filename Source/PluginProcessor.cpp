@@ -24,7 +24,7 @@ namespace
 	{
 		initMidiLog();
 		const int count = logCounter.fetch_add (1);
-		if (count < 500) // Limitar a 500 líneas para no llenar el disco
+		if (count < 50000) // v11: 50000 lines - enough for minutes of interaction
 		{
 			auto timestamp = juce::Time::getCurrentTime().toString (true, true, true, true);
 			logFile.appendText ("[" + timestamp + "] " + message + "\n");
@@ -94,6 +94,9 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	uiColorParams[2] = apvts.getRawParameterValue (kParamUiColor2);
 	uiColorParams[3] = apvts.getRawParameterValue (kParamUiColor3);
 
+	// v10X: Add listener for AUTO FEEDBACK parameter - log immediately on change
+	apvts.addParameterListener (kParamAutoFbk, this);
+
 	// Load UI state from parameters
 	const int w = loadIntParamOrDefault (uiWidthParam, 360);
 	const int h = loadIntParamOrDefault (uiHeightParam, 480);
@@ -103,6 +106,8 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 
 ECHOTRAudioProcessor::~ECHOTRAudioProcessor()
 {
+	// v10X: Remove parameter listener
+	apvts.removeParameterListener (kParamAutoFbk, this);
 }
 
 //==============================================================================
@@ -218,9 +223,17 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	
 	// LOG: Confirmar que el plugin acepta MIDI
 	logMidi ("=== PREPARE TO PLAY ===");
+	logMidi ("VERSION: v11 (FIX LOG LIMIT - WAS 500 LINES, NOW 50000)");
 	logMidi ("Sample Rate: " + juce::String(sampleRate, 1) + " Hz");
 	logMidi ("acceptsMidi(): " + juce::String(acceptsMidi() ? "TRUE" : "FALSE"));
 	logMidi ("JucePlugin_WantsMidiInput: " + juce::String(JucePlugin_WantsMidiInput));
+	
+	// v10h: Verify AUTO parameter initialization
+	const bool autoFbkCheck = loadBoolParamOrDefault (autoFbkParam, false);
+	const float autoFbkRawValue = autoFbkParam != nullptr ? autoFbkParam->load(std::memory_order_relaxed) : -999.0f;
+	logMidi ("autoFbkParam: " + juce::String(autoFbkParam != nullptr ? "VALID" : "NULL") + 
+	         " | rawValue=" + juce::String(autoFbkRawValue, 3) + 
+	         " | boolResult=" + juce::String((int)autoFbkCheck));
 	
 	// Allocate delay buffer: POWER OF 2 for efficient wrapping with bitwise AND
 	// Use kTimeMsMaxSync (20s) to support long sync divisions like 8/1
@@ -276,7 +289,7 @@ bool ECHOTRAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 
 void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                 float delaySamples, float feedback, float inputGain, 
-                                                float outputGain, float mix)
+                                                float outputGain, float mix, float smoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -289,14 +302,12 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	// Exponential smoothing per-sample: smooth gradual changes without abrupt jumps
-	// Coefficient 0.9997 = ~330ms time constant (smooth but responsive)
-	const float smoothCoeff = 0.9997f;
 	const float targetDelay = delaySamples;
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
-		// Exponential smoothing: smooth_new = smooth_old * coeff + target * (1-coeff)
+		// v16: Simple per-sample smoothing — no crossfade needed
+		// Buffer is cleared on regime changes, so glide through clean data only
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
 		
 		// Calculate read position with smoothly varying delay
@@ -305,7 +316,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 			readPosF += (float) delayBufferLength;
 		
 		const int readPos0 = (int) readPosF;
-		const int readPos1 = (readPos0 + 1) & wrapMask; // Bitwise AND = faster than modulo
+		const int readPos1 = (readPos0 + 1) & wrapMask;
 		const float frac = readPosF - (float) readPos0;
 		
 		// Process left channel
@@ -347,7 +358,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 
 void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                               float delaySamples, float feedback, float inputGain,
-                                              float outputGain, float mix)
+                                              float outputGain, float mix, float smoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -358,13 +369,13 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	// Exponential smoothing per-sample: smooth gradual changes without abrupt jumps
-	const float smoothCoeff = 0.9997f;
 	const float targetDelay = delaySamples;
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
+		// v16: Simple per-sample smoothing
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		
 		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
@@ -387,7 +398,6 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		const float toWrite = inputMid * inputGain + clippedDelayed * feedback;
 		delayL[writePos] = toWrite;
 		delayR[writePos] = toWrite;
-		
 		const float output = (inputMid * (1.0f - mix) + clippedDelayed * mix) * outputGain;
 		if (channelL != nullptr) channelL[i] = output;
 		if (channelR != nullptr) channelR[i] = output;
@@ -400,7 +410,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 
 void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                   float delaySamples, float feedback, float inputGain,
-                                                  float outputGain, float mix)
+                                                  float outputGain, float mix, float smoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -411,13 +421,13 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	// Exponential smoothing per-sample: smooth gradual changes without abrupt jumps
-	const float smoothCoeff = 0.9997f;
 	const float targetDelay = delaySamples;
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
+		// v16: Simple per-sample smoothing
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		
 		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
@@ -442,9 +452,9 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 		const float inputMono = (inputL + inputR) * 0.5f;
 		
+		// v14: Apply crossfade to BOTH output AND feedback write
 		delayL[writePos] = inputMono * inputGain + clippedDelayedR * feedback;
 		delayR[writePos] = clippedDelayedL * feedback;
-		
 		if (channelL != nullptr) channelL[i] = (inputL * (1.0f - mix) + clippedDelayedL * mix) * outputGain;
 		if (channelR != nullptr) channelR[i] = (inputR * (1.0f - mix) + clippedDelayedR * mix) * outputGain;
 		
@@ -463,25 +473,91 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	
 	// Process MIDI messages for note tracking
 	const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
-	const int selectedMidiPort = midiPort.load (std::memory_order_relaxed); // 0 = disabled, 1-16 = MIDI channel
+	const int selectedMidiPort = midiPort.load (std::memory_order_relaxed); // 0 = all channels (omni), 1-16 = specific MIDI channel
 	
-	// LOG: Estado general cada 100 bloques con TODAS las variables críticas
+	// LOG: Estado general cada 100 bloques con TODAS las variables críticas (v10c: COMPREHENSIVE)
 	static int blockCounter = 0;
+	static double lastBlockStartTime = 0.0;
+	static double accumulatedBlockTime = 0.0;
+	static int perfBlockCount = 0;
+	
 	if (++blockCounter % 100 == 0)
 	{
+		// Capture ALL critical parameters for analysis
 		const float midiFreq = currentMidiFrequency.load (std::memory_order_relaxed);
 		const float manualTime = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
 		const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
+		const float rawFeedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
+		const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);  // v10Q: Restored checkbox control
+		const float autoFbkRaw = autoFbkParam != nullptr ? autoFbkParam->load(std::memory_order_relaxed) : -999.0f; // v10h: raw value
+		const bool autoFbkBool = autoFbkRaw > 0.5f; // v10X: Read FRESH value for logging, not stale cached autoFbkEnabled
+		const float modValue = loadAtomicOrDefault (modParam, 0.5f);
+		const float inputGainDb = loadAtomicOrDefault (inputParam, 0.0f);
+		const float outputGainDb = loadAtomicOrDefault (outputParam, 0.0f);
+		const float mix = loadAtomicOrDefault (mixParam, 0.5f);
+		const int mode = (int) loadAtomicOrDefault (modeParam, 0.0f);
 		
-		logMidi ("midiEnabled=" + juce::String((int)midiEnabled) + 
+		// Calculate average block processing time and CPU usage
+		const double avgBlockTime = (perfBlockCount > 0) ? (accumulatedBlockTime / perfBlockCount) : 0.0;
+		const double samplesPerBlock = (double) buffer.getNumSamples();
+		const double expectedTime = (samplesPerBlock / currentSampleRate) * 1000.0; // ms
+		const double cpuUsage = (expectedTime > 0.0) ? (avgBlockTime / expectedTime) * 100.0 : 0.0;
+		
+		// BASIC MIDI INFO
+		logMidi ("\n═══ BLOCK #" + juce::String(blockCounter) + " ═══");
+		logMidi ("[BASIC] midiEnabled=" + juce::String((int)midiEnabled) + 
 		         " | selectedPort=" + juce::String(selectedMidiPort) + 
-		         " | midiMessages.count=" + juce::String(midiMessages.getNumEvents()) +
+		         " | midiMessages=" + juce::String(midiMessages.getNumEvents()) +
 		         " | lastNote=" + juce::String(lastMidiNote.load()) +
-		         " | midiFreq=" + juce::String(midiFreq, 2) + " Hz" +
-		         " | manualTime=" + juce::String(manualTime, 1) + " ms" +
+		         " | midiFreq=" + juce::String(midiFreq, 2) + " Hz");
+		
+		// v10X: Read AUTO parameter FRESH at logging time (not stale cached value)
+		const float freshAutoRaw = autoFbkParam != nullptr ? autoFbkParam->load(std::memory_order_relaxed) : 0.0f;
+		const bool freshAutoBool = freshAutoRaw > 0.5f;
+		logMidi ("[AUTO-DEBUG] paramPtr=" + juce::String(autoFbkParam != nullptr ? "OK" : "NULL") +
+		         " | rawFloat=" + juce::String(freshAutoRaw, 4) +
+		         " | boolResult=" + juce::String((int)freshAutoBool));
+		
+		// TIMING & DELAY CALCULATION
+		logMidi ("[TIMING] manualTime=" + juce::String(manualTime, 1) + " ms" +
 		         " | syncEnabled=" + juce::String((int)syncEnabled) +
-		         " | sampleRate=" + juce::String(currentSampleRate, 0));
+		         " | sampleRate=" + juce::String(currentSampleRate, 0) +
+		         " | blockSize=" + juce::String(buffer.getNumSamples()));
+		
+		// FEEDBACK STATE (raw, auto, final)
+		// v10X: Use FRESH auto parameter value read above
+		logMidi ("[FEEDBACK] raw=" + juce::String(rawFeedback, 3) +
+		         " | autoRaw=" + juce::String(freshAutoRaw, 4) +
+		         " | autoEnabled=" + juce::String((int)freshAutoBool));
+		
+		// MODULATION
+		logMidi ("[MOD] modValue=" + juce::String(modValue, 3));
+		
+		// LEVELS
+		logMidi ("[LEVELS] inputGain=" + juce::String(inputGainDb, 1) + " dB" +
+		         " | outputGain=" + juce::String(outputGainDb, 1) + " dB" +
+		         " | mix=" + juce::String(mix * 100.0f, 1) + "%" +
+		         " | mode=" + juce::String(mode));
+		
+		// PERFORMANCE METRICS
+		logMidi ("[PERF] avgBlockTime=" + juce::String(avgBlockTime, 3) + " ms" +
+		         " | CPU=" + juce::String(cpuUsage, 1) + "%" +
+		         " | samples/block=" + juce::String(samplesPerBlock, 0));
+		
+		// Reset performance counters
+		accumulatedBlockTime = 0.0;
+		perfBlockCount = 0;
 	}
+	
+	// Track block processing time for performance analysis
+	const double blockStartTime = juce::Time::getMillisecondCounterHiRes();
+	if (lastBlockStartTime > 0.0)
+	{
+		const double blockTime = blockStartTime - lastBlockStartTime;
+		accumulatedBlockTime += blockTime;
+		perfBlockCount++;
+	}
+	lastBlockStartTime = blockStartTime;
 	
 	// LOG: Cada mensaje MIDI (sin filtrar para ver todo lo que llega)
 	if (midiMessages.getNumEvents() > 0)
@@ -621,7 +697,18 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	
 	// Read other parameters
 	float targetFeedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
-	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);
+	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);  // v10Q: Restored checkbox control
+	
+	// v10Y: DEBUG - Log AUTO state EVERY block to see real DSP value
+	static int autoDebugCounter = 0;
+	if (++autoDebugCounter % 200 == 0)  // v11: Every 200 blocks (was 50)
+	{
+		const float rawAuto = autoFbkParam != nullptr ? autoFbkParam->load(std::memory_order_relaxed) : -999.0f;
+		logMidi ("[DSP-AUTO-READ] block=" + juce::String(autoDebugCounter) + 
+		         " | autoFbkEnabled=" + juce::String((int)autoFbkEnabled) + 
+		         " | rawValue=" + juce::String(rawAuto, 4));
+	}
+	
 	const float inputGainDb = loadAtomicOrDefault (inputParam, kInputDefault);
 	const float outputGainDb = loadAtomicOrDefault (outputParam, kOutputDefault);
 	const float mixValue = loadAtomicOrDefault (mixParam, kMixDefault);
@@ -632,27 +719,10 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float outputGain = juce::Decibels::decibelsToGain (outputGainDb);
 	
 	// Clamp feedback strictly (0 means NO feedback, no smoothing past 0)
-	targetFeedback = juce::jlimit (0.0f, 0.99f, targetFeedback);
+	const float feedbackBeforeAuto = juce::jlimit (0.0f, 0.99f, targetFeedback);
+	targetFeedback = feedbackBeforeAuto;
 	
-	// AUTO FEEDBACK: Apply aggressive exponential curve + multiplier for maximum control range
-	// Problem: With x^2.5, only 0-21% is useful (reaches clamp too fast)
-	// Solution: Use x^4.0 for more dramatic curve, extending useful range to ~40-50%
-	if (autoFbkEnabled && targetFeedback > 0.001f && targetDelayMs > 1.0f)
-	{
-		// Step 1: Apply aggressive exponential curve (x^4.0) for maximum resolution at low values
-		// This gives: 10% linear → 0.01% exponential, 50% linear → 6.25% exponential
-		const float exponentialFeedback = std::pow (targetFeedback, 4.0f);
-		
-		// Step 2: Calculate auto feedback multiplier based on delay time
-		const float referenceDelay = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
-		const float octavesFromMax = std::log2 (referenceDelay / targetDelayMs);
-		const float autoFbkMultiplier = std::pow (1.5f, octavesFromMax);
-		
-		// Step 3: Apply multiplier and clamp
-		targetFeedback = juce::jmin (0.99f, exponentialFeedback * autoFbkMultiplier);
-	}
-	
-	// Calculate frequency multiplier from MOD (pitch bend effect)
+	// v10P: Calculate MOD frequency multiplier FIRST (before AUTO)
 	// MOD = 0.0 → ÷4 (0.25x freq, longer delay, lower pitch)
 	// MOD = 0.5 → ×1 (1.0x freq, normal)
 	// MOD = 1.0 → ×4 (4.0x freq, shorter delay, higher pitch)
@@ -676,6 +746,171 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Lower frequency = longer delay = lower pitch
 	delaySamples /= freqMultiplier;
 	
+	// v10P: Calculate effective delay time AFTER MOD applied
+	const float effectiveDelayMs = (delaySamples / (float)currentSampleRate) * 1000.0f;
+	
+	// AUTO FEEDBACK: Calculate using EFFECTIVE delay (after MOD)
+	// v10V: NO CAP - respects user's feedback setting (won't reduce it)
+	// - At MAX delay (2000ms): mult=1.00 (NO CHANGE - same with/without AUTO)
+	// - At MIN delay (10ms): mult=2.00 (DOUBLE - maximum effect)
+	// - At 2ms: mult=2.52 (increase 152% for very short delays)
+	// - Multiplier base: 1.093 (calculated to reach exactly 2.0x at 10ms)
+	// - Cap: 99% (system max, won't reduce user's 100% to 85% anymore)
+	// - USER FBK=100% + AUTO ON = stays at 99-100%, not reduced to 85%
+	float autoFbkMultiplier = 1.0f;
+	float exponentialFeedback = feedbackBeforeAuto;
+	float octavesFromReference = 0.0f;
+	if (autoFbkEnabled && targetFeedback > 0.001f && effectiveDelayMs > 0.01f)
+	{
+		// Step 1: Pure linear (x^1.0) for direct proportional response
+		exponentialFeedback = std::pow (targetFeedback, 1.0f);
+		
+		// Step 2: Calculate auto feedback multiplier based on EFFECTIVE delay time
+		// Reference = maximum delay (no AUTO effect at max, increases as delay decreases)
+		const float referenceDelay = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;  // 2000ms or 20000ms
+		octavesFromReference = std::log2 (referenceDelay / effectiveDelayMs);
+		
+		// Multiplier = 1.093 (calculated so 10ms reaches exactly 2.0x)
+		// At 10ms: octaves = log2(2000/10) = 7.64, mult = 1.093^7.64 = 2.00
+		// At 2ms: octaves = log2(2000/2) = 9.97, mult = 1.093^9.97 = 2.52
+		autoFbkMultiplier = std::pow (1.093f, octavesFromReference);
+		
+		// Step 3: Apply multiplier - cap at 99% (system max) instead of 85%
+		// This ensures AUTO never REDUCES user's feedback setting
+		targetFeedback = juce::jmin (0.99f, exponentialFeedback * autoFbkMultiplier);
+	}
+	
+	// ADAPTIVE SMOOTHING (v10c): Fast for MIDI jumps, slow for manual changes
+	// Detect if MIDI is controlling delay (fast note changes need fast smoothing)
+	const bool midiIsActive = midiNoteActive && (currentMidiFrequency.load(std::memory_order_relaxed) > 0.1f);
+	
+	// Calculate change magnitude to detect large jumps (note changes)
+	const float deltaSamples = std::abs(delaySamples - smoothedDelaySamples);
+	const float changeRatio = (smoothedDelaySamples > 0.1f) ? (deltaSamples / smoothedDelaySamples) : 0.0f;
+	
+	// Select smoothing coefficient:
+	const float smoothCoeffFast = 0.90f;         // ~0.5ms — between MIDI notes (near-instant)
+	const float smoothCoeffTransition = 0.995f;  // ~50ms — MIDI↔manual regime change (smooth freq sweep)
+	const float smoothCoeffSlow = 0.9997f;       // ~330ms — manual knob changes (tape-style glide)
+	
+	// v16: Detect regime changes (MIDI↔manual transitions)
+	const bool midiToManualTransition = (!midiIsActive && prevMidiNoteActive)
+	                                  || (!midiEnabled && prevMidiEnabled);
+	const bool manualToMidiTransition = (midiIsActive && !prevMidiNoteActive);
+	const bool regimeChange = midiToManualTransition || manualToMidiTransition;
+	prevMidiNoteActive = midiIsActive;
+	prevMidiEnabled = midiEnabled;
+	
+	// v16: On ANY regime change, clear the delay buffer to remove stale data
+	// that would cause transients as the read pointer glides through.
+	// The frequency transition (glide) is preserved — only the stale buffer content is removed.
+	static bool inRegimeGlide = false;  // Track if we're still gliding from a regime change
+	if (regimeChange)
+	{
+		delayBuffer.clear();
+		inRegimeGlide = true;  // Flag: use transition coeff until settled
+		// Do NOT snap smoothedDelaySamples — let it glide with smoothCoeffTransition
+		logMidi (">>> [REGIME CHANGE] " + juce::String(midiToManualTransition ? "MIDI->MANUAL" : "MANUAL->MIDI")
+		         + " | buffer cleared | glide from=" + juce::String(smoothedDelaySamples, 1)
+		         + " to=" + juce::String(delaySamples, 1) + " samples"
+		         + " | coeff=0.995 (~50ms)");
+	}
+	
+	// Clear regime glide flag once settled (within 50 samples of target)
+	if (inRegimeGlide && std::abs(delaySamples - smoothedDelaySamples) < 50.0f)
+		inRegimeGlide = false;
+	
+	// v16: Select coefficient based on current state
+	// - Between MIDI notes: fast (near-instant pitch change)  
+	// - During regime change glide: medium (~50ms frequency sweep, buffer is clean)
+	// - Manual mode (knob changes): slow (tape-style pitch shift, ~330ms)
+	float selectedSmoothCoeff;
+	if (midiIsActive)
+		selectedSmoothCoeff = smoothCoeffFast;
+	else if (inRegimeGlide)
+		selectedSmoothCoeff = smoothCoeffTransition;  // Only during regime change glide
+	else
+		selectedSmoothCoeff = smoothCoeffSlow;  // Manual knob = slow tape-style glide
+	
+	// Calculate estimated smoothing settle time (time to reach 95% of target)
+	const float timeConstantMs = -1000.0f / ((float)currentSampleRate * std::logf(selectedSmoothCoeff));
+	const float settleTime95 = timeConstantMs * 3.0f; // 3 time constants = 95%
+	
+	// LOG: Detailed calculation every 500 blocks (v11: reduced from 10 to avoid flooding log)
+	static int calcLogCounter = 0;
+	if (++calcLogCounter % 500 == 0)
+	{
+		logMidi ("[CALC-FEEDBACK] beforeAuto=" + juce::String(feedbackBeforeAuto, 4) + 
+		         " | exponential=" + juce::String(exponentialFeedback, 4) +
+		         " | octaves=" + juce::String(octavesFromReference, 2) +
+		         " | autoMult=" + juce::String(autoFbkMultiplier, 4) + 
+		         " | final=" + juce::String(targetFeedback, 4));
+		
+		logMidi ("[CALC-DELAY] targetMs=" + juce::String(targetDelayMs, 2) + 
+		         " | effectiveMs=" + juce::String(effectiveDelayMs, 2) +
+		         " | samples=" + juce::String(delaySamples, 1) +
+		         " | smoothed=" + juce::String(smoothedDelaySamples, 1) +
+		         " | writePos=" + juce::String(delayBufferWritePos));
+		
+		logMidi ("[CALC-SMOOTH] midiActive=" + juce::String((int)midiIsActive) +
+		         " | delta=" + juce::String(deltaSamples, 1) +
+		         " | changeRatio=" + juce::String(changeRatio, 4) +
+		         " | coeff=" + juce::String(selectedSmoothCoeff, 5) +
+		         " | settleTime=" + juce::String(settleTime95, 1) + "ms" +
+		         " | target=" + juce::String(delaySamples, 1) +
+		         " | current=" + juce::String(smoothedDelaySamples, 1));
+		// v10g: Added target/current for smoothing verification
+		
+		logMidi ("[CALC-MOD] modValue=" + juce::String(modValue, 3) +
+		         " | freqMult=" + juce::String(freqMultiplier, 3));
+		
+		// v10P: AUTO FEEDBACK ANALYSIS - Now showing actual values used by AUTO
+		// (effectiveDelayMs already calculated above, no need to recalculate)
+		const float effectiveFrequencyHz = effectiveDelayMs > 0.1f ? (1000.0f / effectiveDelayMs) : 0.0f;
+		
+		// v10P: Show actual AUTO values (no longer simulation, this IS what AUTO uses)
+		// octavesFromReference, autoFbkMultiplier, targetFeedback are the real AUTO values
+		
+		// Calculate perceptual tail length (time to -60dB)
+		// Formula: decayTime = (delay * log(0.001)) / log(feedback)
+		float tailTime60dB = 0.0f;
+		if (targetFeedback > 0.01f && effectiveDelayMs > 0.1f)
+		{
+			const float numRepeats = std::log(0.001f) / std::log(targetFeedback);  // -60dB = 0.001
+			tailTime60dB = numRepeats * effectiveDelayMs;
+		}
+		
+		// Calculate what tail would be WITHOUT auto (for comparison)
+		float tailTime60dBNoAuto = 0.0f;
+		if (feedbackBeforeAuto > 0.01f && effectiveDelayMs > 0.1f)
+		{
+			const float numRepeatsNoAuto = std::log(0.001f) / std::log(feedbackBeforeAuto);
+			tailTime60dBNoAuto = numRepeatsNoAuto * effectiveDelayMs;
+		}
+		
+		logMidi ("[AUTO-ANALYSIS] effectiveDelayMs=" + juce::String(effectiveDelayMs, 2) + 
+		         " | effectiveFreqHz=" + juce::String(effectiveFrequencyHz, 2) +
+		         " | octavesFromRef=" + juce::String(octavesFromReference, 2) +
+		         " | autoMult=" + juce::String(autoFbkMultiplier, 4) +
+		         " | fbkFinal=" + juce::String(targetFeedback, 4));
+		
+		logMidi ("[TAIL-ANALYSIS] withAuto=" + juce::String(tailTime60dB, 1) + "ms" +
+		         " | noAuto=" + juce::String(tailTime60dBNoAuto, 1) + "ms" +
+		         " | fbkWithAuto=" + juce::String(targetFeedback, 4) +
+		         " | fbkRaw=" + juce::String(feedbackBeforeAuto, 4));
+		
+		// v10g: Enhanced signal diagnostics
+		const float leftInSample = buffer.getReadPointer(0)[0];
+		const float rightInSample = numChannels > 1 ? buffer.getReadPointer(1)[0] : leftInSample;
+		logMidi ("[SIGNAL] inputL=" + juce::String(leftInSample, 6) +
+		         " | inputR=" + juce::String(rightInSample, 6) +
+		         " | fbkStateL=" + juce::String(feedbackState[0], 6) +
+		         " | fbkStateR=" + juce::String(feedbackState[1], 6));
+		
+		logMidi ("[CALC-FEEDBACK-STATE] L=" + juce::String(feedbackState[0], 4) +
+		         " | R=" + juce::String(feedbackState[1], 4));
+	}
+	
 	// Clamp to buffer size
 	const float maxDelaySamples = (float) (delayBufferLength - 2);
 	delaySamples = juce::jmin (delaySamples, maxDelaySamples);
@@ -698,21 +933,21 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		return;
 	}
 	
-	// Process block efficiently (NO SMOOTHING for max performance)
+	// Process block efficiently
 	if (mode == 0) // MONO
 	{
 		processMonoDelay (buffer, numSamples, numChannels, delaySamples, 
-		                  targetFeedback, inputGain, outputGain, mixValue);
+		                  targetFeedback, inputGain, outputGain, mixValue, selectedSmoothCoeff);
 	}
 	else if (mode == 2) // PING-PONG
 	{
 		processPingPongDelay (buffer, numSamples, numChannels, delaySamples,
-		                      targetFeedback, inputGain, outputGain, mixValue);
+		                      targetFeedback, inputGain, outputGain, mixValue, selectedSmoothCoeff);
 	}
 	else // STEREO (default)
 	{
 		processStereoDelay (buffer, numSamples, numChannels, delaySamples,
-		                    targetFeedback, inputGain, outputGain, mixValue);
+		                    targetFeedback, inputGain, outputGain, mixValue, selectedSmoothCoeff);
 	}
 }
 
@@ -967,7 +1202,7 @@ bool ECHOTRAudioProcessor::getUiFxTailEnabled() const noexcept
 
 void ECHOTRAudioProcessor::setMidiPort (int portNumber)
 {
-	const int port = juce::jlimit (0, 127, portNumber);
+	const int port = juce::jlimit (0, 16, portNumber);
 	midiPort.store (port, std::memory_order_relaxed);
 	apvts.state.setProperty (UiStateKeys::midiPort, port, nullptr);
 }
@@ -1078,6 +1313,19 @@ juce::String ECHOTRAudioProcessor::getCurrentTimeDisplay() const
 	
 	// Return empty string to let editor show normal time display
 	return "";
+}
+
+//==============================================================================
+// v10X: Parameter listener - log AUTO FEEDBACK changes immediately
+void ECHOTRAudioProcessor::parameterChanged (const juce::String& parameterID, float newValue)
+{
+	if (parameterID == kParamAutoFbk)
+	{
+		const bool isEnabled = newValue > 0.5f;
+		logMidi (">>> [AUTO CHANGED] rawFloat=" + juce::String(newValue, 4) + 
+		         " | boolResult=" + juce::String((int)isEnabled) +
+		         " | pointer=" + juce::String((int64_t)autoFbkParam));
+	}
 }
 
 //==============================================================================

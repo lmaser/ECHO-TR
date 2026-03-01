@@ -5,7 +5,8 @@
 #include <atomic>
 #include <vector>
 
-class ECHOTRAudioProcessor : public juce::AudioProcessor
+class ECHOTRAudioProcessor : public juce::AudioProcessor,
+                              public juce::AudioProcessorValueTreeState::Listener
 {
 public:
 	ECHOTRAudioProcessor();
@@ -81,6 +82,9 @@ public:
 	float getCurrentDelayMs() const;
 	juce::String getCurrentTimeDisplay() const;
 
+	// v10X: AudioProcessorValueTreeState::Listener
+	void parameterChanged (const juce::String& parameterID, float newValue) override;
+
 	void prepareToPlay (double sampleRate, int samplesPerBlock) override;
 	void releaseResources() override;
 
@@ -93,13 +97,13 @@ public:
 	// Optimized delay processing functions
 	void processStereoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                          float delaySamples, float feedback, float inputGain, 
-	                          float outputGain, float mix);
+	                          float outputGain, float mix, float smoothCoeff);
 	void processMonoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                        float delaySamples, float feedback, float inputGain,
-	                        float outputGain, float mix);
+	                        float outputGain, float mix, float smoothCoeff);
 	void processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                            float delaySamples, float feedback, float inputGain,
-	                            float outputGain, float mix);
+	                            float outputGain, float mix, float smoothCoeff);
 
 	juce::AudioProcessorEditor* createEditor() override;
 	bool hasEditor() const override;
@@ -173,6 +177,13 @@ private:
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
 	std::atomic<int> midiPort { 0 };  // 0 = disabled ("---"), 1-16 = MIDI channel
+	bool prevMidiNoteActive = false;  // v12: for MIDI→manual transition smoothing
+	bool prevMidiEnabled = false;     // v13: track MIDI button state for toggle detection
+	float midiReleaseFade = 1.0f;     // v12: crossfade on MIDI release (0=muted, 1=full)
+	// v13: Wet crossfade for MIDI→manual transitions (eliminates transient spikes)
+	float wetCrossfade = 1.0f;           // 1.0=full wet, 0.0=muted wet
+	bool crossfadeActive = false;        // true during fade-out/fade-in cycle
+	bool crossfadeFadingIn = false;      // false=fading out, true=fading in
 
 	// Parameter atomic pointers
 	std::atomic<float>* timeMsParam = nullptr;

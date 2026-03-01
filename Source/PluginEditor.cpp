@@ -1014,7 +1014,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 
     // Initialize MIDI port display
     const int savedPort = audioProcessor.getMidiPort();
-    midiPortDisplay.setText (savedPort == 0 ? "---" : juce::String (savedPort), juce::dontSendNotification);
+    midiPortDisplay.setText (juce::String (savedPort), juce::dontSendNotification);
     midiPortDisplay.setJustificationType (juce::Justification::centred);
     midiPortDisplay.setInterceptsMouseClicks (false, false);
     midiPortDisplay.setBorderSize (juce::BorderSize<int> (0));  // No border, we draw it manually
@@ -1055,11 +1055,27 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     modeSlider.setAllowNumericPopup (false);
     modSlider.setAllowNumericPopup (false);
 
+    // v10M: ButtonAttachment + manual onClick for UI→parameter sync
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
                            const char* paramId,
                            juce::Button& button)
     {
         attachment = std::make_unique<ButtonAttachment> (audioProcessor.apvts, paramId, button);
+        
+        // Add onClick handler for UI → parameter sync (ButtonAttachment handles parameter → UI)
+        button.onClick = [this, paramId, &button]()
+        {
+            if (auto* param = audioProcessor.apvts.getRawParameterValue (paramId))
+            {
+                const float newValue = button.getToggleState() ? 1.0f : 0.0f;
+                if (auto* paramObj = audioProcessor.apvts.getParameter (paramId))
+                {
+                    paramObj->beginChangeGesture();
+                    paramObj->setValueNotifyingHost (newValue);
+                    paramObj->endChangeGesture();
+                }
+            }
+        };
     };
 
     bindButton (syncAttachment, ECHOTRAudioProcessor::kParamSync, syncButton);
@@ -1284,6 +1300,15 @@ void ECHOTRAudioProcessorEditor::timerCallback()
 {
     if (suppressSizePersistence)
         return;
+
+    // v12: Poll MIDI note display and repaint if changed
+    const auto newMidiDisplay = audioProcessor.getCurrentTimeDisplay();
+    if (newMidiDisplay != cachedMidiDisplay)
+    {
+        cachedMidiDisplay = newMidiDisplay;
+        refreshLegendTextCache();
+        repaint();
+    }
 
     const int w = getWidth();
     const int h = getHeight();
@@ -2558,7 +2583,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
 
     const juce::String suffixText = "PORT";
     const int port = audioProcessor.getMidiPort();
-    const juce::String currentValue = (port == 0) ? "---" : juce::String (port);
+    const juce::String currentValue = juce::String (port);
     
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
     aw->setLookAndFeel (&lnf);
@@ -2566,17 +2591,17 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     
     juce::Label* suffixLabel = nullptr;
     
-    // Numeric input filter for MIDI port (1-127 or "---")
+    // Numeric input filter for MIDI port (0-16, digits only)
     struct MidiPortInputFilter : juce::TextEditor::InputFilter
     {
         juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
         {
             (void) editor; // Suppress unused parameter warning
-            // Allow "---" or digits 1-127
+            // Allow digits 0-16 only
             juce::String result;
             for (auto c : newText)
             {
-                if (juce::CharacterFunctions::isDigit (c) || c == '-')
+                if (juce::CharacterFunctions::isDigit (c))
                     result += c;
                 if (result.length() >= 3)
                     break;
@@ -2766,15 +2791,15 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
             
             const auto txt = aw->getTextEditorContents ("val").trim();
             
-            if (txt == "---" || txt.isEmpty())
+            if (txt.isEmpty())
             {
                 safeThis->audioProcessor.setMidiPort (0);
-                safeThis->midiPortDisplay.setText ("---", juce::dontSendNotification);
+                safeThis->midiPortDisplay.setText ("0", juce::dontSendNotification);
                 return;
             }
             
             int port = txt.getIntValue();
-            if (port >= 1 && port <= 127)
+            if (port >= 0 && port <= 16)
             {
                 safeThis->audioProcessor.setMidiPort (port);
                 safeThis->midiPortDisplay.setText (juce::String (port), juce::dontSendNotification);
@@ -3205,6 +3230,10 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
 
 juce::String ECHOTRAudioProcessorEditor::getTimeText() const
 {
+    // v12: Show MIDI note name when a note is active (use cached value from timer)
+    if (cachedMidiDisplay.isNotEmpty())
+        return cachedMidiDisplay + " TIME";
+    
     const bool isSyncOn = syncButton.getToggleState();
     if (isSyncOn)
     {
@@ -3215,11 +3244,18 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
     const float ms = (float) timeSlider.getValue();
     if (ms >= 1000.0f)
         return juce::String (ms / 1000.0f, 3) + " S TIME";
-    return juce::String ((int)ms) + " MS TIME";
+    const float rounded = std::round (ms * 100.0f) / 100.0f;
+    if (rounded == (int) rounded)
+        return juce::String ((int) rounded) + " MS TIME";
+    return juce::String (rounded, 2) + " MS TIME";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
 {
+    // v12: Show MIDI note name when a note is active (use cached value from timer)
+    if (cachedMidiDisplay.isNotEmpty())
+        return cachedMidiDisplay;
+    
     const bool isSyncOn = syncButton.getToggleState();
     if (isSyncOn)
     {
@@ -3230,7 +3266,10 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     const float ms = (float) timeSlider.getValue();
     if (ms >= 1000.0f)
         return juce::String (ms / 1000.0f, 3) + " S";
-    return juce::String ((int)ms) + " MS";
+    const float rounded = std::round (ms * 100.0f) / 100.0f;
+    if (rounded == (int) rounded)
+        return juce::String ((int) rounded) + " MS";
+    return juce::String (rounded, 2) + " MS";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getFeedbackText() const
@@ -3678,19 +3717,49 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
 
     if (getSyncLabelArea().contains (p))
     {
-        syncButton.setToggleState (! syncButton.getToggleState(), juce::sendNotificationSync);
+        // v10W: Toggle parameter directly (ButtonAttachment keeps button synced)
+        if (auto* param = audioProcessor.apvts.getParameter(ECHOTRAudioProcessor::kParamSync))
+        {
+            const float currentValue = param->getValue();
+            param->beginChangeGesture();
+            param->setValueNotifyingHost(currentValue > 0.5f ? 0.0f : 1.0f);
+            param->endChangeGesture();
+        }
         return;
     }
 
     if (getAutoFbkLabelArea().contains (p))
     {
-        autoFbkButton.setToggleState (! autoFbkButton.getToggleState(), juce::sendNotificationSync);
+        DBG(">>> [CLICK AUTO] Label clicked");
+        // v10W: Toggle parameter directly (ButtonAttachment keeps button synced)
+        if (auto* param = audioProcessor.apvts.getParameter(ECHOTRAudioProcessor::kParamAutoFbk))
+        {
+            const float currentValue = param->getValue();
+            const float newValue = currentValue > 0.5f ? 0.0f : 1.0f;
+            DBG(">>> [CLICK AUTO] current=" + juce::String(currentValue, 4) + " | new=" + juce::String(newValue, 4));
+            param->beginChangeGesture();
+            param->setValueNotifyingHost(newValue);
+            param->endChangeGesture();
+            const float afterValue = param->getValue();
+            DBG(">>> [CLICK AUTO] after=" + juce::String(afterValue, 4));
+        }
+        else
+        {
+            DBG(">>> [CLICK AUTO] ERROR: param is NULL!");
+        }
         return;
     }
 
     if (getMidiLabelArea().contains (p))
     {
-        midiButton.setToggleState (! midiButton.getToggleState(), juce::sendNotificationSync);
+        // v10W: Toggle parameter directly (ButtonAttachment keeps button synced)
+        if (auto* param = audioProcessor.apvts.getParameter(ECHOTRAudioProcessor::kParamMidi))
+        {
+            const float currentValue = param->getValue();
+            param->beginChangeGesture();
+            param->setValueNotifyingHost(currentValue > 0.5f ? 0.0f : 1.0f);
+            param->endChangeGesture();
+        }
         return;
     }
 }

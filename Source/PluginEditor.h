@@ -309,6 +309,9 @@ private:
     juce::String cachedMixTextFull;
     juce::String cachedMixTextShort;
     
+    // v12: Cached MIDI note display (updated by timer, not by resize)
+    juce::String cachedMidiDisplay;
+    
     mutable std::uint64_t cachedValueColumnWidthKey = 0;
     mutable int cachedValueColumnWidth = 90;
 
