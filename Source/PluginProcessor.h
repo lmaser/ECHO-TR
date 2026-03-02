@@ -37,7 +37,7 @@ public:
 
 	// Parameter ranges and defaults
 	static constexpr float kTimeMsMin = 0.0f;
-	static constexpr float kTimeMsMax = 2000.0f;  // 2 seconds max for manual mode
+	static constexpr float kTimeMsMax = 2000.0f;  // 2 seconds max for manual mode (also loop capture length)
 	static constexpr float kTimeMsMaxSync = 20000.0f;  // 20 seconds max for sync mode (allows long divisions like 8/1)
 	static constexpr float kTimeMsDefault = 500.0f;
 
@@ -101,6 +101,10 @@ public:
 	void processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                            float delaySamples, float feedback, float inputGain,
 	                            float outputGain, float mix);
+
+	// Loop processing
+	void processLoop (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+	                   float loopTimeSamples, float inputGain, float outputGain, float mix);
 
 	juce::AudioProcessorEditor* createEditor() override;
 	bool hasEditor() const override;
@@ -169,6 +173,17 @@ private:
 	
 	// Feedback state (per channel)
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
+
+	// Loop buffer and state
+	enum class LoopState { Off, Recording, Playing };
+	LoopState loopState = LoopState::Off;
+	juce::AudioBuffer<float> loopBuffer;
+	int loopBufferLength = 0;       // Total allocated size (2s worth)
+	int loopRecordedLength = 0;     // How many samples were actually recorded
+	int loopWritePos = 0;           // Write position during recording
+	float loopReadPos = 0.0f;       // Read position during playback (float for interpolation)
+	float smoothedLoopTimeSamples = 0.0f;  // Smoothed loop time for pitch-shift style changes
+	static constexpr int kLoopCrossfadeSamples = 64;  // ~1.5ms at 44.1kHz
 
 	// MIDI tracking
 	std::atomic<float> currentMidiFrequency { 0.0f };

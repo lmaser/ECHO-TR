@@ -242,6 +242,16 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	
 	// Initialize tape-style delay time smoothing
 	smoothedDelaySamples = 0.0f;
+
+	// Allocate loop buffer: fixed 2 seconds (= kTimeMsMax)
+	loopBufferLength = (int) std::ceil (sampleRate * (kTimeMsMax / 1000.0)) + 1;
+	loopBuffer.setSize (2, loopBufferLength);
+	loopBuffer.clear();
+	loopState = LoopState::Off;
+	loopRecordedLength = 0;
+	loopWritePos = 0;
+	loopReadPos = 0.0f;
+	smoothedLoopTimeSamples = 0.0f;
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -249,6 +259,13 @@ void ECHOTRAudioProcessor::releaseResources()
 	delayBuffer.setSize (0, 0);
 	delayBufferLength = 0;
 	delayBufferWritePos = 0;
+
+	loopBuffer.setSize (0, 0);
+	loopBufferLength = 0;
+	loopRecordedLength = 0;
+	loopWritePos = 0;
+	loopReadPos = 0.0f;
+	loopState = LoopState::Off;
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -455,6 +472,95 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	delayBufferWritePos = writePos;
 }
 
+void ECHOTRAudioProcessor::processLoop (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+                                         float loopTimeSamples, float inputGain, float outputGain, float mix)
+{
+	if (loopBufferLength <= 0)
+		return;
+
+	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
+	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
+	auto* loopL = loopBuffer.getWritePointer (0);
+	auto* loopR = loopBuffer.getWritePointer (1);
+
+	const float smoothCoeff = 0.9997f;
+
+	for (int i = 0; i < numSamples; ++i)
+	{
+		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
+		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
+
+		if (loopState == LoopState::Recording)
+		{
+			// Write input into loop buffer (with input gain)
+			loopL[loopWritePos] = inputL * inputGain;
+			loopR[loopWritePos] = inputR * inputGain;
+			++loopWritePos;
+
+			if (loopWritePos >= loopBufferLength)
+			{
+				// Buffer full (2 seconds captured) — switch to playing
+				loopRecordedLength = loopBufferLength;
+				loopState = LoopState::Playing;
+				loopReadPos = 0.0f;
+				smoothedLoopTimeSamples = loopTimeSamples;
+			}
+
+			// During recording, pass dry signal (with output gain)
+			if (channelL != nullptr) channelL[i] = inputL * outputGain;
+			if (channelR != nullptr) channelR[i] = inputR * outputGain;
+		}
+		else if (loopState == LoopState::Playing)
+		{
+			// Smooth the loop time target (same approach as delay smoothing)
+			smoothedLoopTimeSamples = smoothedLoopTimeSamples * smoothCoeff + loopTimeSamples * (1.0f - smoothCoeff);
+
+			// Clamp loop length to what was actually recorded
+			const float effectiveLoopLen = juce::jlimit (1.0f, (float) loopRecordedLength, smoothedLoopTimeSamples);
+
+			// Read from loop buffer with linear interpolation
+			const float readF = loopReadPos;
+			const int r0 = (int) readF;
+			const int r1 = (r0 + 1 < loopRecordedLength) ? r0 + 1 : 0;
+			const float frac = readF - (float) r0;
+
+			float outL = loopL[r0] + frac * (loopL[r1] - loopL[r0]);
+			float outR = loopR[r0] + frac * (loopR[r1] - loopR[r0]);
+
+			// Crossfade at loop wrap point to avoid clicks
+			const float distToEnd = effectiveLoopLen - loopReadPos;
+			if (distToEnd < (float) kLoopCrossfadeSamples && effectiveLoopLen > (float) (kLoopCrossfadeSamples * 2))
+			{
+				// Fade factor: 1.0 at crossfade start → 0.0 at loop end
+				const float fade = distToEnd / (float) kLoopCrossfadeSamples;
+				// Read from the beginning of the loop (where we'll wrap to)
+				const float wrapReadF = (float) kLoopCrossfadeSamples - distToEnd;
+				const int wr0 = (int) wrapReadF;
+				const int wr1 = (wr0 + 1 < loopRecordedLength) ? wr0 + 1 : 0;
+				const float wfrac = wrapReadF - (float) wr0;
+				const float wrapL = loopL[wr0] + wfrac * (loopL[wr1] - loopL[wr0]);
+				const float wrapR = loopR[wr0] + wfrac * (loopR[wr1] - loopR[wr0]);
+
+				outL = outL * fade + wrapL * (1.0f - fade);
+				outR = outR * fade + wrapR * (1.0f - fade);
+			}
+
+			// Clip output
+			outL = juce::jlimit (-2.0f, 2.0f, outL);
+			outR = juce::jlimit (-2.0f, 2.0f, outR);
+
+			// Mix dry/wet and apply output gain
+			if (channelL != nullptr) channelL[i] = (inputL * (1.0f - mix) + outL * mix) * outputGain;
+			if (channelR != nullptr) channelR[i] = (inputR * (1.0f - mix) + outR * mix) * outputGain;
+
+			// Advance read position and wrap
+			loopReadPos += 1.0f;
+			if (loopReadPos >= effectiveLoopLen)
+				loopReadPos -= effectiveLoopLen;
+		}
+	}
+}
+
 void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
@@ -566,11 +672,33 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		return;
 
 	// Read parameters ONCE per block
+	const bool loopEnabled = loadBoolParamOrDefault (loopParam, false);
 	const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
 	const bool midiNoteActive = midiEnabled && (lastMidiNote.load (std::memory_order_relaxed) >= 0);
 	const float timeMsValue = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
 	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
 	const int mode = loadIntParamOrDefault (modeParam, 1); // 0=MONO, 1=STEREO, 2=PING-PONG
+
+	// Loop state transitions
+	if (loopEnabled && loopState == LoopState::Off)
+	{
+		// LOOP just turned ON → start recording
+		loopBuffer.clear();
+		loopWritePos = 0;
+		loopRecordedLength = 0;
+		loopReadPos = 0.0f;
+		loopState = LoopState::Recording;
+	}
+	else if (! loopEnabled && loopState != LoopState::Off)
+	{
+		// LOOP just turned OFF → clear and return to delay mode
+		loopState = LoopState::Off;
+		loopBuffer.clear();
+		loopRecordedLength = 0;
+		loopWritePos = 0;
+		loopReadPos = 0.0f;
+		smoothedLoopTimeSamples = 0.0f;
+	}
 	
 	// LOG: Debugging - show midi note active state
 	static int debugCounter = 0;
@@ -682,6 +810,18 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	delaySamples = juce::jmin (delaySamples, maxDelaySamples);
 	delaySamples = juce::jmax (0.0f, delaySamples);
 	
+	// LOOP MODE: route to loop processor instead of delay
+	if (loopState != LoopState::Off)
+	{
+		// Calculate loop time in samples (same time source as delay, with MOD)
+		float loopTimeSamples = juce::jmax (1.0f, (float) currentSampleRate * (targetDelayMs / 1000.0f));
+		loopTimeSamples /= freqMultiplier;
+		loopTimeSamples = juce::jlimit (1.0f, (float) loopBufferLength, loopTimeSamples);
+
+		processLoop (buffer, numSamples, numChannels, loopTimeSamples, inputGain, outputGain, mixValue);
+		return;
+	}
+
 	// TRUE BYPASS: only bypass if delay is essentially zero (< 1 sample)
 	if (delaySamples < 1.0f)
 	{
