@@ -84,6 +84,7 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	syncParam = apvts.getRawParameterValue (kParamSync);
 	midiParam = apvts.getRawParameterValue (kParamMidi);
 	autoFbkParam = apvts.getRawParameterValue (kParamAutoFbk);
+	loopParam = apvts.getRawParameterValue (kParamLoop);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
@@ -740,8 +741,17 @@ void ECHOTRAudioProcessor::setStateInformation (const void* data, int sizeInByte
 	std::unique_ptr<juce::XmlElement> xmlState (getXmlFromBinary (data, sizeInBytes));
 
 	if (xmlState.get() != nullptr)
+	{
 		if (xmlState->hasTagName (apvts.state.getType()))
+		{
 			apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
+
+			// Sync midiPort atomic from restored state so processBlock sees the correct value
+			const auto restoredPort = apvts.state.getProperty (UiStateKeys::midiPort);
+			if (! restoredPort.isVoid())
+				midiPort.store ((int) restoredPort, std::memory_order_relaxed);
+		}
+	}
 }
 
 void ECHOTRAudioProcessor::getCurrentProgramStateInformation (juce::MemoryBlock& destData)
@@ -838,9 +848,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		kParamTimeMs, "Time",
 		juce::NormalisableRange<float> (kTimeMsMin, kTimeMsMax, 0.0f, 0.35f), kTimeMsDefault));
 
-	// Time (sync mode)
+	// Time (host sync mode)
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
-		kParamTimeSync, "Time Sync", getTimeSyncChoices(), kTimeSyncDefault));
+		kParamTimeSync, "Time Host", getTimeSyncChoices(), kTimeSyncDefault));
 
 	// Feedback
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
@@ -872,14 +882,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		kParamMix, "Mix",
 		juce::NormalisableRange<float> (kMixMin, kMixMax, 0.0f, 1.0f), kMixDefault));
 
-	// Sync button
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamSync, "Sync", false));
+	// Host sync button
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamSync, "Host", false));
 
 	// MIDI button
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamMidi, "MIDI", false));
 
 	// Auto Feedback button
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAutoFbk, "Auto Feedback", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAutoFbk, "Auto Fbk", false));
+
+	// Loop button
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamLoop, "Loop", false));
 
 	// UI state parameters (hidden from automation)
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));

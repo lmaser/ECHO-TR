@@ -1007,10 +1007,12 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     syncButton.setButtonText ("");
     autoFbkButton.setButtonText ("");
     midiButton.setButtonText ("");
+    loopButton.setButtonText ("");
 
     addAndMakeVisible (syncButton);
     addAndMakeVisible (autoFbkButton);
     addAndMakeVisible (midiButton);
+    addAndMakeVisible (loopButton);
 
     // Initialize MIDI port display
     const int savedPort = audioProcessor.getMidiPort();
@@ -1065,6 +1067,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindButton (syncAttachment, ECHOTRAudioProcessor::kParamSync, syncButton);
     bindButton (autoFbkAttachment, ECHOTRAudioProcessor::kParamAutoFbk, autoFbkButton);
     bindButton (midiAttachment, ECHOTRAudioProcessor::kParamMidi, midiButton);
+    bindButton (loopAttachment, ECHOTRAudioProcessor::kParamLoop, loopButton);
 
     const std::array<const char*, 7> uiMirrorParamIds {
         ECHOTRAudioProcessor::kParamSync,        // Listen for sync mode changes
@@ -1208,10 +1211,10 @@ void ECHOTRAudioProcessorEditor::setPromptOverlayActive (bool shouldBeActive)
         promptOverlay.toFront (false);
 
     const bool enableControls = ! shouldBeActive;
-    const std::array<juce::Component*, 10> interactiveControls {
+    const std::array<juce::Component*, 11> interactiveControls {
         &timeSlider, &feedbackSlider, &modeSlider, &modSlider,
         &inputSlider, &outputSlider, &mixSlider,
-        &syncButton, &autoFbkButton, &midiButton
+        &syncButton, &autoFbkButton, &loopButton, &midiButton
     };
     for (auto* control : interactiveControls)
         control->setEnabled (enableControls);
@@ -1284,6 +1287,14 @@ void ECHOTRAudioProcessorEditor::timerCallback()
 {
     if (suppressSizePersistence)
         return;
+
+    const auto newMidiDisplay = audioProcessor.getCurrentTimeDisplay();
+    if (newMidiDisplay != cachedMidiDisplay)
+    {
+        cachedMidiDisplay = newMidiDisplay;
+        refreshLegendTextCache();
+        repaint();
+    }
 
     const int w = getWidth();
     const int h = getHeight();
@@ -3205,6 +3216,9 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
 
 juce::String ECHOTRAudioProcessorEditor::getTimeText() const
 {
+    if (cachedMidiDisplay.isNotEmpty())
+        return cachedMidiDisplay + " TIME";
+
     const bool isSyncOn = syncButton.getToggleState();
     if (isSyncOn)
     {
@@ -3220,11 +3234,14 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
 
 juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
 {
+    if (cachedMidiDisplay.isNotEmpty())
+        return cachedMidiDisplay;
+
     const bool isSyncOn = syncButton.getToggleState();
     if (isSyncOn)
     {
         const int idx = (int) timeSlider.getValue();
-        return audioProcessor.getTimeSyncNameShort (idx);
+        return audioProcessor.getTimeSyncName (idx);
     }
     
     const float ms = (float) timeSlider.getValue();
@@ -3415,7 +3432,9 @@ namespace
         int betweenSlidersAndButtons = 0;
         int bottomMargin = 0;
         int box = 0;
-        int btnY = 0;
+        int btnRow1Y = 0;
+        int btnRow2Y = 0;
+        int btnRowGap = 0;
         int availableForSliders = 0;
         int barH = 0;
         int gapY = 0;
@@ -3449,9 +3468,11 @@ namespace
         m.betweenSlidersAndButtons = juce::jmax (8, m.rhythm * 2);
         m.bottomMargin = m.titleTopPad;
 
-        m.box = kToggleBoxPx;
-        m.btnY = editorH - m.bottomMargin - m.box;
-        m.availableForSliders = juce::jmax (40, m.btnY - m.betweenSlidersAndButtons - m.topMargin);
+        m.box = juce::jlimit (40, kToggleBoxPx, (int) std::round (editorH * 0.085));
+        m.btnRowGap = juce::jlimit (4, 14, (int) std::round (editorH * 0.008));
+        m.btnRow2Y = editorH - m.bottomMargin - m.box;
+        m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
+        m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
 
         const int nominalStack = 7 * nominalBarH + 6 * nominalGapY;
         const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) m.availableForSliders / (double) nominalStack)
@@ -3606,12 +3627,17 @@ namespace
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getSyncLabelArea() const
 {
-    return makeToggleLabelArea (syncButton, getWidth(), "SYNC", "SNC");
+    return makeToggleLabelArea (syncButton, getWidth(), "HOST", "HST");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getAutoFbkLabelArea() const
 {
-    return makeToggleLabelArea (autoFbkButton, getWidth(), "AUTO", "AT");
+    return makeToggleLabelArea (autoFbkButton, getWidth(), "AUTO FBK", "AUTO");
+}
+
+juce::Rectangle<int> ECHOTRAudioProcessorEditor::getLoopLabelArea() const
+{
+    return makeToggleLabelArea (loopButton, getWidth(), "LOOP", "LP");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
@@ -3685,6 +3711,12 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     if (getAutoFbkLabelArea().contains (p))
     {
         autoFbkButton.setToggleState (! autoFbkButton.getToggleState(), juce::sendNotificationSync);
+        return;
+    }
+
+    if (getLoopLabelArea().contains (p))
+    {
+        loopButton.setToggleState (! loopButton.getToggleState(), juce::sendNotificationSync);
         return;
     }
 
@@ -3937,9 +3969,14 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
             return (fullW <= maxW) ? fullText : shortText;
         };
         
-        const juce::String syncLabel = getButtonLabel (syncButton, "SYNC", "SNC", autoFbkButton.getX() - kToggleLegendCollisionPadPx);
-        const juce::String autoLabel = getButtonLabel (autoFbkButton, "AUTO", "AT", midiButton.getX() - kToggleLegendCollisionPadPx);
-        const juce::String midiLabel = getButtonLabel (midiButton, "MIDI", "MD", midiPortDisplay.getX() - kToggleLegendCollisionPadPx);
+        const juce::String syncLabel = getButtonLabel (syncButton, "HOST", "HST", autoFbkButton.getX() - kToggleLegendCollisionPadPx);
+        const juce::String autoLabel = getButtonLabel (autoFbkButton, "AUTO FBK", "AUTO", W - kToggleLegendCollisionPadPx);
+        const juce::String loopLabel = getButtonLabel (loopButton, "LOOP", "LP", midiButton.getX() - kToggleLegendCollisionPadPx);
+        
+        const int midiCollisionRight = midiPortDisplay.isVisible() 
+            ? midiPortDisplay.getX() - kToggleLegendCollisionPadPx
+            : W - kToggleLegendCollisionPadPx;
+        const juce::String midiLabel = getButtonLabel (midiButton, "MIDI", "MD", midiCollisionRight);
         
         auto drawToggleLegend = [&] (const juce::Rectangle<int>& labelArea,
                                      const juce::String& labelText,
@@ -3962,14 +3999,13 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
                 g.drawText (labelText, drawArea.getX(), drawArea.getY(), drawArea.getWidth(), drawArea.getHeight(), juce::Justification::left, true);
         };
 
+        // Row 1: HOST + AUTO FBK
         drawToggleLegend (getSyncLabelArea(), syncLabel, autoFbkButton.getX() - kToggleLegendCollisionPadPx, "-3");
-        drawToggleLegend (getAutoFbkLabelArea(), autoLabel, midiButton.getX() - kToggleLegendCollisionPadPx, "-3");
+        drawToggleLegend (getAutoFbkLabelArea(), autoLabel, W - kToggleLegendCollisionPadPx, "-3");
         
-        // Adjust MIDI label collision boundary based on port visibility
-        const int midiLabelRightBound = midiPortDisplay.isVisible() 
-            ? midiPortDisplay.getX() - kToggleLegendCollisionPadPx
-            : W - kToggleLegendCollisionPadPx;
-        drawToggleLegend (getMidiLabelArea(), midiLabel, midiLabelRightBound, "-2");
+        // Row 2: LOOP + MIDI
+        drawToggleLegend (getLoopLabelArea(), loopLabel, midiButton.getX() - kToggleLegendCollisionPadPx, "-3");
+        drawToggleLegend (getMidiLabelArea(), midiLabel, midiCollisionRight, "-2");
     }
     
     // Draw MIDI port display border (matching checkbox style) - only if visible
@@ -4148,13 +4184,8 @@ void ECHOTRAudioProcessorEditor::resized()
     outputSlider.setBounds   (horizontalLayout.leftX, verticalLayout.topY + 5 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
     mixSlider.setBounds      (horizontalLayout.leftX, verticalLayout.topY + 6 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
 
-    // Button area: SNC aligns with bars (leftX), MIDI aligns with value legends in justified mode
+    // Button area: 2x2 grid — Row 1: HOST + AUTO FBK, Row 2: LOOP + MIDI
     const int buttonAreaX = horizontalLayout.leftX;
-    const int buttonAreaW = horizontalLayout.contentW;
-    
-    // Calculate value area X position for MIDI block alignment
-    const int valueAreaX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
-    const int valueAreaW = horizontalLayout.valueW;
 
     juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
     const int labelGap = kToggleLabelGapPx;
@@ -4163,95 +4194,28 @@ void ECHOTRAudioProcessorEditor::resized()
                                                juce::jmax (14, verticalLayout.box - 2),
                                                (int) std::lround ((double) verticalLayout.box * 0.50));
     const int toggleHitW = toggleVisualSide + 6;
+    const int midiPortSide = toggleVisualSide;
 
-    // Calculate label widths for both full and short versions
-    const int syncFullW = stringWidth (labelFont, "SYNC") + 2;
-    const int syncShortW = stringWidth (labelFont, "SNC") + 2;
-    const int autoFullW = stringWidth (labelFont, "AUTO") + 2;
-    const int autoShortW = stringWidth (labelFont, "AT") + 2;
-    const int midiFullW = stringWidth (labelFont, "MIDI") + 2;
-    const int midiShortW = stringWidth (labelFont, "MD") + 2;
+    // Each row has 2 buttons: left-anchored + right-anchored
+    // Row 1: HOST (left) + AUTO FBK (right)
+    // Row 2: LOOP (left) + MIDI+port (right)
+    const int leftBlockX = buttonAreaX;
+    const int rightBlockX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
 
-    // Determine if we need to use short labels based on available space
-    const int minBlockW = toggleHitW;
-    const int midiPortSide = toggleVisualSide;  // MIDI port uses same size as checkbox
-    const int syncFullBlockW = minBlockW + labelGap + syncFullW;
-    const int autoFullBlockW = minBlockW + labelGap + autoFullW;
-    const int midiFullBlockW = minBlockW + labelGap + midiFullW + kMidiPortGapPx + midiPortSide;
-    const int totalFullW = syncFullBlockW + autoFullBlockW + midiFullBlockW + 2 * kMinToggleBlocksGapPx;
-
-    const bool useShortLabels = (totalFullW > buttonAreaW);
-
-    const int syncLabelW = useShortLabels ? syncShortW : syncFullW;
-    const int autoLabelW = useShortLabels ? autoShortW : autoFullW;
-    const int midiLabelW = useShortLabels ? midiShortW : midiFullW;
+    syncButton.setBounds    (leftBlockX,  verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
+    autoFbkButton.setBounds (rightBlockX, verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
+    loopButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
+    midiButton.setBounds    (rightBlockX, verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     
-    // Recalculate block widths with selected labels
-    const int syncBlockW = juce::jmax (toggleHitW, toggleHitW + labelGap + syncLabelW);
-    const int autoBlockW = juce::jmax (toggleHitW, toggleHitW + labelGap + autoLabelW);
-    const int midiLabelBlockW = juce::jmax (toggleHitW, toggleHitW + labelGap + midiLabelW);
-    const int midiBlockW = midiLabelBlockW + kMidiPortGapPx + midiPortSide;
-    
-    // Choose layout strategy based on available space
-    int syncBlockX, autoBlockX, midiBlockX;
-    
-    if (useShortLabels)
-    {
-        // LEFT-PACKED LAYOUT: When space is tight, pack all elements to the left with uniform small gaps
-        // This creates a compact, visually balanced layout where MD stays adjacent to its port
-        constexpr int kCompactGapPx = 5;  // Small uniform gap between button blocks
-        
-        syncBlockX = buttonAreaX;
-        autoBlockX = syncBlockX + syncBlockW + kCompactGapPx;
-        midiBlockX = autoBlockX + autoBlockW + kCompactGapPx;
-        
-        // Ensure we don't exceed available width (compress if absolutely necessary)
-        const int totalNeededW = syncBlockW + kCompactGapPx + autoBlockW + kCompactGapPx + midiBlockW;
-        if (totalNeededW > buttonAreaW)
-        {
-            // Extreme compression: calculate minimum gaps
-            const int remainingSpace = buttonAreaW - (syncBlockW + autoBlockW + midiBlockW);
-            const int minGap = juce::jmax (1, remainingSpace / 2);
-            autoBlockX = syncBlockX + syncBlockW + minGap;
-            midiBlockX = autoBlockX + autoBlockW + minGap;
-        }
-    }
-    else
-    {
-        // JUSTIFIED LAYOUT: When space is available, use justified distribution
-        // SYNC block aligns with bars (left edge)        // MIDI block aligns with value legends (right edge)
-        // AUTO centered between them
-        syncBlockX = buttonAreaX;
-        const int midiBlockRightX = valueAreaX + valueAreaW;  // Right edge of value legends
-        midiBlockX = midiBlockRightX - midiBlockW;
-        
-        // Calculate available space between SYNC and MIDI for AUTO
-        const int spaceAfterSync = midiBlockX - (syncBlockX + syncBlockW);
-        
-        // Center AUTO in the available space with equal gaps on both sides
-        autoBlockX = syncBlockX + syncBlockW + (spaceAfterSync - autoBlockW) / 2;
-        
-        // Ensure minimum gaps are respected
-        const int minAutoX = syncBlockX + syncBlockW + kMinToggleBlocksGapPx;
-        const int maxAutoX = midiBlockX - autoBlockW - kMinToggleBlocksGapPx;
-        
-        if (minAutoX <= maxAutoX)
-            autoBlockX = juce::jlimit (minAutoX, maxAutoX, autoBlockX);
-        else
-            autoBlockX = minAutoX;  // Fallback to minimum spacing
-    }
-
-    syncButton.setBounds   (syncBlockX, verticalLayout.btnY, toggleHitW, verticalLayout.box);
-    autoFbkButton.setBounds (autoBlockX, verticalLayout.btnY, toggleHitW, verticalLayout.box);
-    midiButton.setBounds   (midiBlockX, verticalLayout.btnY, toggleHitW, verticalLayout.box);
-    
-    // Position MIDI port display to the right of MIDI label (using midiPortSide from above)
-    const int midiPortX = midiBlockX + midiLabelBlockW + kMidiPortGapPx;
-    const int midiPortY = verticalLayout.btnY + (verticalLayout.box - midiPortSide) / 2;
+    // Position MIDI port display to the right of MIDI label
+    const int midiLabelFullW = stringWidth (labelFont, "MIDI") + 2;
+    const int midiLabelBlockW = toggleHitW + labelGap + midiLabelFullW;
+    const int midiPortX = rightBlockX + midiLabelBlockW + kMidiPortGapPx;
+    const int midiPortY = verticalLayout.btnRow2Y + (verticalLayout.box - midiPortSide) / 2;
     midiPortDisplay.setBounds (midiPortX, midiPortY, midiPortSide, midiPortSide);
     
-    // Hide MIDI port if it would overflow the right edge (adaptive visibility)
-    constexpr int kMidiPortRightMargin = 6;  // Minimum margin from right edge
+    // Hide MIDI port if it would overflow the right edge
+    constexpr int kMidiPortRightMargin = 6;
     const bool midiPortFits = (midiPortX + midiPortSide + kMidiPortRightMargin) <= W;
     midiPortDisplay.setVisible (midiPortFits);
 
