@@ -1,8 +1,7 @@
-﻿// PluginEditor.cpp
+// PluginEditor.cpp
 #include "PluginEditor.h"
 #include <functional>
 #include <unordered_map>
-#include <fstream>
 
 //========================== Overflow helpers ==========================
 // Helpers para medir texto y aplicar truncados según prioridad de formatos.
@@ -20,13 +19,16 @@ static int stringWidth (const juce::Font& font, const juce::String& s)
     if (s.isEmpty())
         return 0;
 
-    if (widthCache.size() > 2048)
+    if (widthCache.size() > 8192)
         widthCache.clear();
 
     const int h100 = (int) std::round (font.getHeight() * 100.0f);
+    const int hs100 = (int) std::round (font.getHorizontalScale() * 100.0f);
     std::string key;
-    key.reserve (32 + (size_t) s.length());
+    key.reserve (40 + (size_t) s.length());
     key += std::to_string (h100);
+    key += "|";
+    key += std::to_string (hs100);
     key += "|";
     key += font.getTypefaceName().toStdString();
     key += font.isBold() ? "|b1" : "|b0";
@@ -56,6 +58,27 @@ struct GraphicsPromptLayout
     static constexpr int modeToSwatchesGap = 14;
 };
 
+// ── Shared constants & helpers ──
+static const juce::Font& kBoldFont40()
+{
+    static const juce::Font f (juce::FontOptions (40.0f).withStyle ("Bold"));
+    return f;
+}
+
+static void styleAlertButtons (juce::AlertWindow& aw, juce::LookAndFeel& lnf)
+{
+    for (int i = 0; i < aw.getNumButtons(); ++i)
+    {
+        if (auto* btn = dynamic_cast<juce::TextButton*> (aw.getButton (i)))
+        {
+            btn->setColour (juce::TextButton::buttonColourId,   lnf.findColour (juce::TextButton::buttonColourId));
+            btn->setColour (juce::TextButton::buttonOnColourId, lnf.findColour (juce::TextButton::buttonOnColourId));
+            btn->setColour (juce::TextButton::textColourOffId,  lnf.findColour (juce::TextButton::textColourOffId));
+            btn->setColour (juce::TextButton::textColourOnId,   lnf.findColour (juce::TextButton::textColourOnId));
+        }
+    }
+}
+
 namespace UiMetrics
 {
     constexpr float tickBoxOuterScale = 2.0f;
@@ -83,15 +106,11 @@ namespace UiStateKeys
     constexpr const char* editorHeight = "uiEditorHeight";
     constexpr const char* useCustomPalette = "uiUseCustomPalette";
     constexpr const char* fxTailEnabled = "uiFxTailEnabled";
-    constexpr std::array<const char*, 4> customPalette {
+    constexpr std::array<const char*, 2> customPalette {
         "uiCustomPalette0",
-        "uiCustomPalette1",
-        "uiCustomPalette2",
-        "uiCustomPalette3"
+        "uiCustomPalette1"
     };
 }
-
-static void dismissEditorOwnedModalPrompts (juce::LookAndFeel& editorLookAndFeel);
 
 static void dismissEditorOwnedModalPrompts (juce::LookAndFeel& editorLookAndFeel)
 {
@@ -126,10 +145,13 @@ void embedAlertWindowInOverlay (ECHOTRAudioProcessorEditor* editor,
         return;
 
     editor->setPromptOverlayActive (true);
-    editor->promptOverlay.addAndMakeVisible (*aw);
+
+    // Position BEFORE making visible to avoid a one-frame flash at (0,0)
     const int bx = juce::jmax (0, (editor->getWidth() - aw->getWidth()) / 2);
     const int by = juce::jmax (0, (editor->getHeight() - aw->getHeight()) / 2);
     aw->setBounds (bx, by, aw->getWidth(), aw->getHeight());
+    editor->promptOverlay.addChildComponent (*aw);
+    aw->setVisible (true);
     aw->toFront (false);
     if (bringTooltip && editor->tooltipWindow)
         editor->tooltipWindow->toFront (true);
@@ -191,233 +213,6 @@ static void drawOverlayPanel (juce::Graphics& g,
     g.drawRect (bounds, 1);
 }
 
-static juce::Colour lerpColourStops (const std::array<juce::Colour, 2>& gradient, float t)
-{
-    return gradient[0].interpolatedWith (gradient[1], juce::jlimit (0.0f, 1.0f, t));
-}
-
-static bool isAbsoluteGradientEndpoint (const juce::Colour& c,
-                                        const std::array<juce::Colour, 2>& gradient)
-{
-    const auto argb = c.getARGB();
-    return argb == gradient[0].getARGB() || argb == gradient[1].getARGB();
-}
-
-static void parseTailTuning (const juce::String& tuning,
-                             int& trimTailCount,
-                             float& repeatScale)
-{
-    trimTailCount = 0;
-    repeatScale = -1.0f;
-
-    const auto t = tuning.trim();
-    if (t.isEmpty())
-        return;
-
-    if (t.endsWithChar ('%'))
-    {
-        const auto number = t.dropLastCharacters (1).trim();
-        const double pct = number.getDoubleValue();
-        if (pct >= 0.0 && pct <= 100.0)
-            repeatScale = (float) (pct / 100.0);
-        return;
-    }
-
-    const int v = t.getIntValue();
-    if (v < 0)
-        trimTailCount = -v;
-}
-
-static float parseOptionalPercent01 (const juce::String& percentageText)
-{
-    const auto t = percentageText.trim();
-    if (t.isEmpty())
-        return -1.0f;
-
-    juce::String number = t;
-    if (number.endsWithChar ('%'))
-        number = number.dropLastCharacters (1).trim();
-
-    const double v = number.getDoubleValue();
-    if (v < 0.0 || v > 100.0)
-        return -1.0f;
-
-    return (float) (v / 100.0);
-}
-
-static void drawTextWithRepeatedLastCharGradient (juce::Graphics& g,
-                                                  const juce::Rectangle<int>& area,
-                                                  const juce::String& sourceText,
-                                                  int horizontalSpacePx,
-                                                  const std::array<juce::Colour, 2>& gradient,
-                                                  int noCollisionRightX = -1,
-                                                  const juce::String& tailTuning = juce::String(),
-                                                  const juce::String& shrinkPerCharPercent = juce::String(),
-                                                  const juce::String& tailVerticalMode = juce::String(),
-                                                  const juce::String& referenceCharIndex = juce::String(),
-                                                  const juce::String& overlapPercent = juce::String())
-{
-    constexpr int kMaxTailCharsDrawn = 20;
-    constexpr float kMinTailCharPx = 3.0f;
-
-    if (area.getWidth() <= 0 || area.getHeight() <= 0)
-        return;
-
-    juce::String text = sourceText.toUpperCase().trim();
-
-    int trimTailCount = 0;
-    float repeatScale = -1.0f;
-    parseTailTuning (tailTuning, trimTailCount, repeatScale);
-
-    if (text.isEmpty())
-        return;
-
-    const auto font = g.getCurrentFont();
-    int maxWidth = juce::jmin (area.getWidth(), juce::jmax (0, horizontalSpacePx));
-    if (noCollisionRightX >= 0)
-        maxWidth = juce::jmin (maxWidth, juce::jmax (0, noCollisionRightX - area.getX()));
-
-    if (maxWidth <= 0)
-        return;
-
-    const int baseW = stringWidth (font, text);
-
-    g.setColour (gradient[0]);
-    g.drawText (text, area.getX(), area.getY(), juce::jmin (baseW, maxWidth), area.getHeight(), juce::Justification::left, false);
-
-    if (baseW >= maxWidth)
-        return;
-
-    const juce::juce_wchar lastChar = text[text.length() - 1];
-    juce::juce_wchar selectedChar = lastChar;
-    const auto refIdxText = referenceCharIndex.trim();
-    if (refIdxText.isNotEmpty())
-    {
-        const int idx = refIdxText.getIntValue();
-        if (idx >= 0 && idx < text.length())
-            selectedChar = text[idx];
-    }
-
-    juce::String tailChar;
-    tailChar += selectedChar;
-    const float shrinkStep01 = parseOptionalPercent01 (shrinkPerCharPercent);
-    const bool useShrink = (shrinkStep01 >= 0.0f);
-    const auto verticalMode = tailVerticalMode.trim().toLowerCase();
-    const float overlap01 = parseOptionalPercent01 (overlapPercent);
-    const float overlap = juce::jlimit (0.0f, 1.0f, overlap01 < 0.0f ? 0.0f : overlap01);
-    const float advanceFactor = 1.0f - overlap;
-
-    const float baseFontH = font.getHeight();
-    auto scaleForIndex = [&] (int index1Based)
-    {
-        if (! useShrink)
-            return 1.0f;
-
-        const float s = 1.0f - (shrinkStep01 * (float) index1Based);
-        return juce::jmax (0.1f, s);
-    };
-
-    const int availableTailW = juce::jmax (0, maxWidth - baseW);
-    juce::Array<float> xPositions;
-    juce::Array<int> widths;
-
-    float cursorX = 0.0f;
-    float maxRight = 0.0f;
-
-    for (int i = 1; i <= kMaxTailCharsDrawn; ++i)
-    {
-        auto fi = font;
-        fi.setHeight (baseFontH * scaleForIndex (i));
-        const int wi = stringWidth (fi, tailChar);
-        if (fi.getHeight() < kMinTailCharPx || wi < (int) std::ceil (kMinTailCharPx)
-            || wi <= 0)
-            break;
-
-        const float x = cursorX;
-        const float right = x + (float) wi;
-        if (right > (float) availableTailW + 1.0f)
-            break;
-
-        xPositions.add (x);
-        widths.add (wi);
-        maxRight = juce::jmax (maxRight, right);
-        cursorX += (float) wi * advanceFactor;
-    }
-
-    int repeatCount = xPositions.size();
-    repeatCount = juce::jmin (repeatCount, kMaxTailCharsDrawn);
-
-    if (repeatScale >= 0.0f)
-        repeatCount = (int) std::floor ((double) repeatCount * (double) repeatScale);
-
-    if (trimTailCount > 0)
-        repeatCount = juce::jmax (0, repeatCount - trimTailCount);
-
-    if (repeatCount <= 1)
-        return;
-
-    const int baseBaselineY = area.getY()
-                            + (int) std::round ((area.getHeight() - font.getHeight()) * 0.5f)
-                            + (int) std::round (font.getAscent());
-
-    // Draw from the end to the beginning so early indices stay visually on top.
-    int drawableCount = 0;
-    for (int i = repeatCount - 1; i >= 0; --i)
-    {
-        auto fi = font;
-        fi.setHeight (baseFontH * scaleForIndex (i + 1));
-        const int wi = juce::jmax (1, widths.getUnchecked (i));
-        if (fi.getHeight() < kMinTailCharPx || wi < (int) std::ceil (kMinTailCharPx))
-            continue;
-
-        const float t = (float) (i + 1) / (float) juce::jmax (1, repeatCount);
-        const auto c = lerpColourStops (gradient, t);
-        if (isAbsoluteGradientEndpoint (c, gradient))
-            continue;
-
-        ++drawableCount;
-    }
-
-    if (drawableCount <= 1)
-        return;
-
-    for (int i = repeatCount - 1; i >= 0; --i)
-    {
-        auto fi = font;
-        fi.setHeight (baseFontH * scaleForIndex (i + 1));
-        const int wi = juce::jmax (1, widths.getUnchecked (i));
-        if (fi.getHeight() < kMinTailCharPx || wi < (int) std::ceil (kMinTailCharPx))
-            continue;
-
-        const int x = area.getX() + baseW + juce::roundToInt (xPositions.getUnchecked (i));
-
-        const float t = (float) (i + 1) / (float) juce::jmax (1, repeatCount);
-        const auto c = lerpColourStops (gradient, t);
-        if (isAbsoluteGradientEndpoint (c, gradient))
-            continue;
-
-        g.setColour (c);
-
-        g.setFont (fi);
-
-        int baselineY = baseBaselineY;
-        if (verticalMode == "pyramid")
-        {
-            baselineY = area.getY()
-                      + (int) std::round ((area.getHeight() - fi.getHeight()) * 0.5f)
-                      + (int) std::round (fi.getAscent());
-        }
-        else if (verticalMode == "baseline")
-        {
-            baselineY = baseBaselineY;
-        }
-
-        g.drawSingleLineText (tailChar, x, baselineY, juce::Justification::left);
-    }
-
-    g.setFont (font);
-}
-
 static bool fits (juce::Graphics& g, const juce::String& s, int w)
 {
     if (w <= 0) return false;
@@ -433,6 +228,7 @@ static bool drawIfFitsWithOptionalShrink (juce::Graphics& g,
 {
     auto font = g.getCurrentFont();
     font.setHeight (baseFontPx);
+    font.setHorizontalScale (1.0f);
     g.setFont (font);
 
     if (fits (g, text, area.getWidth()))
@@ -441,10 +237,12 @@ static bool drawIfFitsWithOptionalShrink (juce::Graphics& g,
         return true;
     }
 
-    // pequeño shrink “suave” para intentar salvar unidades antes de abreviar
-    for (float h = baseFontPx - 1.0f; h >= shrinkFloorPx; h -= 1.0f)
+    // Compress horizontally instead of shrinking font height so that
+    // vertical size stays constant during horizontal resize.
+    const float minScale = juce::jlimit (0.4f, 1.0f, shrinkFloorPx / baseFontPx);
+    for (float s = 1.0f - 0.025f; s >= minScale; s -= 0.025f)
     {
-        font.setHeight (h);
+        font.setHorizontalScale (s);
         g.setFont (font);
         if (fits (g, text, area.getWidth()))
         {
@@ -455,6 +253,7 @@ static bool drawIfFitsWithOptionalShrink (juce::Graphics& g,
 
     return false;
 }
+
 
 static void drawValueNoEllipsis (juce::Graphics& g,
                                  const juce::Rectangle<int>& area,
@@ -485,6 +284,7 @@ static void drawValueNoEllipsis (juce::Graphics& g,
     {
         auto font = g.getCurrentFont();
         font.setHeight (baseFontPx);
+        font.setHorizontalScale (1.0f);
         g.setFont (font);
 
         if (intl.isNotEmpty() && fits (g, intl, area.getWidth()))
@@ -493,10 +293,11 @@ static void drawValueNoEllipsis (juce::Graphics& g,
             return;
         }
 
-        // shrink solo para el entero
-        for (float h = baseFontPx; h >= minFontPx; h -= 1.0f)
+        // compress horizontally for the integer-only fallback
+        const float minScale = juce::jlimit (0.4f, 1.0f, minFontPx / baseFontPx);
+        for (float s = 1.0f - 0.025f; s >= minScale; s -= 0.025f)
         {
-            font.setHeight (h);
+            font.setHorizontalScale (s);
             g.setFont (font);
             if (intl.isNotEmpty() && fits (g, intl, area.getWidth()))
             {
@@ -513,21 +314,9 @@ static bool drawValueWithRightAlignedSuffix (juce::Graphics& g,
                                              const juce::String& suffixText,
                                              bool enableAutoMargin,
                                              float baseFontPx,
-                                             float minFontPx,
-                                             const std::array<juce::Colour, 2>* tailGradient = nullptr,
-                                             bool tailFromSuffixToLeft = false,
-                                             bool lowercaseTailChars = false,
-                                             const juce::String& tailTuning = juce::String())
+                                             float minFontPx)
 {
-    constexpr int kMaxTailCharsDrawn = 20;
-    constexpr float kMinTailCharPx = 3.0f;
     constexpr int kAutoMarginThresholdPx = 24;
-    constexpr int kSingleDigitTailBudgetChars = 8;
-    constexpr float kDefaultReverseShrinkStep01 = 0.20f;
-    constexpr float kSingleDigitReverseShrinkStep01 = 0.10f;
-    constexpr float kMinTailScale = 0.1f;
-    constexpr float kTailOverlap01 = 0.0f;
-    constexpr int kTailTokenChars = 1;
 
     if (area.getWidth() <= 2 || area.getHeight() <= 2)
         return false;
@@ -536,10 +325,12 @@ static bool drawValueWithRightAlignedSuffix (juce::Graphics& g,
     const auto suffix = suffixText.toUpperCase();
 
     auto font = g.getCurrentFont();
+    font.setHeight (baseFontPx);
 
-    for (float h = baseFontPx; h >= minFontPx; h -= 1.0f)
+    const float minScale = juce::jlimit (0.4f, 1.0f, minFontPx / baseFontPx);
+    for (float s = 1.0f; s >= minScale; s -= 0.025f)
     {
-        font.setHeight (h);
+        font.setHorizontalScale (s);
         g.setFont (font);
 
         const int suffixW = stringWidth (font, suffix);
@@ -561,170 +352,8 @@ static bool drawValueWithRightAlignedSuffix (juce::Graphics& g,
 
         const int valueAreaW = juce::jmax (1, valueRight - valueX);
 
-        auto computeSingleDigitReverseLaneWidth = [&]() -> int
-        {
-            const juce::String tailToken = suffix.substring (0, 1);
-            const int tailTokenW = juce::jmax (1, stringWidth (font, tailToken));
-            const int tailBudgetW = juce::jmax (tailTokenW * kSingleDigitTailBudgetChars,
-                                                stringWidth (font, "SSSS"));
-            const int desiredLaneW = valueW + juce::jmax (gapW, tailBudgetW);
-            const int minLaneW = valueW + gapW;
-
-            if (valueAreaW <= minLaneW)
-                return valueAreaW;
-
-            return juce::jlimit (minLaneW, valueAreaW, desiredLaneW);
-        };
-
-        int valueDrawW = valueAreaW;
-        if (tailGradient != nullptr && tailFromSuffixToLeft && suffix.isNotEmpty() && value.length() <= 1)
-            valueDrawW = computeSingleDigitReverseLaneWidth();
-
-        if (tailGradient != nullptr && ! tailFromSuffixToLeft)
-        {
-            const auto valueArea = juce::Rectangle<int> (valueX, area.getY(), valueDrawW, area.getHeight());
-            drawTextWithRepeatedLastCharGradient (g, valueArea, value, valueDrawW, *tailGradient, valueX + valueDrawW,
-                                                  tailTuning, "20%", "pyramid");
-            g.setColour ((*tailGradient)[0]);
-        }
-        else
-        {
-            g.drawText (value, valueX, area.getY(), valueDrawW, area.getHeight(), juce::Justification::left, false);
-        }
-
+        g.drawText (value, valueX, area.getY(), valueAreaW, area.getHeight(), juce::Justification::left, false);
         g.drawText (suffix, suffixX, area.getY(), suffixW, area.getHeight(), juce::Justification::left, false);
-
-        if (tailGradient != nullptr && tailFromSuffixToLeft && suffix.isNotEmpty())
-        {
-            int trimTailCount = 0;
-            float repeatScale = -1.0f;
-            parseTailTuning (tailTuning, trimTailCount, repeatScale);
-
-            const float shrinkStep01 = (value.length() <= 1) ? kSingleDigitReverseShrinkStep01
-                                                              : kDefaultReverseShrinkStep01;
-            const bool useShrink = (shrinkStep01 >= 0.0f);
-            const float advanceFactor = 1.0f - kTailOverlap01;
-
-            juce::String tailChar = suffix.substring (0, juce::jmin (kTailTokenChars, suffix.length()));
-            if (lowercaseTailChars)
-                tailChar = tailChar.toLowerCase();
-
-            const int tailCharW = stringWidth (font, tailChar);
-            if (tailCharW > 0)
-            {
-                const int leftLimit = valueX + valueW;
-                const int rightLimit = suffixX;
-                const int fittingSlackPx = juce::jmax (2, tailCharW / 2);
-                const int leftLimitForFit = leftLimit - fittingSlackPx;
-
-                auto scaleForIndex = [&] (int index1Based)
-                {
-                    if (! useShrink)
-                        return 1.0f;
-
-                    const float s = 1.0f - (shrinkStep01 * (float) index1Based);
-                    return juce::jmax (kMinTailScale, s);
-                };
-
-                int repeatCount = 0;
-                float usedTailW = 0.0f;
-                for (int i = 1; i <= kMaxTailCharsDrawn; ++i)
-                {
-                    auto fi = font;
-                    fi.setHeight (font.getHeight() * scaleForIndex (i));
-                    const int wi = stringWidth (fi, tailChar);
-                    const int xCandidate = rightLimit - (int) std::floor (usedTailW + 1.0e-6f) - wi;
-                    if (fi.getHeight() < kMinTailCharPx || wi < (int) std::ceil (kMinTailCharPx)
-                        || wi <= 0 || xCandidate < leftLimitForFit)
-                        break;
-
-                    usedTailW += (float) wi * advanceFactor;
-                    ++repeatCount;
-                }
-
-                if (repeatScale >= 0.0f)
-                    repeatCount = (int) std::floor ((double) repeatCount * (double) repeatScale);
-
-                if (trimTailCount > 0)
-                    repeatCount = juce::jmax (0, repeatCount - trimTailCount);
-
-                repeatCount = juce::jmin (repeatCount, kMaxTailCharsDrawn);
-
-                if (repeatCount > 1)
-                {
-                    std::array<int, (size_t) kMaxTailCharsDrawn> drawXs {};
-                    std::array<int, (size_t) kMaxTailCharsDrawn> drawBaselines {};
-                    int draw_count = 0;
-
-                    float consumedW = 0.0f;
-                    for (int i = 0; i < repeatCount; ++i)
-                    {
-                        auto fi = font;
-                        fi.setHeight (font.getHeight() * scaleForIndex (i + 1));
-                        const int wi = juce::jmax (1, stringWidth (fi, tailChar));
-                        if (fi.getHeight() < kMinTailCharPx || wi < (int) std::ceil (kMinTailCharPx))
-                            break;
-                        const int x = rightLimit - (int) std::floor (consumedW + 1.0e-6f) - wi;
-
-                        const int baselineY = area.getY()
-                                            + (int) std::round ((area.getHeight() - fi.getHeight()) * 0.5f)
-                                            + (int) std::round (fi.getAscent());
-
-                        if (draw_count >= kMaxTailCharsDrawn)
-                            break;
-
-                        drawXs[(size_t) draw_count] = x;
-                        drawBaselines[(size_t) draw_count] = baselineY;
-                        ++draw_count;
-                        consumedW += (float) wi * advanceFactor;
-                    }
-
-                    if (draw_count <= 1)
-                    {
-                        g.setFont (font);
-                        g.setColour ((*tailGradient)[0]);
-                        return true;
-                    }
-
-                    int drawable_count = 0;
-                    for (int i = draw_count - 1; i >= 0; --i)
-                    {
-                        const float t = (float) (i + 1) / (float) juce::jmax (1, draw_count);
-                        const auto c = lerpColourStops (*tailGradient, t);
-                        if (isAbsoluteGradientEndpoint (c, *tailGradient))
-                            continue;
-                        ++drawable_count;
-                    }
-
-                    if (drawable_count <= 1)
-                    {
-                        g.setFont (font);
-                        g.setColour ((*tailGradient)[0]);
-                        return true;
-                    }
-
-                    // Reversed stacking priority: draw darker/later first,
-                    // then lighter/earlier on top.
-                    for (int i = draw_count - 1; i >= 0; --i)
-                    {
-                        auto fi = font;
-                        fi.setHeight (font.getHeight() * scaleForIndex (i + 1));
-
-                        const float t = (float) (i + 1) / (float) juce::jmax (1, draw_count);
-                        const auto c = lerpColourStops (*tailGradient, t);
-                        if (isAbsoluteGradientEndpoint (c, *tailGradient))
-                            continue;
-
-                        g.setColour (c);
-                        g.setFont (fi);
-                        g.drawSingleLineText (tailChar, drawXs[(size_t) i], drawBaselines[(size_t) i], juce::Justification::left);
-                    }
-
-                    g.setFont (font);
-                    g.setColour ((*tailGradient)[0]);
-                }
-            }
-        }
 
         return true;
     }
@@ -767,7 +396,7 @@ void ECHOTRAudioProcessorEditor::MinimalLNF::drawTickBox (juce::Graphics& g, juc
     const auto local = button.getLocalBounds().toFloat().reduced (1.0f);
     const float side = juce::jlimit (14.0f,
                                      juce::jmax (14.0f, local.getHeight() - 2.0f),
-                                     std::round (local.getHeight() * 0.50f));
+                                     std::round (local.getHeight() * 0.65f));
 
     auto r = juce::Rectangle<float> (local.getX() + 2.0f,
                                      local.getCentreY() - (side * 0.5f),
@@ -930,7 +559,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     fxTailEnabled = audioProcessor.getUiFxTailEnabled();
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 2; ++i)
         customPalette[(size_t) i] = audioProcessor.getUiCustomPaletteColour (i);
 
     setOpaque (true);
@@ -1047,16 +676,14 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindButton (midiAttachment, ECHOTRAudioProcessor::kParamMidi, midiButton);
     bindButton (loopAttachment, ECHOTRAudioProcessor::kParamLoop, loopButton);
 
-    const std::array<const char*, 7> uiMirrorParamIds {
+    static constexpr std::array<const char*, 5> kUiMirrorParamIds {
         ECHOTRAudioProcessor::kParamSync,        // Listen for sync mode changes
         ECHOTRAudioProcessor::kParamUiPalette,
         ECHOTRAudioProcessor::kParamUiFxTail,
         ECHOTRAudioProcessor::kParamUiColor0,
-        ECHOTRAudioProcessor::kParamUiColor1,
-        ECHOTRAudioProcessor::kParamUiColor2,
-        ECHOTRAudioProcessor::kParamUiColor3
+        ECHOTRAudioProcessor::kParamUiColor1
     };
-    for (auto* paramId : uiMirrorParamIds)
+    for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.addParameterListener (paramId, this);
 
     juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
@@ -1093,16 +720,14 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
 {
     stopTimer();
 
-    const std::array<const char*, 7> uiMirrorParamIds {
+    static constexpr std::array<const char*, 5> kUiMirrorParamIds {
         ECHOTRAudioProcessor::kParamSync,
         ECHOTRAudioProcessor::kParamUiPalette,
         ECHOTRAudioProcessor::kParamUiFxTail,
         ECHOTRAudioProcessor::kParamUiColor0,
-        ECHOTRAudioProcessor::kParamUiColor1,
-        ECHOTRAudioProcessor::kParamUiColor2,
-        ECHOTRAudioProcessor::kParamUiColor3
+        ECHOTRAudioProcessor::kParamUiColor1
     };
-    for (auto* paramId : uiMirrorParamIds)
+    for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.removeParameterListener (paramId, this);
 
     audioProcessor.setUiUseCustomPalette (useCustomPalette);
@@ -1130,13 +755,9 @@ void ECHOTRAudioProcessorEditor::applyActivePalette()
     scheme.fg = palette[0];
     scheme.outline = palette[0];
     scheme.text = palette[0];
-    scheme.fxGradientStart = palette[2];
-    scheme.fxGradientEnd = palette[3];
 
-    for (auto& s : schemes)
-        s = scheme;
-
-    lnf.setScheme (schemes[(size_t) currentSchemeIndex]);
+    activeScheme = scheme;
+    lnf.setScheme (activeScheme);
     
     // Apply text color to MIDI port display
     midiPortDisplay.setColour (juce::Label::textColourId, scheme.text);
@@ -1237,9 +858,7 @@ void ECHOTRAudioProcessorEditor::parameterChanged (const juce::String& parameter
     const bool isUiVisualParam = parameterID == ECHOTRAudioProcessor::kParamUiPalette
                              || parameterID == ECHOTRAudioProcessor::kParamUiFxTail
                              || parameterID == ECHOTRAudioProcessor::kParamUiColor0
-                             || parameterID == ECHOTRAudioProcessor::kParamUiColor1
-                             || parameterID == ECHOTRAudioProcessor::kParamUiColor2
-                             || parameterID == ECHOTRAudioProcessor::kParamUiColor3;
+                             || parameterID == ECHOTRAudioProcessor::kParamUiColor1;
 
     if (! isSizeParam && ! isUiVisualParam)
         return;
@@ -1283,6 +902,75 @@ void ECHOTRAudioProcessorEditor::timerCallback()
         lastPersistedEditorW = w;
         lastPersistedEditorH = h;
     }
+
+    // ── CRT animation ──
+    if (fxTailEnabled && w > 0 && h > 0)
+    {
+        ++crtTickCounter;
+
+        // Noise: advance frame every tick (~10 Hz)
+        crtNoiseIndex = (crtNoiseIndex + 1) % kCrtNoiseFrames;
+
+        // Flicker: subtle brightness variation (fast, subliminal)
+        crtFlickerAlpha = (juce::uint8) crtRng.nextInt ({ 0, 22 });
+
+        // Distortion: advance phase + occasional amplitude shifts
+        crtDistortionPhase += 0.22;
+        if (crtRng.nextInt (100) < 8)
+            crtDistortionAmplitude = 0.6f + crtRng.nextFloat() * 2.8f;  // 0.6 – 3.4 px
+
+        // Glitch bar: ~25 % chance per tick
+        if (crtRng.nextInt (100) < 25)
+        {
+            crtGlitchBarY  = crtRng.nextInt (h);
+            crtGlitchBarH  = crtRng.nextInt ({ 2, juce::jmax (5, h / 35) });
+            crtGlitchShiftPx = crtRng.nextInt ({ -10, 11 });
+        }
+        else
+        {
+            crtGlitchBarY = -1;
+        }
+
+        // ── Chromatic aberration: snapshot → channel split (~3 Hz) ──
+        // We capture the component without CRT overlays (crtCapturing flag)
+        // and separate red / cyan channels for offset drawing in paintOverChildren.
+        if ((crtTickCounter % 5) == 0)
+        {
+            crtCapturing = true;
+            auto snapshot = createComponentSnapshot (getLocalBounds(), true, 0.5f);
+            crtCapturing = false;
+
+            const int sw = snapshot.getWidth();
+            const int sh = snapshot.getHeight();
+
+            if (sw > 0 && sh > 0)
+            {
+                crtRedShift  = juce::Image (juce::Image::ARGB, sw, sh, true);
+                crtCyanShift = juce::Image (juce::Image::ARGB, sw, sh, true);
+
+                juce::Image::BitmapData src  (snapshot,      juce::Image::BitmapData::readOnly);
+                juce::Image::BitmapData rDst (crtRedShift,   juce::Image::BitmapData::writeOnly);
+                juce::Image::BitmapData cDst (crtCyanShift,  juce::Image::BitmapData::writeOnly);
+
+                for (int py = 0; py < sh; ++py)
+                {
+                    for (int px = 0; px < sw; ++px)
+                    {
+                        const auto col = src.getPixelColour (px, py);
+                        const auto a   = col.getAlpha();
+                        if (a == 0) continue;
+                        rDst.setPixelColour (px, py, juce::Colour::fromRGBA (col.getRed(), 0, 0, (juce::uint8) (a / 3)));
+                        cDst.setPixelColour (px, py, juce::Colour::fromRGBA (0, col.getGreen(), col.getBlue(), (juce::uint8) (a / 3)));
+                    }
+                }
+            }
+
+            // Keep a copy of the clean snapshot for contrast reinforcement
+            crtCleanSnapshot = snapshot;
+        }
+
+        repaint();
+    }
 }
 
 void ECHOTRAudioProcessorEditor::applyPersistedUiStateFromProcessor (bool applySize, bool applyPaletteAndFx)
@@ -1303,7 +991,7 @@ void ECHOTRAudioProcessorEditor::applyPersistedUiStateFromProcessor (bool applyS
     if (applyPaletteAndFx)
     {
         bool paletteChanged = false;
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < 2; ++i)
         {
             const auto c = audioProcessor.getUiCustomPaletteColour (i);
             if (customPalette[(size_t) i].getARGB() != c.getARGB())
@@ -1492,7 +1180,6 @@ namespace
     constexpr int kPromptBodyBottomPad = 18;
     constexpr const char* kPromptSuffixLabelId = "promptSuffixLabel";
 
-    constexpr float kPromptEditorFontScale = 1.5f;
     constexpr float kPromptEditorHeightScale = 1.4f;
     constexpr int kPromptEditorHeightPadPx = 6;
     constexpr int kPromptEditorRaiseYPx = 8;
@@ -1502,9 +1189,6 @@ namespace
     constexpr int kPromptEditorHostPadPx = 80;
 
     constexpr int kPromptInlineContentPadPx = 8;
-    constexpr int kPromptSuffixVInsetPx = 1;
-    constexpr int kPromptSuffixBaselineDefaultPx = 3;
-    constexpr int kPromptSuffixBaselineShapePx = 4;
 
     constexpr int kTitleAreaExtraHeightPx = 4;
     constexpr int kTitleRightGapToInfoPx = 8;
@@ -1708,14 +1392,12 @@ static void stylePromptTextEditor (juce::TextEditor& te,
                                    juce::Colour bg,
                                    juce::Colour text,
                                    juce::Colour accent,
-                                   juce::Font baseFont,
+                                   const juce::Font& baseFont,
                                    int hostWidth,
                                    bool widenAndCenter)
 {
-    auto popupFont = baseFont;
-    popupFont.setHeight (popupFont.getHeight() * kPromptEditorFontScale);
-    te.setFont (popupFont);
-    te.applyFontToAllText (popupFont);
+    te.setFont (baseFont);
+    te.applyFontToAllText (baseFont);
     te.setJustification (juce::Justification::centred);
     te.setIndents (0, 0);
 
@@ -1727,7 +1409,7 @@ static void stylePromptTextEditor (juce::TextEditor& te,
     te.setColour (juce::TextEditor::highlightedTextColourId, text);
 
     auto r = te.getBounds();
-    r.setHeight ((int) (popupFont.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
+    r.setHeight ((int) (baseFont.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
     r.setY (juce::jmax (kPromptEditorMinTopPx, r.getY() - kPromptEditorRaiseYPx));
 
     if (widenAndCenter)
@@ -1801,8 +1483,8 @@ static void preparePromptTextEditor (juce::AlertWindow& aw,
 }
 
 static void syncGraphicsPopupState (juce::AlertWindow& aw,
-                                    const std::array<juce::Colour, 4>& defaultPalette,
-                                    const std::array<juce::Colour, 4>& customPalette,
+                                    const std::array<juce::Colour, 2>& defaultPalette,
+                                    const std::array<juce::Colour, 2>& customPalette,
                                     bool useCustomPalette)
 {
     if (auto* t = dynamic_cast<juce::ToggleButton*> (aw.findChildWithID ("paletteDefaultToggle")))
@@ -1810,7 +1492,7 @@ static void syncGraphicsPopupState (juce::AlertWindow& aw,
     if (auto* t = dynamic_cast<juce::ToggleButton*> (aw.findChildWithID ("paletteCustomToggle")))
         t->setToggleState (useCustomPalette, juce::dontSendNotification);
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 2; ++i)
     {
         if (auto* dflt = dynamic_cast<juce::TextButton*> (aw.findChildWithID ("defaultSwatch" + juce::String (i))))
             setPaletteSwatchColour (*dflt, defaultPalette[(size_t) i]);
@@ -1842,14 +1524,9 @@ static void layoutGraphicsPopupContent (juce::AlertWindow& aw)
 
     auto snapEven = [] (int v) { return v & ~1; };
 
-    const int buttonsTop = getAlertButtonsTop (aw);
-
     const int contentLeft = kPromptInnerMargin;
-    const int contentTop = kPromptBodyTopPad;
     const int contentRight = aw.getWidth() - kPromptInnerMargin;
-    const int contentBottom = buttonsTop - kPromptBodyBottomPad;
     const int contentW = juce::jmax (0, contentRight - contentLeft);
-    const int contentH = juce::jmax (0, contentBottom - contentTop);
 
     auto* dfltToggle = dynamic_cast<juce::ToggleButton*> (aw.findChildWithID ("paletteDefaultToggle"));
     auto* dfltLabel  = dynamic_cast<juce::Label*> (aw.findChildWithID ("paletteDefaultLabel"));
@@ -1870,22 +1547,29 @@ static void layoutGraphicsPopupContent (juce::AlertWindow& aw)
 
     const int toggleVisualSide = juce::jlimit (14,
                                                juce::jmax (14, toggleBox - 2),
-                                               (int) std::lround ((double) toggleBox * 0.50));
+                                               (int) std::lround ((double) toggleBox * 0.65));
 
-    const int swatchGroupSize = (2 * swatchSize) + swatchGap;
-    const int swatchesH = swatchGroupSize;
+    const int swatchW = swatchSize;
+    const int swatchH = (2 * swatchSize) + swatchGap;  // vertical rectangle = same as old 2-row grid
+    const int swatchGroupSize = (2 * swatchW) + swatchGap;
+    const int swatchesH = swatchH;
     const int modeH = toggleBox;
 
     const int baseGap1 = GraphicsPromptLayout::titleToModeGap;
     const int baseGap2 = GraphicsPromptLayout::modeToSwatchesGap;
-    const int stackHNoTopBottom = titleH + baseGap1 + modeH + baseGap2 + swatchesH;
-    const int centeredYStart = snapEven (contentTop + juce::jmax (0, (contentH - stackHNoTopBottom) / 2));
-    const int symmetricTopMargin = kPromptFooterBottomPad;
-    const bool hasBodyTitle = (paletteTitle != nullptr);
-    const int yStart = hasBodyTitle ? snapEven (symmetricTopMargin) : centeredYStart;
 
-    const int titleY = yStart;
-    const int modeY = snapEven (titleY + titleH + baseGap1);
+    // Title fixed at top, footer fixed at bottom
+    const int titleY = snapEven (kPromptFooterBottomPad);
+    const int footerY = getAlertButtonsTop (aw);
+
+    // Body (toggles + swatches) centered between title bottom and footer top
+    const int bodyH = modeH + baseGap2 + swatchesH;
+    const int bodyZoneTop = titleY + titleH + baseGap1;
+    const int bodyZoneBottom = footerY - baseGap1;
+    const int bodyZoneH = juce::jmax (0, bodyZoneBottom - bodyZoneTop);
+    const int bodyY = snapEven (bodyZoneTop + juce::jmax (0, (bodyZoneH - bodyH) / 2));
+
+    const int modeY = bodyY;
     const int blocksY = snapEven (modeY + modeH + baseGap2);
 
     const int dfltLabelW = (dfltLabel != nullptr) ? juce::jmax (38, stringWidth (dfltLabel->getFont(), "DFLT") + 2) : 40;
@@ -1931,16 +1615,14 @@ static void layoutGraphicsPopupContent (juce::AlertWindow& aw)
     {
         const int startY = blocksY;
 
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < 2; ++i)
         {
             if (auto* b = dynamic_cast<juce::TextButton*> (aw.findChildWithID (prefix + juce::String (i))))
             {
-                const int col = i % 2;
-                const int row = i / 2;
-                b->setBounds (startX + col * (swatchSize + swatchGap),
-                              startY + row * (swatchSize + swatchGap),
-                              swatchSize,
-                              swatchSize);
+                b->setBounds (startX + i * (swatchW + swatchGap),
+                              startY,
+                              swatchW,
+                              swatchH);
             }
         }
     };
@@ -1948,19 +1630,17 @@ static void layoutGraphicsPopupContent (juce::AlertWindow& aw)
     placeSwatchGroup ("defaultSwatch", defaultSwatchStartX);
     placeSwatchGroup ("customSwatch", customSwatchStartX);
 
-    if (auto* okButton = aw.getNumButtons() > 0 ? aw.getButton (0) : nullptr)
+    if (okBtn != nullptr)
     {
-        if (okButton != nullptr)
-        {
-            auto okR = okButton->getBounds();
-            okR.setX (col1X);
-            okButton->setBounds (okR);
+        auto okR = okBtn->getBounds();
+        okR.setX (col1X);
+        okR.setY (footerY);
+        okBtn->setBounds (okR);
 
-                const int fxY = snapEven (okR.getY() + juce::jmax (0, (okR.getHeight() - toggleBox) / 2));
-                const int fxX = col0X;
-                if (fxToggle != nullptr) fxToggle->setBounds (fxX, fxY, toggleBox, toggleBox);
-                if (fxLabel != nullptr)  fxLabel->setBounds (fxX + toggleLabelStartOffset, fxY, fxLabelW, toggleBox);
-            }
+        const int fxY = snapEven (footerY + juce::jmax (0, (okR.getHeight() - toggleBox) / 2));
+        const int fxX = col0X;
+        if (fxToggle != nullptr) fxToggle->setBounds (fxX, fxY, toggleBox, toggleBox);
+        if (fxLabel != nullptr)  fxLabel->setBounds (fxX + toggleLabelStartOffset, fxY, fxLabelW, toggleBox);
     }
 
     auto updateVisualBounds = [] (juce::Component* c, int& minX, int& maxR)
@@ -1985,7 +1665,7 @@ static void layoutGraphicsPopupContent (juce::AlertWindow& aw)
     updateVisualBounds (fxLabel, visualMinX, visualMaxR);
     updateVisualBounds (okBtn, visualMinX, visualMaxR);
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 2; ++i)
     {
         updateVisualBounds (aw.findChildWithID ("defaultSwatch" + juce::String (i)), visualMinX, visualMaxR);
         updateVisualBounds (aw.findChildWithID ("customSwatch" + juce::String (i)), visualMinX, visualMaxR);
@@ -2023,7 +1703,7 @@ static void layoutGraphicsPopupContent (juce::AlertWindow& aw)
             shiftX (fxLabel);
             shiftX (okBtn);
 
-            for (int i = 0; i < 4; ++i)
+            for (int i = 0; i < 2; ++i)
             {
                 shiftX (aw.findChildWithID ("defaultSwatch" + juce::String (i)));
                 shiftX (aw.findChildWithID ("customSwatch" + juce::String (i)));
@@ -2037,11 +1717,11 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 {
     // All sliders use the same numeric input style
     // make sure the LNF is using the current scheme in case it changed
-    lnf.setScheme (schemes[(size_t) currentSchemeIndex]);
+    lnf.setScheme (activeScheme);
 
     // grab a local copy, we will use its raw colours below to bypass
     // any host/LNF oddities that might creep in
-    const auto scheme = schemes[(size_t) currentSchemeIndex];
+    const auto scheme = activeScheme;
 
     // decide what suffix label should appear; we want *separate* text that
     // is not part of the editable field. use the full nomenclature from the
@@ -2179,8 +1859,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
     if (auto* te = aw->getTextEditor ("val"))
     {
-        auto f = lnf.getAlertWindowMessageFont();
-        f.setHeight (f.getHeight() * 1.5f);
+        const auto& f = kBoldFont40();
         te->setFont (f);
         te->applyFontToAllText (f);
 
@@ -2244,10 +1923,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             const int maxLabelX = juce::jmax (minLabelX, contentRight - labelW);
             labelX = juce::jlimit (minLabelX, maxLabelX, labelX);
 
-            const int vInset = kPromptSuffixVInsetPx;
-            const int baselineOffset = isPercentPrompt ? kPromptSuffixBaselineShapePx : kPromptSuffixBaselineDefaultPx;
-            const int labelY = er.getY() + vInset + baselineOffset;
-            const int labelH = juce::jmax (1, er.getHeight() - (vInset * 2) - baselineOffset);
+            const int labelY = er.getY();
+            const int labelH = juce::jmax (1, er.getHeight());
             suffixLabel->setBounds (labelX, labelY, labelW, labelH);
         };
 
@@ -2359,12 +2036,14 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     // We can't call lookAndFeelChanged() on AlertWindow (it's protected),
     // so just rely on calling setLookAndFeel() twice instead.
 
+    const juce::Font& kPromptFont = kBoldFont40();
+
     preparePromptTextEditor (*aw,
                              "val",
                              scheme.bg,
                              scheme.text,
                              scheme.fg,
-                             lnf.getAlertWindowMessageFont(),
+                             kPromptFont,
                              false,
                              6);
 
@@ -2379,17 +2058,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     }
 
     // style buttons as well – some hosts stomp them when the window is added
-    for (int i = 0; i < aw->getNumButtons(); ++i)
-    {
-        if (auto* btn = dynamic_cast<juce::TextButton*>(aw->getButton (i)))
-        {
-            btn->setColour (juce::TextButton::buttonColourId,   lnf.findColour (juce::TextButton::buttonColourId));
-            btn->setColour (juce::TextButton::buttonOnColourId, lnf.findColour (juce::TextButton::buttonOnColourId));
-            btn->setColour (juce::TextButton::textColourOffId,  lnf.findColour (juce::TextButton::textColourOffId));
-            btn->setColour (juce::TextButton::textColourOnId,   lnf.findColour (juce::TextButton::textColourOnId));
-            // font is provided by the look-and-feel already; avoid calling setFont
-        }
-    }
+    styleAlertButtons (*aw, lnf);
 
     juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
     juce::Slider* sliderPtr = &s;
@@ -2412,7 +2081,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
                                      scheme.bg,
                                      scheme.text,
                                      scheme.fg,
-                                     lnf.getAlertWindowMessageFont(),
+                                     kPromptFont,
                                      false,
                                      6);
         });
@@ -2426,21 +2095,22 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         aw->repaint();
     }
 
-    // Apply larger font and final layout synchronously so the prompt is
+    // Apply final layout synchronously so the prompt is
     // fully laid out before being shown (avoids a small delayed re-layout).
     {
-        auto bigFont = lnf.getAlertWindowMessageFont();
-        bigFont.setHeight (bigFont.getHeight() * 1.5f);
         preparePromptTextEditor (*aw,
                                  "val",
                                  scheme.bg,
                                  scheme.text,
                                  scheme.fg,
-                                 bigFont,
+                                 kPromptFont,
                                  false,
                                  6);
         if (auto* suffixLbl = dynamic_cast<juce::Label*> (aw->findChildWithID (kPromptSuffixLabelId)))
-            suffixLbl->setFont (bigFont);
+        {
+            if (auto* te = aw->getTextEditor ("val"))
+                suffixLbl->setFont (te->getFont());
+        }
 
         if (layoutValueAndSuffix)
             layoutValueAndSuffix();
@@ -2538,8 +2208,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
 void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
 {
-    lnf.setScheme (schemes[(size_t) currentSchemeIndex]);
-    const auto scheme = schemes[(size_t) currentSchemeIndex];
+    lnf.setScheme (activeScheme);
+    const auto scheme = activeScheme;
 
     const juce::String suffixText = "PORT";
     const int port = audioProcessor.getMidiPort();
@@ -2556,7 +2226,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     {
         juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
         {
-            (void) editor; // Suppress unused parameter warning
+            juce::ignoreUnused (editor); // Suppress unused parameter warning
             // Allow digits 0-127
             juce::String result;
             for (auto c : newText)
@@ -2575,8 +2245,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     
     if (auto* te = aw->getTextEditor ("val"))
     {
-        auto f = lnf.getAlertWindowMessageFont();
-        f.setHeight (f.getHeight() * 1.5f);
+        const auto& f = kBoldFont40();
         te->setFont (f);
         te->applyFontToAllText (f);
         
@@ -2636,10 +2305,8 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
             const int maxLabelX = juce::jmax (minLabelX, contentRight - labelW);
             labelX = juce::jlimit (minLabelX, maxLabelX, labelX);
             
-            const int vInset = kPromptSuffixVInsetPx;
-            const int baselineOffset = kPromptSuffixBaselineDefaultPx;
-            const int labelY = er.getY() + vInset + baselineOffset;
-            const int labelH = juce::jmax (1, er.getHeight() - (vInset * 2) - baselineOffset);
+            const int labelY = er.getY();
+            const int labelH = juce::jmax (1, er.getHeight());
             suffixLabel->setBounds (labelX, labelY, labelW, labelH);
         };
         
@@ -2663,12 +2330,14 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     applyPromptShellSize (*aw);
     layoutAlertWindowButtons (*aw);
     
+    const juce::Font& kMidiPromptFont = kBoldFont40();
+
     preparePromptTextEditor (*aw,
                              "val",
                              scheme.bg,
                              scheme.text,
                              scheme.fg,
-                             lnf.getAlertWindowMessageFont(),
+                             kMidiPromptFont,
                              false,
                              6);
     
@@ -2681,16 +2350,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     }
     
     // Style buttons
-    for (int i = 0; i < aw->getNumButtons(); ++i)
-    {
-        if (auto* btn = dynamic_cast<juce::TextButton*>(aw->getButton (i)))
-        {
-            btn->setColour (juce::TextButton::buttonColourId,   lnf.findColour (juce::TextButton::buttonColourId));
-            btn->setColour (juce::TextButton::buttonOnColourId, lnf.findColour (juce::TextButton::buttonOnColourId));
-            btn->setColour (juce::TextButton::textColourOffId,  lnf.findColour (juce::TextButton::textColourOffId));
-            btn->setColour (juce::TextButton::textColourOnId,   lnf.findColour (juce::TextButton::textColourOnId));
-        }
-    }
+    styleAlertButtons (*aw, lnf);
     
     juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
     
@@ -2712,18 +2372,19 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     }
     
     {
-        auto bigFont = lnf.getAlertWindowMessageFont();
-        bigFont.setHeight (bigFont.getHeight() * 1.5f);
         preparePromptTextEditor (*aw,
                                  "val",
                                  scheme.bg,
                                  scheme.text,
                                  scheme.fg,
-                                 bigFont,
+                                 kMidiPromptFont,
                                  false,
                                  6);
         if (auto* suffixLbl = dynamic_cast<juce::Label*> (aw->findChildWithID (kPromptSuffixLabelId)))
-            suffixLbl->setFont (bigFont);
+        {
+            if (auto* te = aw->getTextEditor ("val"))
+                suffixLbl->setFont (te->getFont());
+        }
         
         if (layoutValueAndSuffix)
             layoutValueAndSuffix();
@@ -2770,7 +2431,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
 
 void ECHOTRAudioProcessorEditor::openInfoPopup()
 {
-    lnf.setScheme (schemes[(size_t) currentSchemeIndex]);
+    lnf.setScheme (activeScheme);
 
     setPromptOverlayActive (true);
 
@@ -2786,7 +2447,7 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
     auto* infoLabel = new juce::Label ("infoText", "NMSTR -> INFO SOON");
     infoLabel->setComponentID ("infoText");
     infoLabel->setJustificationType (juce::Justification::centred);
-    applyLabelTextColour (*infoLabel, schemes[(size_t) currentSchemeIndex].text);
+    applyLabelTextColour (*infoLabel, activeScheme.text);
     auto infoFont = lnf.getAlertWindowMessageFont();
     infoFont.setHeight (infoFont.getHeight() * 1.45f);
     infoLabel->setFont (infoFont);
@@ -2797,7 +2458,7 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
     infoLink->setComponentID ("infoLink");
     infoLink->setJustificationType (juce::Justification::centred);
     infoLink->setColour (juce::HyperlinkButton::textColourId,
-                         schemes[(size_t) currentSchemeIndex].text);
+                         activeScheme.text);
     auto linkFont = infoFont;
     linkFont.setHeight (infoFont.getHeight() * 0.72f);
     infoLink->setFont (linkFont, false, juce::Justification::centred);
@@ -2810,6 +2471,11 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
 
     if (safeThis != nullptr)
     {
+        fitAlertWindowToEditor (*aw, safeThis.getComponent(), [] (juce::AlertWindow& a)
+        {
+            layoutInfoPopupContent (a);
+        });
+
         embedAlertWindowInOverlay (safeThis.getComponent(), aw);
     }
     else
@@ -2824,11 +2490,7 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
         if (safeAw == nullptr || safeThis == nullptr)
             return;
 
-        safeAw->centreAroundComponent (safeThis.getComponent(), safeAw->getWidth(), safeAw->getHeight());
         bringPromptWindowToFront (*safeAw);
-
-        layoutInfoPopupContent (*safeAw);
-
         safeAw->repaint();
     });
 
@@ -2856,7 +2518,7 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
 
 void ECHOTRAudioProcessorEditor::openGraphicsPopup()
 {
-    lnf.setScheme (schemes[(size_t) currentSchemeIndex]);
+    lnf.setScheme (activeScheme);
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     fxTailEnabled = audioProcessor.getUiFxTailEnabled();
@@ -2881,26 +2543,12 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
         auto* label = new PopupClickableLabel (id, text);
         label->setComponentID (id);
         label->setJustificationType (justification);
-        applyLabelTextColour (*label, schemes[(size_t) currentSchemeIndex].text);
+        applyLabelTextColour (*label, activeScheme.text);
         label->setBorderSize (juce::BorderSize<int> (0));
         label->setFont (font);
         label->setMouseCursor (juce::MouseCursor::PointingHandCursor);
         aw->addAndMakeVisible (label);
         return label;
-    };
-
-    auto stylePromptButtons = [this] (juce::AlertWindow& alert)
-    {
-        for (int bi = 0; bi < alert.getNumButtons(); ++bi)
-        {
-            if (auto* btn = dynamic_cast<juce::TextButton*> (alert.getButton (bi)))
-            {
-                btn->setColour (juce::TextButton::buttonColourId,   lnf.findColour (juce::TextButton::buttonColourId));
-                btn->setColour (juce::TextButton::buttonOnColourId, lnf.findColour (juce::TextButton::buttonOnColourId));
-                btn->setColour (juce::TextButton::textColourOffId,  lnf.findColour (juce::TextButton::textColourOffId));
-                btn->setColour (juce::TextButton::textColourOnId,   lnf.findColour (juce::TextButton::textColourOnId));
-            }
-        }
     };
 
     auto* defaultToggle = new juce::ToggleButton ("");
@@ -2919,7 +2567,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
     paletteTitleFont.setHeight (paletteTitleFont.getHeight() * 1.30f);
     addPopupLabel ("paletteTitle", "PALETTE", paletteTitleFont, juce::Justification::centredLeft);
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 2; ++i)
     {
         auto* dflt = new juce::TextButton();
         dflt->setComponentID ("defaultSwatch" + juce::String (i));
@@ -2946,7 +2594,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
     };
     aw->addAndMakeVisible (fxToggle);
 
-    auto* fxLabel = addPopupLabel ("fxLabel", "TEXT FX", labelFont);
+    auto* fxLabel = addPopupLabel ("fxLabel", "GRAPHIC FX", labelFont);
 
     auto syncAndRepaintPopup = [safeThis, safeAw]()
     {
@@ -3002,7 +2650,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
     if (fxLabel != nullptr && fxToggle != nullptr)
         fxLabel->onClick = [fxToggle]() { fxToggle->triggerClick(); };
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 2; ++i)
     {
         if (auto* customSwatch = dynamic_cast<PopupSwatchButton*> (aw->findChildWithID ("customSwatch" + juce::String (i))))
         {
@@ -3032,12 +2680,12 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
                 }
             };
 
-            customSwatch->onRightClick = [safeThis, safeAw, i, stylePromptButtons]()
+            customSwatch->onRightClick = [safeThis, safeAw, i]()
             {
                 if (safeThis == nullptr)
                     return;
 
-                const auto scheme = safeThis->schemes[(size_t) safeThis->currentSchemeIndex];
+                const auto scheme = safeThis->activeScheme;
 
                 auto* colorAw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
                 colorAw->setLookAndFeel (&safeThis->lnf);
@@ -3045,7 +2693,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
                 colorAw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
                 colorAw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
-                stylePromptButtons (*colorAw);
+                styleAlertButtons (*colorAw, safeThis->lnf);
 
                 applyPromptShellSize (*colorAw);
                 layoutAlertWindowButtons (*colorAw);
@@ -3164,8 +2812,6 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
             if (safeAw == nullptr || safeThis == nullptr)
                 return;
 
-            syncGraphicsPopupState (*safeAw, safeThis->defaultPalette, safeThis->customPalette, safeThis->useCustomPalette);
-            layoutGraphicsPopupContent (*safeAw);
             safeAw->toFront (false);
             safeAw->repaint();
         });
@@ -3482,8 +3128,7 @@ int ECHOTRAudioProcessorEditor::getTargetValueColumnWidth() const
     if (key == cachedValueColumnWidthKey)
         return cachedValueColumnWidth;
 
-    constexpr float baseFontPx = 40.0f;
-    juce::Font font (juce::FontOptions (baseFontPx).withStyle ("Bold"));
+    const auto& font = kBoldFont40();
 
     const int timeMaxW = juce::jmax (stringWidth (font, kTimeLegendFull),
                                      juce::jmax (stringWidth (font, kTimeLegendShort),
@@ -3570,7 +3215,7 @@ namespace
     int getToggleVisualBoxSidePx (const juce::Component& button)
     {
         const int h = button.getHeight();
-        return juce::jlimit (14, juce::jmax (14, h - 2), (int) std::lround ((double) h * 0.50));
+        return juce::jlimit (14, juce::jmax (14, h - 2), (int) std::lround ((double) h * 0.65));
     }
 
     int getToggleVisualBoxLeftPx (const juce::Component& button)
@@ -3587,7 +3232,7 @@ namespace
         const int visualRight = getToggleVisualBoxLeftPx (button) + getToggleVisualBoxSidePx (button);
         const int x = visualRight + kToggleLabelGapPx;
 
-        juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
+        const auto& labelFont = kBoldFont40();
         const int fullW  = stringWidth (labelFont, fullLabel) + 2;
         const int shortW = stringWidth (labelFont, shortLabel) + 2;
         const int maxW   = juce::jmax (0, collisionRight - x);
@@ -3603,7 +3248,7 @@ namespace
     {
         const int visualRight = getToggleVisualBoxLeftPx (button) + getToggleVisualBoxSidePx (button);
         const int x = visualRight + kToggleLabelGapPx;
-        juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
+        const auto& labelFont = kBoldFont40();
         const int fullW = stringWidth (labelFont, fullLabel) + 2;
         return (fullW <= juce::jmax (0, collisionRight - x)) ? fullLabel : shortLabel;
     }
@@ -3616,7 +3261,7 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getSyncLabelArea() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getAutoFbkLabelArea() const
 {
-    return makeToggleLabelArea (autoFbkButton, getWidth() - kToggleLegendCollisionPadPx, "AUTO FBK", "AT FBK");
+    return makeToggleLabelArea (autoFbkButton, getWidth() - kToggleLegendCollisionPadPx, "AUTO FBK", "AUTO");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getLoopLabelArea() const
@@ -3670,10 +3315,15 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         }
     }
 
-    if (getInfoIconArea().contains (p))
     {
-        openInfoPopup();
-        return;
+        auto infoArea = getInfoIconArea();
+        if (fxTailEnabled)
+            infoArea = infoArea.expanded (juce::roundToInt (crtDistortionAmplitude * 1.5f) + 2, 0);
+        if (infoArea.contains (p))
+        {
+            openInfoPopup();
+            return;
+        }
     }
 
     if (getSyncLabelArea().contains (p))
@@ -3703,7 +3353,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
 
 void ECHOTRAudioProcessorEditor::mouseDrag (const juce::MouseEvent& e)
 {
-    (void) e;
+    juce::ignoreUnused (e);
     lastUserInteractionMs.store (juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
 }
 
@@ -3739,7 +3389,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     const auto outputValueArea = getValueAreaFor (outputSlider.getBounds());
     const auto mixValueArea = getValueAreaFor (mixSlider.getBounds());
 
-    const auto scheme = schemes[(size_t) currentSchemeIndex];
+    const auto scheme = activeScheme;
 
     g.fillAll (scheme.bg);
     g.setColour (scheme.text);
@@ -3747,15 +3397,12 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     constexpr float baseFontPx = 40.0f;
     constexpr float minFontPx  = 18.0f;
     constexpr float fullShrinkFloor = baseFontPx * 0.75f;
-    const juce::String barTailTuning;
-
-    g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
+    g.setFont (kBoldFont40());
 
     // Per-label cascading: tries to draw the legend at a given shrink floor.
     // Returns true if drawn, false if it didn't fit.
     auto tryDrawLegend = [&] (const juce::Rectangle<int>& area,
                               const juce::String& text,
-                              const juce::String& tailTuning,
                               float shrinkFloor) -> bool
     {
         auto t = text.toUpperCase().trim();
@@ -3765,18 +3412,16 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const int split = t.lastIndexOfChar (' ');
         if (split <= 0 || split >= t.length() - 1)
         {
-            g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
+            g.setFont (kBoldFont40());
             return drawIfFitsWithOptionalShrink (g, area, t, baseFontPx, shrinkFloor);
         }
 
         const auto value  = t.substring (0, split).trimEnd();
         const auto suffix = t.substring (split + 1).trimStart();
-        const auto* tailGradient = fxTailEnabled ? &lnf.getTrailingTextGradient() : nullptr;
 
-        g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
+        g.setFont (kBoldFont40());
         if (drawValueWithRightAlignedSuffix (g, area, value, suffix, false,
-                                              baseFontPx, shrinkFloor,
-                                              tailGradient, true, true, tailTuning))
+                                              baseFontPx, shrinkFloor))
         {
             g.setColour (scheme.text);
             return true;
@@ -3788,16 +3433,15 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     auto drawLegendForMode = [&] (const juce::Rectangle<int>& area,
                                   const juce::String& fullLegend,
                                   const juce::String& shortLegend,
-                                  const juce::String& intOnlyLegend,
-                                  const juce::String& tailTuning)
+                                  const juce::String& intOnlyLegend)
     {
-        if (tryDrawLegend (area, fullLegend, tailTuning, fullShrinkFloor))
+        if (tryDrawLegend (area, fullLegend, fullShrinkFloor))
             return;
 
-        if (tryDrawLegend (area, shortLegend, tailTuning, minFontPx))
+        if (tryDrawLegend (area, shortLegend, minFontPx))
             return;
 
-        g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
+        g.setFont (kBoldFont40());
         drawValueNoEllipsis (g, area, intOnlyLegend, juce::String(), intOnlyLegend, baseFontPx, minFontPx);
         g.setColour (scheme.text);
     };
@@ -3820,16 +3464,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const auto titleArea = juce::Rectangle<int> (titleX, titleY, titleW, titleH + kTitleAreaExtraHeightPx);
         const juce::String titleText ("ECHO-TR");
 
-        // Keep tail behaviour exactly as original (unchanged params / unchanged font).
-        if (fxTailEnabled)
-        {
-            drawTextWithRepeatedLastCharGradient (g, titleArea, titleText, barW, lnf.getTrailingTextGradient(), titleX + barW,
-                          juce::String(), "20%", "pyramid");
-        }
-        else
-        {
-            g.drawText (titleText, titleArea.getX(), titleArea.getY(), titleArea.getWidth(), titleArea.getHeight(), juce::Justification::left, false);
-        }
+        g.drawText (titleText, titleArea.getX(), titleArea.getY(), titleArea.getWidth(), titleArea.getHeight(), juce::Justification::left, false);
 
         // If horizontal space is too tight, fix only the base title text by overdrawing a fitted version.
         const auto infoIconArea = getInfoIconArea();
@@ -3842,9 +3477,11 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         if (titleMaxW > 0 && (originalWouldClipTitle || titleBaseW > titleMaxW))
         {
             auto fittedTitleFont = titleFont;
-            for (float h = (float) titleH; h >= 12.0f; h -= 1.0f)
+            fittedTitleFont.setHorizontalScale (1.0f);
+            const float titleMinScale = juce::jlimit (0.4f, 1.0f, 12.0f / (float) titleH);
+            for (float s = 1.0f; s >= titleMinScale; s -= 0.025f)
             {
-                fittedTitleFont.setHeight (h);
+                fittedTitleFont.setHorizontalScale (s);
                 if (stringWidth (fittedTitleFont, titleText) <= titleMaxW)
                     break;
             }
@@ -3872,71 +3509,64 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
             g.drawText ("v1.0a", versionX, versionY, versionW, versionH,
                 juce::Justification::bottomRight, false);
 
-        g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
+        g.setFont (kBoldFont40());
     }
 
     {
         drawLegendForMode (timeValueArea,
                            cachedTimeTextFull,
                            cachedTimeTextShort,
-                           juce::String (( int) timeSlider.getValue()),
-                           barTailTuning);
+                           juce::String (( int) timeSlider.getValue()));
     }
 
     {
         drawLegendForMode (feedbackValueArea,
                            cachedFeedbackTextFull,
                            cachedFeedbackTextShort,
-                           juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)),
-                           barTailTuning);
+                           juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)));
     }
 
     {
         drawLegendForMode (modeValueArea,
                            cachedModeTextFull,
                            cachedModeTextShort,
-                           juce::String ((int) modeSlider.getValue()),
-                           barTailTuning);
+                           juce::String ((int) modeSlider.getValue()));
     }
 
     {
         drawLegendForMode (modValueArea,
                            cachedModTextFull,
                            cachedModTextShort,
-                           juce::String ((int) modSlider.getValue()),
-                           barTailTuning);
+                           juce::String ((int) modSlider.getValue()));
     }
 
     {
         drawLegendForMode (inputValueArea,
                            cachedInputTextFull,
                            cachedInputTextShort,
-                           juce::String ((int) inputSlider.getValue()),
-                           barTailTuning);
+                           juce::String ((int) inputSlider.getValue()));
     }
 
     {
         drawLegendForMode (outputValueArea,
                            cachedOutputTextFull,
                            cachedOutputTextShort,
-                           juce::String ((int) outputSlider.getValue()),
-                           barTailTuning);
+                           juce::String ((int) outputSlider.getValue()));
     }
 
     {
         drawLegendForMode (mixValueArea,
                            cachedMixTextFull,
                            cachedMixTextShort,
-                           juce::String ((int) std::lround (mixSlider.getValue() * 100.0)),
-                           barTailTuning);
+                           juce::String ((int) std::lround (mixSlider.getValue() * 100.0)));
     }
 
     {
         // Determine which labels to use based on available space INCLUDING collision bounds
-        juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
+        const auto& labelFont = kBoldFont40();
 
         // Restore the correct font on g — previous drawLegendForMode calls may have
-        // shrunk it via drawIfFitsWithOptionalShrink, leaving a residual smaller size.
+        // compressed it via drawIfFitsWithOptionalShrink, leaving a residual scale.
         // All area/position calculations (resized, getLabelArea) use this same 40px Bold.
         g.setFont (labelFont);
         
@@ -3948,14 +3578,13 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
                                                         : W - kToggleLegendCollisionPadPx;
 
         const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
-        const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "AUTO FBK", "AT FBK");
+        const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "AUTO FBK", "AUTO");
         const juce::String loopLabel = chooseToggleLabel (loopButton,    loopCR, "LOOP",     "LP");
         const juce::String midiLabel = chooseToggleLabel (midiButton,    midiCR, "MIDI",     "MD");
         
         auto drawToggleLegend = [&] (const juce::Rectangle<int>& labelArea,
                                      const juce::String& labelText,
-                                     int noCollisionRight,
-                                     const juce::String& tailTuning)
+                                     int noCollisionRight)
         {
             const int safeW = juce::jmax (0, noCollisionRight - labelArea.getX());
             // snap to integer/even coordinates to avoid sub-pixel artefacts on resize
@@ -3966,20 +3595,16 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
             const int ah = labelArea.getHeight();
             const auto drawArea = juce::Rectangle<int> (ax, ay, aw, ah);
 
-            if (fxTailEnabled)
-                drawTextWithRepeatedLastCharGradient (g, drawArea, labelText, getWidth(), lnf.getTrailingTextGradient(), noCollisionRight,
-                                      tailTuning, "20%", "pyramid");
-            else
-                g.drawText (labelText, drawArea.getX(), drawArea.getY(), drawArea.getWidth(), drawArea.getHeight(), juce::Justification::left, true);
+            g.drawText (labelText, drawArea.getX(), drawArea.getY(), drawArea.getWidth(), drawArea.getHeight(), juce::Justification::left, true);
         };
 
         // Row 1: SYNC + AUTO FBK
-        drawToggleLegend (getSyncLabelArea(),    syncLabel, syncCR, "-3");
-        drawToggleLegend (getAutoFbkLabelArea(), autoLabel, autoCR, "-3");
+        drawToggleLegend (getSyncLabelArea(),    syncLabel, syncCR);
+        drawToggleLegend (getAutoFbkLabelArea(), autoLabel, autoCR);
 
         // Row 2: LOOP + MIDI
-        drawToggleLegend (getLoopLabelArea(), loopLabel, loopCR, "-3");
-        drawToggleLegend (getMidiLabelArea(), midiLabel, midiCR, "-2");
+        drawToggleLegend (getLoopLabelArea(), loopLabel, loopCR);
+        drawToggleLegend (getMidiLabelArea(), midiLabel, midiCR);
     }
     
     // Draw MIDI port display border (matching checkbox style) - only if visible
@@ -4014,6 +3639,253 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
 
 }
 
+// ── CRT / VHS overlay — painted OVER all children ──────────────────────
+void ECHOTRAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
+{
+    if (! fxTailEnabled)
+        return;
+
+    // During snapshot capture for chromatic aberration, skip all CRT overlays
+    // so the captured image represents the clean GUI.
+    if (crtCapturing)
+        return;
+
+    const int W = getWidth();
+    const int H = getHeight();
+    if (W <= 0 || H <= 0)
+        return;
+
+    // ── Chromatic aberration (snapshot-based) ──
+    // Draws red-channel and cyan-channel copies of the actual rendered GUI
+    // shifted ± a few pixels, producing realistic colour fringing on ALL elements.
+    {
+        const float baseShift = juce::jlimit (1.5f, 4.5f, (float) W / 180.0f + 1.0f);
+        const float wobble    = (float) std::sin (crtDistortionPhase * 0.45)
+                              * crtDistortionAmplitude * 0.6f;
+        const float shiftR =  (baseShift + wobble);
+        const float shiftC = -(baseShift + wobble);
+
+        const auto bounds = getLocalBounds().toFloat();
+
+        // Red channel shifted right
+        if (crtRedShift.isValid())
+            g.drawImage (crtRedShift,
+                         bounds.translated (shiftR, 0.0f),
+                         juce::RectanglePlacement::stretchToFit);
+
+        // Cyan channel shifted left
+        if (crtCyanShift.isValid())
+            g.drawImage (crtCyanShift,
+                         bounds.translated (shiftC, 0.0f),
+                         juce::RectanglePlacement::stretchToFit);
+
+    }
+
+    // ── Geometric wobble (VHS tracking / barrel distortion) ──
+    // Denser bands with 2-line thickness + stronger displacement.
+    {
+        const int bandSpacing = juce::jmax (4, H / 30);
+        for (int y = 0; y < H; y += bandSpacing)
+        {
+            const double yf = (double) y;
+            // Primary sine + fast harmonic + slow barrel component
+            const int xOff = (int) (
+                std::sin (yf * 0.015 + crtDistortionPhase) * crtDistortionAmplitude * 2.0
+              + std::sin (yf * 0.042 + crtDistortionPhase * 1.6) * crtDistortionAmplitude * 0.7
+              + std::sin (yf * 0.003 + crtDistortionPhase * 0.2) * crtDistortionAmplitude * 1.2
+            );
+            if (xOff == 0)
+                continue;
+
+            // Dark sliver (2 px thick) + coloured fringe — alpha varies per band
+            const juce::uint8 bandAlpha = (juce::uint8) juce::jlimit (20, 40,
+                30 + (int)(10.0 * std::sin (yf * 0.08 + crtDistortionPhase * 2.0)));
+            g.setColour (juce::Colour::fromRGBA (0, 0, 0, bandAlpha));
+            g.fillRect (xOff, y, W, 2);
+            g.setColour (juce::Colour::fromRGBA (255, 0, 0, (juce::uint8) (bandAlpha * 3 / 4)));
+            g.fillRect (xOff + 2, y + 2, W, 1);
+            g.setColour (juce::Colour::fromRGBA (0, 220, 255, (juce::uint8) (bandAlpha * 3 / 4)));
+            g.fillRect (xOff - 1, y - 1, W, 1);
+        }
+    }
+
+    // ── Scanlines (drawn with slight per-frame opacity variation) ──
+    if (crtScanlineOverlay.isValid())
+    {
+        const float scanOp = 0.55f + 0.15f * (float) std::sin (crtDistortionPhase * 0.7);
+        g.setOpacity (scanOp);
+        g.drawImageAt (crtScanlineOverlay, 0, 0);
+        g.setOpacity (1.0f);
+    }
+
+    // ── Static noise ──
+    if (crtNoiseIndex >= 0 && crtNoiseIndex < kCrtNoiseFrames
+        && crtNoiseOverlays[(size_t) crtNoiseIndex].isValid())
+        g.drawImageAt (crtNoiseOverlays[(size_t) crtNoiseIndex], 0, 0);
+
+    // ── Gaussian noise (permanent grain texture at ~5 %) ──
+    if (crtGaussianNoise.isValid())
+        g.drawImageAt (crtGaussianNoise, 0, 0);
+
+    // ── Flicker ──
+    if (crtFlickerAlpha > 0)
+    {
+        g.setColour (juce::Colour::fromRGBA (0, 0, 0, crtFlickerAlpha));
+        g.fillRect (0, 0, W, H);
+    }
+
+    // ── Glitch bar ──
+    if (crtGlitchBarY >= 0 && crtGlitchBarH > 0)
+    {
+        const int barY = juce::jlimit (0, H - 1, crtGlitchBarY);
+        const int barH = juce::jmin (crtGlitchBarH, H - barY);
+
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, (juce::uint8) 25));
+        g.fillRect (0, barY, W, barH);
+
+        g.setColour (juce::Colour::fromRGBA (255, 0, 0, (juce::uint8) 30));
+        g.fillRect (crtGlitchShiftPx, barY, W, juce::jmax (1, barH / 2));
+        g.setColour (juce::Colour::fromRGBA (0, 255, 255, (juce::uint8) 30));
+        g.fillRect (-crtGlitchShiftPx, barY + barH / 2, W, juce::jmax (1, barH - barH / 2));
+    }
+
+    // ── Contrast reinforcement ──
+    // Draw the clean GUI at partial opacity over CRT-processed content.
+    // Bright elements (text, sliders) get reinforced; blacks stay dark.
+    if (crtCleanSnapshot.isValid())
+    {
+        g.setOpacity (0.60f);
+        g.drawImage (crtCleanSnapshot, getLocalBounds().toFloat(),
+                     juce::RectanglePlacement::stretchToFit);
+        g.setOpacity (1.0f);
+    }
+
+    // ── Vignette (always last) ──
+    if (crtVignetteOverlay.isValid())
+        g.drawImageAt (crtVignetteOverlay, 0, 0);
+}
+
+// ── CRT overlay generation (called from resized) ──────────────────────
+void ECHOTRAudioProcessorEditor::rebuildCrtOverlays (int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return;
+
+    // Skip rebuild if dimensions haven't changed (avoids expensive
+    // per-pixel work during rapid resize drags).
+    if (w == crtOverlayW && h == crtOverlayH)
+        return;
+
+    crtOverlayW = w;
+    crtOverlayH = h;
+
+    // ── Scanlines + phosphor grid ──
+    // Two layers baked into a single image:
+    //  a) Alternating dark lines every 3 px (visible CRT scan gaps)
+    //  b) Faint RGB sub-pixel columns (phosphor triad texture)
+    crtScanlineOverlay = juce::Image (juce::Image::ARGB, w, h, true);
+    {
+        juce::Image::BitmapData bmp (crtScanlineOverlay, juce::Image::BitmapData::writeOnly);
+
+        // a) Horizontal scan gaps: every 3rd row is a dark line
+        //    Alpha varies per row for a more organic look.
+        juce::Random scanRng (99);
+        for (int y = 0; y < h; y += 3)
+        {
+            const juce::uint8 a = (juce::uint8) scanRng.nextInt ({ 40, 65 }); // ~16-25 %
+            const auto scanGap = juce::Colour::fromRGBA (0, 0, 0, a);
+            for (int x = 0; x < w; ++x)
+                bmp.setPixelColour (x, y, scanGap);
+        }
+
+        // b) RGB phosphor sub-pixel columns (period = 3 px)
+        //    Visible tint like a real shadow-mask CRT.
+        const juce::uint8 pAlpha = 18;
+        const auto colR = juce::Colour::fromRGBA (255,   0,   0, pAlpha);
+        const auto colG = juce::Colour::fromRGBA (  0, 255,   0, pAlpha);
+        const auto colB = juce::Colour::fromRGBA (  0,   0, 255, pAlpha);
+        for (int y = 0; y < h; ++y)
+        {
+            if (y % 3 == 0) continue; // keep scan-gap dark
+            for (int x = 0; x < w; ++x)
+            {
+                switch (x % 3)
+                {
+                    case 0: bmp.setPixelColour (x, y, colR); break;
+                    case 1: bmp.setPixelColour (x, y, colG); break;
+                    case 2: bmp.setPixelColour (x, y, colB); break;
+                }
+            }
+        }
+    }
+
+    // ── Vignette ──
+    // Radial gradient: transparent centre → dark at edges.
+    crtVignetteOverlay = juce::Image (juce::Image::ARGB, w, h, true);
+    {
+        juce::Graphics vg (crtVignetteOverlay);
+        const float cx = (float) w * 0.5f;
+        const float cy = (float) h * 0.5f;
+        const float radius = std::sqrt (cx * cx + cy * cy);
+        juce::ColourGradient grad (juce::Colours::transparentBlack, cx, cy,
+                                   juce::Colour::fromRGBA (0, 0, 0, (juce::uint8) 85), // ~33 %
+                                   cx + radius, cy, true);
+        vg.setFillType (juce::FillType (grad));
+        vg.fillRect (0, 0, w, h);
+    }
+
+    // ── Static noise / film grain frames ──
+    // Full-coverage luminance grain (every pixel gets a faint random offset)
+    // plus sparse bright specks for analog "snow" texture.
+    juce::Random noiseRng (42);
+    for (int f = 0; f < kCrtNoiseFrames; ++f)
+    {
+        crtNoiseOverlays[(size_t) f] = juce::Image (juce::Image::ARGB, w, h, true);
+        juce::Image::BitmapData bmp (crtNoiseOverlays[(size_t) f], juce::Image::BitmapData::writeOnly);
+
+        // a) Low-level luminance grain — every 2nd pixel in a checkerboard
+        //    gets a tiny brightness nudge (white or black, very low alpha).
+        for (int y = 0; y < h; y += 2)
+        {
+            for (int x = (y / 2) & 1; x < w; x += 2)
+            {
+                if (noiseRng.nextBool())
+                    bmp.setPixelColour (x, y, juce::Colour::fromRGBA (255, 255, 255, (juce::uint8) noiseRng.nextInt ({ 6, 18 })));
+                else
+                    bmp.setPixelColour (x, y, juce::Colour::fromRGBA (0, 0, 0, (juce::uint8) noiseRng.nextInt ({ 6, 18 })));
+            }
+        }
+
+        // b) Sparse bright specks (analog snow)
+        const int numSpecs = (w * h * 8) / 1000; // ~0.8 %
+        for (int i = 0; i < numSpecs; ++i)
+        {
+            const int px = noiseRng.nextInt (w);
+            const int py = noiseRng.nextInt (h);
+            const juce::uint8 a = (juce::uint8) noiseRng.nextInt ({ 30, 70 });
+            bmp.setPixelColour (px, py, juce::Colour::fromRGBA (255, 255, 255, a));
+        }
+    }
+
+    // ── Gaussian noise (static, non-animated, ~5 % opacity) ──
+    // Every pixel gets a random luminance offset for permanent film grain.
+    crtGaussianNoise = juce::Image (juce::Image::ARGB, w, h, true);
+    {
+        juce::Image::BitmapData bmp (crtGaussianNoise, juce::Image::BitmapData::writeOnly);
+        juce::Random gaussRng (7919); // fixed seed for repeatable pattern
+        const juce::uint8 targetAlpha = 26; // ~10 %
+        for (int y = 0; y < h; ++y)
+        {
+            for (int x = 0; x < w; ++x)
+            {
+                // Average of 3 uniform randoms ≈ gaussian-like distribution
+                const int sum = gaussRng.nextInt (256) + gaussRng.nextInt (256) + gaussRng.nextInt (256);
+                const juce::uint8 lum = (juce::uint8) juce::jlimit (0, 255, sum / 3);
+                bmp.setPixelColour (x, y, juce::Colour::fromRGBA (lum, lum, lum, targetAlpha));
+            }
+        }
+    }
+}
 
 
 void ECHOTRAudioProcessorEditor::updateInfoIconCache()
@@ -4090,12 +3962,12 @@ void ECHOTRAudioProcessorEditor::resized()
     // Button area: 2x2 grid — Row 1: SYNC + AUTO FBK, Row 2: LOOP + MIDI
     const int buttonAreaX = horizontalLayout.leftX;
 
-    juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
+    const auto& labelFont = kBoldFont40();
     const int labelGap = kToggleLabelGapPx;
 
     const int toggleVisualSide = juce::jlimit (14,
                                                juce::jmax (14, verticalLayout.box - 2),
-                                               (int) std::lround ((double) verticalLayout.box * 0.50));
+                                               (int) std::lround ((double) verticalLayout.box * 0.65));
     const int toggleHitW = toggleVisualSide + 6;
     const int midiPortSide = toggleVisualSide;
 
@@ -4133,6 +4005,7 @@ void ECHOTRAudioProcessorEditor::resized()
         promptOverlay.toFront (false);
 
     updateInfoIconCache();
+    rebuildCrtOverlays (W, H);
 
     // Don't modify the constrainer here to avoid reentrancy issues.
 }

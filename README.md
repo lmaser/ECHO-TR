@@ -110,7 +110,7 @@ Rather than conventional studio-grade delay for mixing, ECHO-TR focuses on exper
 - MIDI processing uses standard A440 tuning: `frequency = 440 * 2^((note-69)/12)`.
 - File-based logging to `Desktop/ECHO-TR_MIDI_DEBUG.txt` for MIDI debugging (500 line limit, auto-wraps).
 - UI state (width, height, palette, MIDI port) persists via APVTS state management.
-- Graphics options available from gear icon (`Info -> Graphics`): toggle `TEXT FX` and `Custom Palette`.
+- Graphics options available from gear icon (`Info -> Graphics`): toggle `GRAPHIC FX` and `Custom Palette`.
 
 ## Technical Details
 

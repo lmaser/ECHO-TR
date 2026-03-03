@@ -64,8 +64,6 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	uiFxTailParam = apvts.getRawParameterValue (kParamUiFxTail);
 	uiColorParams[0] = apvts.getRawParameterValue (kParamUiColor0);
 	uiColorParams[1] = apvts.getRawParameterValue (kParamUiColor1);
-	uiColorParams[2] = apvts.getRawParameterValue (kParamUiColor2);
-	uiColorParams[3] = apvts.getRawParameterValue (kParamUiColor3);
 
 	// Load UI state from parameters
 	const int w = loadIntParamOrDefault (uiWidthParam, 360);
@@ -830,11 +828,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiHeight, "UI Height", 240, 1200, 480));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiPalette, "UI Palette", false));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiFxTail, "UI FX Tail", true));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiFxTail, "UI FX Tail", false));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor0, "UI Color 0", 0, 0xFFFFFF, 0xFFFFFF));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor1, "UI Color 1", 0, 0xFFFFFF, 0x000000));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor2, "UI Color 2", 0, 0xFFFFFF, 0xFFFFFF));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor3, "UI Color 3", 0, 0xFFFFFF, 0x000000));
+	// Legacy params kept for backward compatibility with saved presets
+	params.push_back (std::make_unique<juce::AudioParameterInt> ("ui_color2", "UI Color 2", 0, 0xFFFFFF, 0xFFFFFF));
+	params.push_back (std::make_unique<juce::AudioParameterInt> ("ui_color3", "UI Color 3", 0, 0xFFFFFF, 0x000000));
 
 	return { params.begin(), params.end() };
 }
@@ -928,15 +927,13 @@ int ECHOTRAudioProcessor::getMidiPort() const noexcept
 
 void ECHOTRAudioProcessor::setUiCustomPaletteColour (int index, juce::Colour colour)
 {
-	if (index >= 0 && index < 4)
+	if (index >= 0 && index < 2)
 	{
 		uiCustomPalette[(size_t) index].store (colour.getARGB(), std::memory_order_relaxed);
 		const juce::String key = UiStateKeys::customPalette[(size_t) index];
 		apvts.state.setProperty (key, (int) colour.getARGB(), nullptr);
 		if (uiColorParams[(size_t) index] != nullptr)
-			setParameterPlainValue (apvts, (index == 0 ? kParamUiColor0 :
-											 index == 1 ? kParamUiColor1 :
-											 index == 2 ? kParamUiColor2 : kParamUiColor3),
+			setParameterPlainValue (apvts, (index == 0 ? kParamUiColor0 : kParamUiColor1),
 									(float) (int) colour.getARGB());
 		updateHostDisplay();
 	}
@@ -944,7 +941,7 @@ void ECHOTRAudioProcessor::setUiCustomPaletteColour (int index, juce::Colour col
 
 juce::Colour ECHOTRAudioProcessor::getUiCustomPaletteColour (int index) const noexcept
 {
-	if (index < 0 || index >= 4)
+	if (index < 0 || index >= 2)
 		return juce::Colours::white;
 
 	const juce::String key = UiStateKeys::customPalette[(size_t) index];

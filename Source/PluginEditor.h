@@ -15,6 +15,7 @@ public:
     ~ECHOTRAudioProcessorEditor() override;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     void moved() override;
 
@@ -137,12 +138,9 @@ private:
         juce::Colour fg;
         juce::Colour outline;
         juce::Colour text;
-        juce::Colour fxGradientStart;
-        juce::Colour fxGradientEnd;
     };
 
-    std::array<ECHOScheme, 4> schemes;
-    int currentSchemeIndex = 0;
+    ECHOScheme activeScheme;
 
     class MinimalLNF : public juce::LookAndFeel_V4
     {
@@ -175,13 +173,6 @@ private:
             setColour (juce::PopupMenu::textColourId, scheme.text);
             setColour (juce::PopupMenu::highlightedBackgroundColourId, scheme.fg);
             setColour (juce::PopupMenu::highlightedTextColourId, scheme.bg);
-
-            trailingTextGradient = { scheme.fxGradientStart, scheme.fxGradientEnd };
-        }
-
-        const std::array<juce::Colour, 2>& getTrailingTextGradient() const noexcept
-        {
-            return trailingTextGradient;
         }
 
         void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
@@ -224,11 +215,8 @@ private:
             juce::Colours::black,
             juce::Colours::white,
             juce::Colours::white,
-            juce::Colours::white,
-            juce::Colours::white,
-            juce::Colours::black
+            juce::Colours::white
         };
-        std::array<juce::Colour, 2> trailingTextGradient { juce::Colours::white, juce::Colours::black };
     };
 
     class PromptOverlay : public juce::Component
@@ -336,17 +324,42 @@ private:
     int lastPersistedEditorH = -1;
     std::atomic<uint32_t> lastUserInteractionMs { 0 };
     static constexpr uint32_t kUserInteractionPersistWindowMs = 5000;
-    bool fxTailEnabled = true;
+    bool fxTailEnabled = false;
     bool useCustomPalette = false;
-    std::array<juce::Colour, 4> defaultPalette {
-        juce::Colours::white,
-        juce::Colours::black,
+
+    // CRT overlay (regenerated in resized)
+    juce::Image crtScanlineOverlay;
+    juce::Image crtVignetteOverlay;
+    juce::Image crtGaussianNoise;        // static gaussian grain (~5 % opacity)
+    static constexpr int kCrtNoiseFrames = 4;
+    std::array<juce::Image, kCrtNoiseFrames> crtNoiseOverlays;
+    void rebuildCrtOverlays (int w, int h);
+    int crtOverlayW = 0;
+    int crtOverlayH = 0;
+
+    // CRT animation state (advanced in timerCallback)
+    juce::Random crtRng;
+    int   crtNoiseIndex        = 0;
+    juce::uint8 crtFlickerAlpha = 0;
+    int   crtGlitchBarY        = -1;   // -1 = no bar this frame
+    int   crtGlitchBarH        = 0;
+    int   crtGlitchShiftPx     = 0;    // horizontal displacement for glitch bar
+    int   crtTickCounter        = 0;    // counts timer ticks for scheduling
+
+    // CRT render state (animation driven by timerCallback)
+    double crtDistortionPhase     = 0.0;
+    float  crtDistortionAmplitude = 0.8f;
+
+    // CRT chromatic aberration (snapshot-based, updated in timerCallback)
+    juce::Image crtRedShift;              // Red-channel tinted content
+    juce::Image crtCyanShift;             // Cyan-channel tinted content
+    juce::Image crtCleanSnapshot;         // Clean GUI for contrast reinforcement
+    bool crtCapturing = false;            // Flag to skip CRT overlays during snapshot
+    std::array<juce::Colour, 2> defaultPalette {
         juce::Colours::white,
         juce::Colours::black
     };
-    std::array<juce::Colour, 4> customPalette {
-        juce::Colours::white,
-        juce::Colours::black,
+    std::array<juce::Colour, 2> customPalette {
         juce::Colours::white,
         juce::Colours::black
     };

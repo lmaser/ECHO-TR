@@ -32,8 +32,6 @@ public:
 	static constexpr const char* kParamUiFxTail   = "ui_fx_tail";
 	static constexpr const char* kParamUiColor0   = "ui_color0";
 	static constexpr const char* kParamUiColor1   = "ui_color1";
-	static constexpr const char* kParamUiColor2   = "ui_color2";
-	static constexpr const char* kParamUiColor3   = "ui_color3";
 
 	// Parameter ranges and defaults
 	static constexpr float kTimeMsMin = 0.0f;
@@ -150,8 +148,8 @@ private:
 		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
 		static constexpr const char* fxTailEnabled = "uiFxTailEnabled";
 		static constexpr const char* midiPort = "midiPort";
-		static constexpr std::array<const char*, 4> customPalette {
-			"uiCustomPalette0", "uiCustomPalette1", "uiCustomPalette2", "uiCustomPalette3"
+		static constexpr std::array<const char*, 2> customPalette {
+			"uiCustomPalette0", "uiCustomPalette1"
 		};
 	};
 
@@ -197,16 +195,14 @@ private:
 	std::atomic<float>* uiHeightParam = nullptr;
 	std::atomic<float>* uiPaletteParam = nullptr;
 	std::atomic<float>* uiFxTailParam = nullptr;
-	std::array<std::atomic<float>*, 4> uiColorParams { nullptr, nullptr, nullptr, nullptr };
+	std::array<std::atomic<float>*, 2> uiColorParams { nullptr, nullptr };
 
 	// UI state atomics
 	std::atomic<int> uiEditorWidth { 360 };
 	std::atomic<int> uiEditorHeight { 480 };
 	std::atomic<int> uiUseCustomPalette { 0 };
-	std::atomic<int> uiFxTailEnabled { 1 };
-	std::array<std::atomic<juce::uint32>, 4> uiCustomPalette {
-		std::atomic<juce::uint32> { juce::Colours::white.getARGB() },
-		std::atomic<juce::uint32> { juce::Colours::black.getARGB() },
+	std::atomic<int> uiFxTailEnabled { 0 };
+	std::array<std::atomic<juce::uint32>, 2> uiCustomPalette {
 		std::atomic<juce::uint32> { juce::Colours::white.getARGB() },
 		std::atomic<juce::uint32> { juce::Colours::black.getARGB() }
 	};
