@@ -37,13 +37,13 @@ public:
 
 	// Parameter ranges and defaults
 	static constexpr float kTimeMsMin = 0.0f;
-	static constexpr float kTimeMsMax = 2000.0f;  // 2 seconds max for manual mode (also loop capture length)
-	static constexpr float kTimeMsMaxSync = 20000.0f;  // 20 seconds max for sync mode (allows long divisions like 8/1)
+	static constexpr float kTimeMsMax = 2000.0f;
+	static constexpr float kTimeMsMaxSync = 20000.0f;
 	static constexpr float kTimeMsDefault = 500.0f;
 
 	static constexpr int kTimeSyncMin = 0;
 	static constexpr int kTimeSyncMax = 29;
-	static constexpr int kTimeSyncDefault = 10; // 1/8 (normal, not triplet/dotted)
+	static constexpr int kTimeSyncDefault = 10;
 
 	static constexpr float kFeedbackMin = 0.0f;
 	static constexpr float kFeedbackMax = 1.0f;
@@ -51,11 +51,11 @@ public:
 
 	static constexpr int kModeMin = 0;
 	static constexpr int kModeMax = 2; // 0=MONO, 1=STEREO, 2=PING-PONG
-	static constexpr float kModeDefault = 1.0f; // STEREO by default
+	static constexpr float kModeDefault = 1.0f;
 
-	static constexpr float kModMin = 0.0f;  // ÷4
-	static constexpr float kModMax = 1.0f;  // x4
-	static constexpr float kModDefault = 0.5f; // x1
+	static constexpr float kModMin = 0.0f;
+	static constexpr float kModMax = 1.0f;
+	static constexpr float kModDefault = 0.5f;
 
 	static constexpr float kInputMin = -100.0f;
 	static constexpr float kInputMax = 12.0f;
@@ -69,15 +69,10 @@ public:
 	static constexpr float kMixMax = 1.0f;
 	static constexpr float kMixDefault = 0.5f;
 
-	// Tempo sync divisions (30 total)
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
-	static juce::String getTimeSyncNameShort(int index);
-	
-	// Helper: Convert tempo sync division to milliseconds
 	float tempoSyncToMs (int syncIndex, double bpm) const;
 	
-	// MIDI helpers
 	static juce::String getMidiNoteName (int midiNote);
 	float getCurrentDelayMs() const;
 	juce::String getCurrentTimeDisplay() const;
@@ -154,43 +149,37 @@ private:
 		static constexpr const char* editorHeight = "uiEditorHeight";
 		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
 		static constexpr const char* fxTailEnabled = "uiFxTailEnabled";
-		static constexpr const char* midiPort = "midiPort";  // MIDI port selection (0 = none, 1-127 = port)
+		static constexpr const char* midiPort = "midiPort";
 		static constexpr std::array<const char*, 4> customPalette {
 			"uiCustomPalette0", "uiCustomPalette1", "uiCustomPalette2", "uiCustomPalette3"
 		};
 	};
 
-	// DSP state
 	double currentSampleRate = 44100.0;
 	
-	// Delay buffers (circular buffers for stereo)
 	juce::AudioBuffer<float> delayBuffer;
 	int delayBufferWritePos = 0;
 	int delayBufferLength = 0;
-	
-	// Tape-style delay time smoothing (for pitch shifting effect)
 	float smoothedDelaySamples = 0.0f;
-	
-	// Feedback state (per channel)
+	float smoothedInputGain = 1.0f;
+	float smoothedOutputGain = 1.0f;
+	float smoothedMix = 0.5f;
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
-	// Loop buffer and state
 	enum class LoopState { Off, Recording, Playing };
 	LoopState loopState = LoopState::Off;
 	juce::AudioBuffer<float> loopBuffer;
-	int loopBufferLength = 0;       // Total allocated size (2s worth)
-	int loopRecordedLength = 0;     // How many samples were actually recorded
-	int loopWritePos = 0;           // Write position during recording
-	float loopReadPos = 0.0f;       // Read position during playback (float for interpolation)
-	float smoothedLoopTimeSamples = 0.0f;  // Smoothed loop time for pitch-shift style changes
-	static constexpr int kLoopCrossfadeSamples = 64;  // ~1.5ms at 44.1kHz
+	int loopBufferLength = 0;
+	int loopRecordedLength = 0;
+	int loopWritePos = 0;
+	float loopReadPos = 0.0f;
+	float smoothedLoopTimeSamples = 0.0f;
+	static constexpr int kLoopCrossfadeSamples = 64;
 
-	// MIDI tracking
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
-	std::atomic<int> midiPort { 0 };  // 0 = disabled ("---"), 1-16 = MIDI channel
+	std::atomic<int> midiPort { 0 };
 
-	// Parameter atomic pointers
 	std::atomic<float>* timeMsParam = nullptr;
 	std::atomic<float>* timeSyncParam = nullptr;
 	std::atomic<float>* feedbackParam = nullptr;

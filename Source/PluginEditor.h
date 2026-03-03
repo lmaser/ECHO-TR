@@ -17,7 +17,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void moved() override;
-    void updateLegendVisibility();
+
 
 private:
     void mouseDown (const juce::MouseEvent& e) override;
@@ -330,7 +330,6 @@ private:
 
     static constexpr int kLayoutVerticalBiasPx = 10;
 
-    int labelVisibilityMode = 0;
     bool promptOverlayActive = false;
     bool suppressSizePersistence = false;
     int lastPersistedEditorW = -1;

@@ -1,4 +1,4 @@
-// PluginEditor.cpp
+﻿// PluginEditor.cpp
 #include "PluginEditor.h"
 #include <functional>
 #include <unordered_map>
@@ -424,27 +424,6 @@ static bool fits (juce::Graphics& g, const juce::String& s, int w)
     return stringWidth (g.getCurrentFont(), s) <= w;
 }
 
-// Variante “solo medir” (sin Graphics): para decidir enable/disable en resized()
-static bool fitsWithOptionalShrink_NoG (juce::Font font,
-                                       const juce::String& text,
-                                       int width,
-                                       float baseFontPx,
-                                       float shrinkFloorPx)
-{
-    if (width <= 0) return false;
-
-    font.setHeight (baseFontPx);
-    if (stringWidth (font, text) <= width)
-        return true;
-
-    for (float h = baseFontPx - 1.0f; h >= shrinkFloorPx; h -= 1.0f)
-    {
-        font.setHeight (h);
-        if (stringWidth (font, text) <= width)
-            return true;
-    }
-    return false;
-}
 
 static bool drawIfFitsWithOptionalShrink (juce::Graphics& g,
                                          const juce::Rectangle<int>& area,
@@ -1016,14 +995,13 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 
     // Initialize MIDI port display
     const int savedPort = audioProcessor.getMidiPort();
-    midiPortDisplay.setText (savedPort == 0 ? "---" : juce::String (savedPort), juce::dontSendNotification);
+    midiPortDisplay.setText (juce::String (savedPort), juce::dontSendNotification);
     midiPortDisplay.setJustificationType (juce::Justification::centred);
     midiPortDisplay.setInterceptsMouseClicks (false, false);
     midiPortDisplay.setBorderSize (juce::BorderSize<int> (0));  // No border, we draw it manually
     midiPortDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
     midiPortDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
-    addAndMakeVisible (midiPortDisplay);
-    midiPortDisplay.setVisible (false);  // Start hidden; resized() will show it if it fits
+    addChildComponent (midiPortDisplay);  // Hidden by default; resized() will show if it fits
 
     auto bindSlider = [&] (std::unique_ptr<SliderAttachment>& attachment,
                            const char* paramId,
@@ -1108,6 +1086,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     startTimerHz (10);
 
     refreshLegendTextCache();
+    resized();  // Ensure correct initial layout (MIDI port visibility, etc.)
 }
 
 ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
@@ -1176,14 +1155,9 @@ void ECHOTRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
             || s == &inputSlider || s == &outputSlider || s == &mixSlider;
     };
 
-    const int previousMode = labelVisibilityMode;
-    const int previousValueColumnWidth = getTargetValueColumnWidth();
-    const bool legendTextLengthChanged = refreshLegendTextCache();
-    if (legendTextLengthChanged)
-        updateLegendVisibility();
-    const int currentValueColumnWidth = getTargetValueColumnWidth();
+    refreshLegendTextCache();
 
-    if (labelVisibilityMode != previousMode || currentValueColumnWidth != previousValueColumnWidth || slider == nullptr)
+    if (slider == nullptr)
     {
         repaint();
         return;
@@ -2569,7 +2543,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
 
     const juce::String suffixText = "PORT";
     const int port = audioProcessor.getMidiPort();
-    const juce::String currentValue = (port == 0) ? "---" : juce::String (port);
+    const juce::String currentValue = juce::String (port);
     
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
     aw->setLookAndFeel (&lnf);
@@ -2577,17 +2551,17 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     
     juce::Label* suffixLabel = nullptr;
     
-    // Numeric input filter for MIDI port (1-127 or "---")
+    // Numeric input filter for MIDI port (0-127)
     struct MidiPortInputFilter : juce::TextEditor::InputFilter
     {
         juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
         {
             (void) editor; // Suppress unused parameter warning
-            // Allow "---" or digits 1-127
+            // Allow digits 0-127
             juce::String result;
             for (auto c : newText)
             {
-                if (juce::CharacterFunctions::isDigit (c) || c == '-')
+                if (juce::CharacterFunctions::isDigit (c))
                     result += c;
                 if (result.length() >= 3)
                     break;
@@ -2777,10 +2751,10 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
             
             const auto txt = aw->getTextEditorContents ("val").trim();
             
-            if (txt == "---" || txt.isEmpty())
+            if (txt == "0" || txt.isEmpty())
             {
                 safeThis->audioProcessor.setMidiPort (0);
-                safeThis->midiPortDisplay.setText ("---", juce::dontSendNotification);
+                safeThis->midiPortDisplay.setText ("0", juce::dontSendNotification);
                 return;
             }
             
@@ -3280,9 +3254,9 @@ juce::String ECHOTRAudioProcessorEditor::getModeTextShort() const
     switch (mode)
     {
         case 0: return "MONO";
-        case 1: return "STR";
-        case 2: return "PP";
-        default: return "STR";
+        case 1: return "STEREO";
+        case 2: return "PING-PONG";
+        default: return "STEREO";
     }
 }
 
@@ -3383,7 +3357,7 @@ namespace
     constexpr const char* kFeedbackLegendInt   = "100";
 
     constexpr const char* kModeLegendFull  = "STEREO MODE";
-    constexpr const char* kModeLegendShort = "STR MODE";
+    constexpr const char* kModeLegendShort = "PING-PONG";  // Value-only (worst-case width)
     constexpr const char* kModeLegendInt   = "STR";
 
     constexpr const char* kModLegendFull  = "X4.00 MOD";
@@ -3405,13 +3379,13 @@ namespace
     constexpr int kValueAreaHeightPx = 44;
     constexpr int kValueAreaRightMarginPx = 24;
     constexpr int kToggleLabelGapPx = 4;
-    constexpr int kToggleLabelRightPadPx = 10;
     constexpr int kResizerCornerPx = 22;
     constexpr int kToggleBoxPx = 72;
     constexpr int kMinToggleBlocksGapPx = 10;
     constexpr int kMinSliderGapPx = 4;
     constexpr int kMidiPortSelectorWidthPx = 46;
-    constexpr int kMidiPortGapPx = 3;
+    constexpr int kMidiPortGapPx = 4;
+    constexpr int kMidiPortRightMargin = 6;
 
     struct HorizontalLayoutMetrics
     {
@@ -3605,59 +3579,59 @@ namespace
     }
 
     juce::Rectangle<int> makeToggleLabelArea (const juce::Component& button,
-                                              int editorWidth,
-                                              const juce::String& labelText,
-                                              const juce::String& shortLabelText)
+                                              int collisionRight,
+                                              const juce::String& fullLabel,
+                                              const juce::String& shortLabel)
     {
         const auto b = button.getBounds();
         const int visualRight = getToggleVisualBoxLeftPx (button) + getToggleVisualBoxSidePx (button);
         const int x = visualRight + kToggleLabelGapPx;
 
         juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
-        const int desiredFullW = stringWidth (labelFont, labelText) + 2;
-        const int desiredShortW = stringWidth (labelFont, shortLabelText) + 2;
-        const int maxW = juce::jmax (0, editorWidth - x - kToggleLabelRightPadPx);
-        
-        // Choose short label if full doesn't fit
-        const int w = (desiredFullW <= maxW) ? desiredFullW : juce::jmin (desiredShortW, maxW);
+        const int fullW  = stringWidth (labelFont, fullLabel) + 2;
+        const int shortW = stringWidth (labelFont, shortLabel) + 2;
+        const int maxW   = juce::jmax (0, collisionRight - x);
 
+        const int w = (fullW <= maxW) ? fullW : juce::jmin (shortW, maxW);
         return { x, b.getY(), w, b.getHeight() };
+    }
+
+    juce::String chooseToggleLabel (const juce::Component& button,
+                                   int collisionRight,
+                                   const juce::String& fullLabel,
+                                   const juce::String& shortLabel)
+    {
+        const int visualRight = getToggleVisualBoxLeftPx (button) + getToggleVisualBoxSidePx (button);
+        const int x = visualRight + kToggleLabelGapPx;
+        juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
+        const int fullW = stringWidth (labelFont, fullLabel) + 2;
+        return (fullW <= juce::jmax (0, collisionRight - x)) ? fullLabel : shortLabel;
     }
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getSyncLabelArea() const
 {
-    return makeToggleLabelArea (syncButton, getWidth(), "HOST", "HST");
+    return makeToggleLabelArea (syncButton, autoFbkButton.getX() - kToggleLegendCollisionPadPx, "SYNC", "SYN");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getAutoFbkLabelArea() const
 {
-    return makeToggleLabelArea (autoFbkButton, getWidth(), "AUTO FBK", "AUTO");
+    return makeToggleLabelArea (autoFbkButton, getWidth() - kToggleLegendCollisionPadPx, "AUTO FBK", "AT FBK");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getLoopLabelArea() const
 {
-    return makeToggleLabelArea (loopButton, getWidth(), "LOOP", "LP");
+    return makeToggleLabelArea (loopButton, midiButton.getX() - kToggleLegendCollisionPadPx, "LOOP", "LP");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
 {
-    const auto b = midiButton.getBounds();
-    const int visualRight = getToggleVisualBoxLeftPx (midiButton) + getToggleVisualBoxSidePx (midiButton);
-    const int x = visualRight + kToggleLabelGapPx;
-    
-    // Use same logic as paint() getButtonLabel for consistency
-    // Collision is with MIDI port display, not the value column
-    const int collisionRight = midiPortDisplay.getX() - kToggleLegendCollisionPadPx;
-    
-    juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
-    const int fullW = stringWidth (labelFont, "MIDI") + 2;
-    const int shortW = stringWidth (labelFont, "MD") + 2;
-    const int maxW = juce::jmax (0, collisionRight - x);
-    
-    const int w = (fullW <= maxW) ? fullW : shortW;
-    
-    return { x, b.getY(), w, b.getHeight() };
+    // Collision with port box — no collision-pad subtraction here
+    // because kMidiPortGapPx already provides the visual spacing.
+    const int cr = midiPortDisplay.isVisible()
+        ? midiPortDisplay.getX()
+        : getWidth() - kToggleLegendCollisionPadPx;
+    return makeToggleLabelArea (midiButton, cr, "MIDI", "MD");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getInfoIconArea() const
@@ -3766,65 +3740,66 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     const auto mixValueArea = getValueAreaFor (mixSlider.getBounds());
 
     const auto scheme = schemes[(size_t) currentSchemeIndex];
-    const bool useShortLabels = (labelVisibilityMode == 1);
-    const bool shouldHideUnitLabels = (labelVisibilityMode == 2);
 
     g.fillAll (scheme.bg);
     g.setColour (scheme.text);
 
     constexpr float baseFontPx = 40.0f;
     constexpr float minFontPx  = 18.0f;
-    const juce::String barTailTuning; // "" = sin modificación; ejemplos: "80%", "-1"
+    constexpr float fullShrinkFloor = baseFontPx * 0.75f;
+    const juce::String barTailTuning;
 
     g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
 
-    auto drawAlignedLegend = [&] (const juce::Rectangle<int>& area,
-                                  const juce::String& text,
-                                  bool useAutoMargin,
-                                  bool useTailEffect,
-                                  bool tailFromSuffixToLeft,
-                                  bool lowercaseTailChars,
-                                  const juce::String& tailTuning)
+    // Per-label cascading: tries to draw the legend at a given shrink floor.
+    // Returns true if drawn, false if it didn't fit.
+    auto tryDrawLegend = [&] (const juce::Rectangle<int>& area,
+                              const juce::String& text,
+                              const juce::String& tailTuning,
+                              float shrinkFloor) -> bool
     {
         auto t = text.toUpperCase().trim();
+        if (t.isEmpty() || area.getWidth() <= 2 || area.getHeight() <= 2)
+            return false;
+
         const int split = t.lastIndexOfChar (' ');
         if (split <= 0 || split >= t.length() - 1)
-            return drawValueNoEllipsis (g, area, t, juce::String(), t, baseFontPx, minFontPx), void();
+        {
+            g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
+            return drawIfFitsWithOptionalShrink (g, area, t, baseFontPx, shrinkFloor);
+        }
 
-        const auto value = t.substring (0, split).trimEnd();
+        const auto value  = t.substring (0, split).trimEnd();
         const auto suffix = t.substring (split + 1).trimStart();
-        const auto* tailGradient = (useTailEffect && fxTailEnabled) ? &lnf.getTrailingTextGradient() : nullptr;
+        const auto* tailGradient = fxTailEnabled ? &lnf.getTrailingTextGradient() : nullptr;
 
-        if (! drawValueWithRightAlignedSuffix (g, area, value, suffix, useAutoMargin, baseFontPx, minFontPx,
-                                               tailGradient, tailFromSuffixToLeft, lowercaseTailChars, tailTuning))
-            drawValueNoEllipsis (g, area, t, juce::String(), value, baseFontPx, minFontPx);
-
-        g.setColour (scheme.text);
+        g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
+        if (drawValueWithRightAlignedSuffix (g, area, value, suffix, false,
+                                              baseFontPx, shrinkFloor,
+                                              tailGradient, true, true, tailTuning))
+        {
+            g.setColour (scheme.text);
+            return true;
+        }
+        return false;
     };
 
+    // Cascade: full (generous floor) → short (aggressive floor) → int-only.
     auto drawLegendForMode = [&] (const juce::Rectangle<int>& area,
                                   const juce::String& fullLegend,
                                   const juce::String& shortLegend,
                                   const juce::String& intOnlyLegend,
                                   const juce::String& tailTuning)
     {
-        if (shouldHideUnitLabels)
-        {
-            drawValueNoEllipsis (g, area,
-                                 intOnlyLegend,
-                                 juce::String(),
-                                 intOnlyLegend,
-                                 baseFontPx, minFontPx);
+        if (tryDrawLegend (area, fullLegend, tailTuning, fullShrinkFloor))
             return;
-        }
 
-        drawAlignedLegend (area,
-                           useShortLabels ? shortLegend : fullLegend,
-                           false,
-                           true,
-                           true,
-                           true,
-                           tailTuning);
+        if (tryDrawLegend (area, shortLegend, tailTuning, minFontPx))
+            return;
+
+        g.setFont (juce::Font (juce::FontOptions (baseFontPx).withStyle ("Bold")));
+        drawValueNoEllipsis (g, area, intOnlyLegend, juce::String(), intOnlyLegend, baseFontPx, minFontPx);
+        g.setColour (scheme.text);
     };
 
     {
@@ -3959,24 +3934,23 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     {
         // Determine which labels to use based on available space INCLUDING collision bounds
         juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
+
+        // Restore the correct font on g — previous drawLegendForMode calls may have
+        // shrunk it via drawIfFitsWithOptionalShrink, leaving a residual smaller size.
+        // All area/position calculations (resized, getLabelArea) use this same 40px Bold.
+        g.setFont (labelFont);
         
-        auto getButtonLabel = [&] (const juce::Component& button, const juce::String& fullText, const juce::String& shortText, int collisionRight) -> juce::String
-        {
-            const int visualRight = getToggleVisualBoxLeftPx (button) + getToggleVisualBoxSidePx (button);
-            const int x = visualRight + kToggleLabelGapPx;
-            const int maxW = juce::jmax (0, collisionRight - x);
-            const int fullW = stringWidth (labelFont, fullText) + 2;
-            return (fullW <= maxW) ? fullText : shortText;
-        };
-        
-        const juce::String syncLabel = getButtonLabel (syncButton, "HOST", "HST", autoFbkButton.getX() - kToggleLegendCollisionPadPx);
-        const juce::String autoLabel = getButtonLabel (autoFbkButton, "AUTO FBK", "AUTO", W - kToggleLegendCollisionPadPx);
-        const juce::String loopLabel = getButtonLabel (loopButton, "LOOP", "LP", midiButton.getX() - kToggleLegendCollisionPadPx);
-        
-        const int midiCollisionRight = midiPortDisplay.isVisible() 
-            ? midiPortDisplay.getX() - kToggleLegendCollisionPadPx
-            : W - kToggleLegendCollisionPadPx;
-        const juce::String midiLabel = getButtonLabel (midiButton, "MIDI", "MD", midiCollisionRight);
+        const int syncCR  = autoFbkButton.getX() - kToggleLegendCollisionPadPx;
+        const int autoCR  = W - kToggleLegendCollisionPadPx;
+        const int loopCR  = midiButton.getX() - kToggleLegendCollisionPadPx;
+        // No collision-pad for MIDI vs port — kMidiPortGapPx handles spacing
+        const int midiCR  = midiPortDisplay.isVisible() ? midiPortDisplay.getX()
+                                                        : W - kToggleLegendCollisionPadPx;
+
+        const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
+        const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "AUTO FBK", "AT FBK");
+        const juce::String loopLabel = chooseToggleLabel (loopButton,    loopCR, "LOOP",     "LP");
+        const juce::String midiLabel = chooseToggleLabel (midiButton,    midiCR, "MIDI",     "MD");
         
         auto drawToggleLegend = [&] (const juce::Rectangle<int>& labelArea,
                                      const juce::String& labelText,
@@ -3999,13 +3973,13 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
                 g.drawText (labelText, drawArea.getX(), drawArea.getY(), drawArea.getWidth(), drawArea.getHeight(), juce::Justification::left, true);
         };
 
-        // Row 1: HOST + AUTO FBK
-        drawToggleLegend (getSyncLabelArea(), syncLabel, autoFbkButton.getX() - kToggleLegendCollisionPadPx, "-3");
-        drawToggleLegend (getAutoFbkLabelArea(), autoLabel, W - kToggleLegendCollisionPadPx, "-3");
-        
+        // Row 1: SYNC + AUTO FBK
+        drawToggleLegend (getSyncLabelArea(),    syncLabel, syncCR, "-3");
+        drawToggleLegend (getAutoFbkLabelArea(), autoLabel, autoCR, "-3");
+
         // Row 2: LOOP + MIDI
-        drawToggleLegend (getLoopLabelArea(), loopLabel, midiButton.getX() - kToggleLegendCollisionPadPx, "-3");
-        drawToggleLegend (getMidiLabelArea(), midiLabel, midiCollisionRight, "-2");
+        drawToggleLegend (getLoopLabelArea(), loopLabel, loopCR, "-3");
+        drawToggleLegend (getMidiLabelArea(), midiLabel, midiCR, "-2");
     }
     
     // Draw MIDI port display border (matching checkbox style) - only if visible
@@ -4036,13 +4010,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         g.fillEllipse (cachedInfoGearHole);
     }
 
-    // Draw white border around MIDI port display (like checkboxes) - only if visible
-    if (midiPortDisplay.isVisible())
-    {
-        g.setColour (scheme.outline);
-        auto portBounds = midiPortDisplay.getBounds();
-        g.drawRect (portBounds, 1);
-    }
+
 
 }
 
@@ -4074,71 +4042,6 @@ void ECHOTRAudioProcessorEditor::updateInfoIconCache()
     }
     cachedInfoGearPath.closeSubPath();
     cachedInfoGearHole = { center.x - holeR, center.y - holeR, holeR * 2.0f, holeR * 2.0f };
-}
-
-void ECHOTRAudioProcessorEditor::updateLegendVisibility()
-{
-    constexpr float baseFontPx = 40.0f;
-    constexpr float minFontPx  = 18.0f;
-    const float softShrinkFloorFull  = juce::jmax (minFontPx, baseFontPx * 0.88f);
-    const float softShrinkFloorShort = minFontPx;
-
-    juce::Font measureFont (juce::FontOptions (baseFontPx).withStyle ("Bold"));
-
-    auto areaTime = getValueAreaFor (timeSlider.getBounds());
-    auto areaFeedback = getValueAreaFor (feedbackSlider.getBounds());
-    auto areaMode = getValueAreaFor (modeSlider.getBounds());
-    auto areaMod = getValueAreaFor (modSlider.getBounds());
-    auto areaInput = getValueAreaFor (inputSlider.getBounds());
-    auto areaOutput = getValueAreaFor (outputSlider.getBounds());
-    auto areaMix = getValueAreaFor (mixSlider.getBounds());
-
-    // Check FULL versions using fixed worst-case templates (stable, value-independent)
-    const juce::String timeFull = kTimeLegendFull;
-    const juce::String feedbackFull = kFeedbackLegendFull;
-    const juce::String modeFull = kModeLegendFull;
-    const juce::String modFull = kModLegendFull;
-    const juce::String inputFull = kInputLegendFull;
-    const juce::String outputFull = kOutputLegendFull;
-    const juce::String mixFull = kMixLegendFull;
-
-    const bool timeFullFits = fitsWithOptionalShrink_NoG (measureFont, timeFull, areaTime.getWidth(), baseFontPx, softShrinkFloorFull);
-    const bool feedbackFullFits = fitsWithOptionalShrink_NoG (measureFont, feedbackFull, areaFeedback.getWidth(), baseFontPx, softShrinkFloorFull);
-    const bool modeFullFits = fitsWithOptionalShrink_NoG (measureFont, modeFull, areaMode.getWidth(), baseFontPx, softShrinkFloorFull);
-    const bool modFullFits = fitsWithOptionalShrink_NoG (measureFont, modFull, areaMod.getWidth(), baseFontPx, softShrinkFloorFull);
-    const bool inputFullFits = fitsWithOptionalShrink_NoG (measureFont, inputFull, areaInput.getWidth(), baseFontPx, softShrinkFloorFull);
-    const bool outputFullFits = fitsWithOptionalShrink_NoG (measureFont, outputFull, areaOutput.getWidth(), baseFontPx, softShrinkFloorFull);
-    const bool mixFullFits = fitsWithOptionalShrink_NoG (measureFont, mixFull, areaMix.getWidth(), baseFontPx, softShrinkFloorFull);
-
-    // Check SHORT versions using fixed worst-case templates (stable, value-independent)
-    const juce::String timeShort = kTimeLegendShort;
-    const juce::String feedbackShort = kFeedbackLegendShort;
-    const juce::String modeShort = kModeLegendShort;
-    const juce::String modShort = kModLegendShort;
-    const juce::String inputShort = kInputLegendShort;
-    const juce::String outputShort = kOutputLegendShort;
-    const juce::String mixShort = kMixLegendShort;
-
-    const bool timeShortFits = fitsWithOptionalShrink_NoG (measureFont, timeShort, areaTime.getWidth(), baseFontPx, softShrinkFloorShort);
-    const bool feedbackShortFits = fitsWithOptionalShrink_NoG (measureFont, feedbackShort, areaFeedback.getWidth(), baseFontPx, softShrinkFloorShort);
-    const bool modeShortFits = fitsWithOptionalShrink_NoG (measureFont, modeShort, areaMode.getWidth(), baseFontPx, softShrinkFloorShort);
-    const bool modShortFits = fitsWithOptionalShrink_NoG (measureFont, modShort, areaMod.getWidth(), baseFontPx, softShrinkFloorShort);
-    const bool inputShortFits = fitsWithOptionalShrink_NoG (measureFont, inputShort, areaInput.getWidth(), baseFontPx, softShrinkFloorShort);
-    const bool outputShortFits = fitsWithOptionalShrink_NoG (measureFont, outputShort, areaOutput.getWidth(), baseFontPx, softShrinkFloorShort);
-    const bool mixShortFits = fitsWithOptionalShrink_NoG (measureFont, mixShort, areaMix.getWidth(), baseFontPx, softShrinkFloorShort);
-
-    // Determine global mode: 0=Full, 1=Short, 2=None
-    const bool anyFullFailed = (!timeFullFits || !feedbackFullFits || !modeFullFits || !modFullFits 
-                             || !inputFullFits || !outputFullFits || !mixFullFits);
-    const bool anyShortFailed = (!timeShortFits || !feedbackShortFits || !modeShortFits || !modShortFits 
-                              || !inputShortFits || !outputShortFits || !mixShortFits);
-
-    if (anyShortFailed)
-        labelVisibilityMode = 2;  // None
-    else if (anyFullFailed)
-        labelVisibilityMode = 1;  // Short
-    else
-        labelVisibilityMode = 0;  // Full
 }
 
 void ECHOTRAudioProcessorEditor::resized()
@@ -4184,7 +4087,7 @@ void ECHOTRAudioProcessorEditor::resized()
     outputSlider.setBounds   (horizontalLayout.leftX, verticalLayout.topY + 5 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
     mixSlider.setBounds      (horizontalLayout.leftX, verticalLayout.topY + 6 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
 
-    // Button area: 2x2 grid — Row 1: HOST + AUTO FBK, Row 2: LOOP + MIDI
+    // Button area: 2x2 grid — Row 1: SYNC + AUTO FBK, Row 2: LOOP + MIDI
     const int buttonAreaX = horizontalLayout.leftX;
 
     juce::Font labelFont (juce::FontOptions (40.0f).withStyle ("Bold"));
@@ -4197,7 +4100,7 @@ void ECHOTRAudioProcessorEditor::resized()
     const int midiPortSide = toggleVisualSide;
 
     // Each row has 2 buttons: left-anchored + right-anchored
-    // Row 1: HOST (left) + AUTO FBK (right)
+    // Row 1: SYNC (left) + AUTO FBK (right)
     // Row 2: LOOP (left) + MIDI+port (right)
     const int leftBlockX = buttonAreaX;
     const int rightBlockX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
@@ -4207,15 +4110,18 @@ void ECHOTRAudioProcessorEditor::resized()
     loopButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     midiButton.setBounds    (rightBlockX, verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     
-    // Position MIDI port display to the right of MIDI label
+    // Position MIDI port display to the right of the actual MIDI label
+    const int midiVisualRight = getToggleVisualBoxLeftPx (midiButton) + getToggleVisualBoxSidePx (midiButton);
+    const int midiLabelX = midiVisualRight + labelGap;
     const int midiLabelFullW = stringWidth (labelFont, "MIDI") + 2;
-    const int midiLabelBlockW = toggleHitW + labelGap + midiLabelFullW;
-    const int midiPortX = rightBlockX + midiLabelBlockW + kMidiPortGapPx;
+    const int midiLabelShortW = stringWidth (labelFont, "MD") + 2;
+    const int midiMaxLabelSpace = juce::jmax (0, W - midiLabelX - midiPortSide - kMidiPortGapPx - kMidiPortRightMargin);
+    const int midiActualLabelW = (midiLabelFullW <= midiMaxLabelSpace) ? midiLabelFullW : midiLabelShortW;
+    const int midiPortX = midiLabelX + midiActualLabelW + kMidiPortGapPx;
     const int midiPortY = verticalLayout.btnRow2Y + (verticalLayout.box - midiPortSide) / 2;
     midiPortDisplay.setBounds (midiPortX, midiPortY, midiPortSide, midiPortSide);
     
     // Hide MIDI port if it would overflow the right edge
-    constexpr int kMidiPortRightMargin = 6;
     const bool midiPortFits = (midiPortX + midiPortSide + kMidiPortRightMargin) <= W;
     midiPortDisplay.setVisible (midiPortFits);
 
@@ -4227,9 +4133,6 @@ void ECHOTRAudioProcessorEditor::resized()
         promptOverlay.toFront (false);
 
     updateInfoIconCache();
-
-    // Update legend visibility globally: if ANY slider cannot fit its labels, ALL are disabled
-    updateLegendVisibility();
 
     // Don't modify the constrainer here to avoid reentrancy issues.
 }
