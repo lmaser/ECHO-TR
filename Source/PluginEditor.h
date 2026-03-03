@@ -330,6 +330,8 @@ private:
     // CRT overlay (regenerated in resized)
     juce::Image crtScanlineOverlay;
     juce::Image crtVignetteOverlay;
+    juce::Image crtBulgeOverlay;         // centre brightness (convex glass sim)
+    juce::Image crtAberrationOverlay;    // pre-baked edge chromatic fringe
     juce::Image crtGaussianNoise;        // static gaussian grain (~5 % opacity)
     static constexpr int kCrtNoiseFrames = 4;
     std::array<juce::Image, kCrtNoiseFrames> crtNoiseOverlays;
@@ -350,11 +352,6 @@ private:
     double crtDistortionPhase     = 0.0;
     float  crtDistortionAmplitude = 0.8f;
 
-    // CRT chromatic aberration (snapshot-based, updated in timerCallback)
-    juce::Image crtRedShift;              // Red-channel tinted content
-    juce::Image crtCyanShift;             // Cyan-channel tinted content
-    juce::Image crtCleanSnapshot;         // Clean GUI for contrast reinforcement
-    bool crtCapturing = false;            // Flag to skip CRT overlays during snapshot
     std::array<juce::Colour, 2> defaultPalette {
         juce::Colours::white,
         juce::Colours::black

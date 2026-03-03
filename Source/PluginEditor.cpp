@@ -903,7 +903,7 @@ void ECHOTRAudioProcessorEditor::timerCallback()
         lastPersistedEditorH = h;
     }
 
-    // ── CRT animation ──
+    // ── CRT animation (lightweight: no image ops, just state updates) ──
     if (fxTailEnabled && w > 0 && h > 0)
     {
         ++crtTickCounter;
@@ -911,8 +911,8 @@ void ECHOTRAudioProcessorEditor::timerCallback()
         // Noise: advance frame every tick (~10 Hz)
         crtNoiseIndex = (crtNoiseIndex + 1) % kCrtNoiseFrames;
 
-        // Flicker: subtle brightness variation (fast, subliminal)
-        crtFlickerAlpha = (juce::uint8) crtRng.nextInt ({ 0, 22 });
+        // Flicker: brightness variation (visible on dark backgrounds)
+        crtFlickerAlpha = (juce::uint8) crtRng.nextInt ({ 0, 36 });
 
         // Distortion: advance phase + occasional amplitude shifts
         crtDistortionPhase += 0.22;
@@ -929,44 +929,6 @@ void ECHOTRAudioProcessorEditor::timerCallback()
         else
         {
             crtGlitchBarY = -1;
-        }
-
-        // ── Chromatic aberration: snapshot → channel split (~3 Hz) ──
-        // We capture the component without CRT overlays (crtCapturing flag)
-        // and separate red / cyan channels for offset drawing in paintOverChildren.
-        if ((crtTickCounter % 5) == 0)
-        {
-            crtCapturing = true;
-            auto snapshot = createComponentSnapshot (getLocalBounds(), true, 0.5f);
-            crtCapturing = false;
-
-            const int sw = snapshot.getWidth();
-            const int sh = snapshot.getHeight();
-
-            if (sw > 0 && sh > 0)
-            {
-                crtRedShift  = juce::Image (juce::Image::ARGB, sw, sh, true);
-                crtCyanShift = juce::Image (juce::Image::ARGB, sw, sh, true);
-
-                juce::Image::BitmapData src  (snapshot,      juce::Image::BitmapData::readOnly);
-                juce::Image::BitmapData rDst (crtRedShift,   juce::Image::BitmapData::writeOnly);
-                juce::Image::BitmapData cDst (crtCyanShift,  juce::Image::BitmapData::writeOnly);
-
-                for (int py = 0; py < sh; ++py)
-                {
-                    for (int px = 0; px < sw; ++px)
-                    {
-                        const auto col = src.getPixelColour (px, py);
-                        const auto a   = col.getAlpha();
-                        if (a == 0) continue;
-                        rDst.setPixelColour (px, py, juce::Colour::fromRGBA (col.getRed(), 0, 0, (juce::uint8) (a / 3)));
-                        cDst.setPixelColour (px, py, juce::Colour::fromRGBA (0, col.getGreen(), col.getBlue(), (juce::uint8) (a / 3)));
-                    }
-                }
-            }
-
-            // Keep a copy of the clean snapshot for contrast reinforcement
-            crtCleanSnapshot = snapshot;
         }
 
         repaint();
@@ -3640,14 +3602,11 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
 }
 
 // ── CRT / VHS overlay — painted OVER all children ──────────────────────
+// All effects are pre-baked overlays + trivial fill rects.
+// Zero snapshot captures, zero image scaling, zero per-pixel work at paint time.
 void ECHOTRAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
 {
     if (! fxTailEnabled)
-        return;
-
-    // During snapshot capture for chromatic aberration, skip all CRT overlays
-    // so the captured image represents the clean GUI.
-    if (crtCapturing)
         return;
 
     const int W = getWidth();
@@ -3655,40 +3614,12 @@ void ECHOTRAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
     if (W <= 0 || H <= 0)
         return;
 
-    // ── Chromatic aberration (snapshot-based) ──
-    // Draws red-channel and cyan-channel copies of the actual rendered GUI
-    // shifted ± a few pixels, producing realistic colour fringing on ALL elements.
-    {
-        const float baseShift = juce::jlimit (1.5f, 4.5f, (float) W / 180.0f + 1.0f);
-        const float wobble    = (float) std::sin (crtDistortionPhase * 0.45)
-                              * crtDistortionAmplitude * 0.6f;
-        const float shiftR =  (baseShift + wobble);
-        const float shiftC = -(baseShift + wobble);
-
-        const auto bounds = getLocalBounds().toFloat();
-
-        // Red channel shifted right
-        if (crtRedShift.isValid())
-            g.drawImage (crtRedShift,
-                         bounds.translated (shiftR, 0.0f),
-                         juce::RectanglePlacement::stretchToFit);
-
-        // Cyan channel shifted left
-        if (crtCyanShift.isValid())
-            g.drawImage (crtCyanShift,
-                         bounds.translated (shiftC, 0.0f),
-                         juce::RectanglePlacement::stretchToFit);
-
-    }
-
     // ── Geometric wobble (VHS tracking / barrel distortion) ──
-    // Denser bands with 2-line thickness + stronger displacement.
     {
         const int bandSpacing = juce::jmax (4, H / 30);
         for (int y = 0; y < H; y += bandSpacing)
         {
             const double yf = (double) y;
-            // Primary sine + fast harmonic + slow barrel component
             const int xOff = (int) (
                 std::sin (yf * 0.015 + crtDistortionPhase) * crtDistortionAmplitude * 2.0
               + std::sin (yf * 0.042 + crtDistortionPhase * 1.6) * crtDistortionAmplitude * 0.7
@@ -3697,9 +3628,8 @@ void ECHOTRAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
             if (xOff == 0)
                 continue;
 
-            // Dark sliver (2 px thick) + coloured fringe — alpha varies per band
-            const juce::uint8 bandAlpha = (juce::uint8) juce::jlimit (20, 40,
-                30 + (int)(10.0 * std::sin (yf * 0.08 + crtDistortionPhase * 2.0)));
+            const juce::uint8 bandAlpha = (juce::uint8) juce::jlimit (26, 48,
+                36 + (int)(12.0 * std::sin (yf * 0.08 + crtDistortionPhase * 2.0)));
             g.setColour (juce::Colour::fromRGBA (0, 0, 0, bandAlpha));
             g.fillRect (xOff, y, W, 2);
             g.setColour (juce::Colour::fromRGBA (255, 0, 0, (juce::uint8) (bandAlpha * 3 / 4)));
@@ -3709,7 +3639,7 @@ void ECHOTRAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
         }
     }
 
-    // ── Scanlines (drawn with slight per-frame opacity variation) ──
+    // ── Scanlines (per-frame opacity variation) ──
     if (crtScanlineOverlay.isValid())
     {
         const float scanOp = 0.55f + 0.15f * (float) std::sin (crtDistortionPhase * 0.7);
@@ -3723,7 +3653,7 @@ void ECHOTRAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
         && crtNoiseOverlays[(size_t) crtNoiseIndex].isValid())
         g.drawImageAt (crtNoiseOverlays[(size_t) crtNoiseIndex], 0, 0);
 
-    // ── Gaussian noise (permanent grain texture at ~5 %) ──
+    // ── Gaussian noise (permanent grain) ──
     if (crtGaussianNoise.isValid())
         g.drawImageAt (crtGaussianNoise, 0, 0);
 
@@ -3740,27 +3670,31 @@ void ECHOTRAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
         const int barY = juce::jlimit (0, H - 1, crtGlitchBarY);
         const int barH = juce::jmin (crtGlitchBarH, H - barY);
 
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, (juce::uint8) 25));
+        g.setColour (juce::Colour::fromRGBA (255, 255, 255, (juce::uint8) 38));
         g.fillRect (0, barY, W, barH);
 
-        g.setColour (juce::Colour::fromRGBA (255, 0, 0, (juce::uint8) 30));
+        g.setColour (juce::Colour::fromRGBA (255, 0, 0, (juce::uint8) 44));
         g.fillRect (crtGlitchShiftPx, barY, W, juce::jmax (1, barH / 2));
-        g.setColour (juce::Colour::fromRGBA (0, 255, 255, (juce::uint8) 30));
+        g.setColour (juce::Colour::fromRGBA (0, 255, 255, (juce::uint8) 44));
         g.fillRect (-crtGlitchShiftPx, barY + barH / 2, W, juce::jmax (1, barH - barH / 2));
     }
 
-    // ── Contrast reinforcement ──
-    // Draw the clean GUI at partial opacity over CRT-processed content.
-    // Bright elements (text, sliders) get reinforced; blacks stay dark.
-    if (crtCleanSnapshot.isValid())
+    // ── Chromatic aberration (pre-baked edge fringe) ──
+    // Shifts the colour-fringe overlay left/right with slight wobble
+    // for a living convergence-error look.
+    if (crtAberrationOverlay.isValid())
     {
-        g.setOpacity (0.60f);
-        g.drawImage (crtCleanSnapshot, getLocalBounds().toFloat(),
-                     juce::RectanglePlacement::stretchToFit);
-        g.setOpacity (1.0f);
+        const float wobble = (float) std::sin (crtDistortionPhase * 0.45)
+                           * crtDistortionAmplitude * 0.3f;
+        const int shift = juce::roundToInt (wobble);
+        g.drawImageAt (crtAberrationOverlay, shift, 0);
     }
 
-    // ── Vignette (always last) ──
+    // ── CRT bulge brightness (convex glass — brighter centre) ──
+    if (crtBulgeOverlay.isValid())
+        g.drawImageAt (crtBulgeOverlay, 0, 0);
+
+    // ── Vignette (always last — darkens edges) ──
     if (crtVignetteOverlay.isValid())
         g.drawImageAt (crtVignetteOverlay, 0, 0);
 }
@@ -3819,8 +3753,23 @@ void ECHOTRAudioProcessorEditor::rebuildCrtOverlays (int w, int h)
         }
     }
 
+    // ── CRT bulge brightness (convex glass simulation) ──
+    // Warm white centre fading to transparent at ~65 % of the diagonal.
+    crtBulgeOverlay = juce::Image (juce::Image::ARGB, w, h, true);
+    {
+        juce::Graphics bg (crtBulgeOverlay);
+        const float cx = (float) w * 0.5f;
+        const float cy = (float) h * 0.5f;
+        const float bulgeR = std::sqrt (cx * cx + cy * cy) * 0.65f;
+        juce::ColourGradient grad (juce::Colour::fromRGBA (255, 252, 248, 24), cx, cy,
+                                   juce::Colours::transparentBlack,
+                                   cx + bulgeR, cy, true);
+        bg.setFillType (juce::FillType (grad));
+        bg.fillRect (0, 0, w, h);
+    }
+
     // ── Vignette ──
-    // Radial gradient: transparent centre → dark at edges.
+    // Radial gradient: transparent centre → dark edges (strengthened for bulge contrast).
     crtVignetteOverlay = juce::Image (juce::Image::ARGB, w, h, true);
     {
         juce::Graphics vg (crtVignetteOverlay);
@@ -3828,7 +3777,7 @@ void ECHOTRAudioProcessorEditor::rebuildCrtOverlays (int w, int h)
         const float cy = (float) h * 0.5f;
         const float radius = std::sqrt (cx * cx + cy * cy);
         juce::ColourGradient grad (juce::Colours::transparentBlack, cx, cy,
-                                   juce::Colour::fromRGBA (0, 0, 0, (juce::uint8) 85), // ~33 %
+                                   juce::Colour::fromRGBA (0, 0, 0, (juce::uint8) 100), // ~39 %
                                    cx + radius, cy, true);
         vg.setFillType (juce::FillType (grad));
         vg.fillRect (0, 0, w, h);
