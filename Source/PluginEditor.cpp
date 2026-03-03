@@ -2799,7 +2799,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
 juce::String ECHOTRAudioProcessorEditor::getTimeText() const
 {
     if (cachedMidiDisplay.isNotEmpty())
-        return cachedMidiDisplay + " TIME";
+        return cachedMidiDisplay;
 
     const bool isSyncOn = syncButton.getToggleState();
     if (isSyncOn)

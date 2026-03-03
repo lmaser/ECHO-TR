@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>ECHO-TR — Análisis de Auto Feedback</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; padding: 24px; }
+  h1 { text-align: center; margin-bottom: 8px; color: #00e5ff; font-size: 1.6rem; }
+  h2 { margin: 32px 0 8px; color: #b0bec5; font-size: 1.1rem; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .subtitle { text-align: center; color: #78909c; margin-bottom: 32px; font-size: 0.9rem; }
+  .chart-container { position: relative; width: 100%; max-width: 960px; margin: 0 auto 48px; background: #1e1e1e; border-radius: 8px; padding: 16px; }
+  canvas { width: 100% !important; }
+  .formula { background: #1a1a2e; border-left: 3px solid #00e5ff; padding: 12px 16px; margin: 16px auto; max-width: 960px; border-radius: 4px; font-family: 'Consolas', monospace; font-size: 0.85rem; color: #80cbc4; }
+  .note { max-width: 960px; margin: 8px auto; color: #90a4ae; font-size: 0.82rem; line-height: 1.5; }
+  table { border-collapse: collapse; margin: 12px auto; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+  th { background: #263238; color: #00e5ff; padding: 8px 14px; font-size: 0.8rem; }
+  td { padding: 6px 14px; border-top: 1px solid #333; font-size: 0.8rem; text-align: center; }
+  tr:hover td { background: #1a2327; }
+  .section { max-width: 960px; margin: 0 auto; }
+  .warn { color: #ffab40; }
+  .good { color: #69f0ae; }
+</style>
+</head>
+<body>
+
+<h1>ECHO-TR — Análisis de Auto Feedback DSP</h1>
+<p class="subtitle">Modo manual (referencia = 2000 ms) · Knob rango 0.0–1.0 · Clamped a 0.99</p>
+
+<div class="section">
+<h2>Fórmula del Auto Feedback</h2>
+<div class="formula">
+  <strong>Sin Auto Feedback:</strong> feedback_eff = knob_value (clamped 0–0.99)<br><br>
+  <strong>Con Auto Feedback:</strong><br>
+  &nbsp;&nbsp;exponentialFeedback = knob ^ 4<br>
+  &nbsp;&nbsp;octavesFromMax = log₂(referenceDelay / delayMs)<br>
+  &nbsp;&nbsp;autoFbkMultiplier = 1.5 ^ octavesFromMax<br>
+  &nbsp;&nbsp;feedback_eff = min(0.99, exponentialFeedback × autoFbkMultiplier)
+</div>
+<p class="note">
+  La curva exponencial (x⁴) comprime los valores bajos del knob, mientras que el multiplicador basado en octavas 
+  compensa la pérdida perceptual de densidad de eco en tiempos de delay cortos. A tiempos muy cortos el multiplicador 
+  crece rápidamente, lo que puede saturar el feedback a 0.99 (casi auto-oscilación).
+</p>
+</div>
+
+<!-- Chart 1: Effective Feedback vs Delay Time -->
+<div class="section"><h2>1. Coeficiente de Feedback Efectivo vs Tiempo de Delay</h2></div>
+<div class="chart-container"><canvas id="chart1"></canvas></div>
+
+<!-- Chart 2: Decay Time to -60dB vs Delay Time -->
+<div class="section"><h2>2. Tiempo de Decaimiento a −60 dB vs Tiempo de Delay</h2></div>
+<div class="chart-container"><canvas id="chart2"></canvas></div>
+
+<!-- Chart 3: Number of Repeats to -60dB vs Delay Time -->
+<div class="section"><h2>3. Número de Repeticiones Audibles (−60 dB) vs Tiempo de Delay</h2></div>
+<div class="chart-container"><canvas id="chart3"></canvas></div>
+
+<!-- Chart 4: Knob → Effective Feedback at fixed delay times -->
+<div class="section"><h2>4. Respuesta del Knob: Posición vs Feedback Efectivo (a tiempos fijos)</h2></div>
+<div class="chart-container"><canvas id="chart4"></canvas></div>
+
+<!-- Chart 5: Decay envelope over time -->
+<div class="section"><h2>5. Envolvente de Decaimiento (Amplitud vs Tiempo) — Knob = 0.7</h2></div>
+<div class="chart-container"><canvas id="chart5"></canvas></div>
+
+<!-- Reference Table -->
+<div class="section">
+<h2>6. Tabla de Referencia — Valores Clave</h2>
+<table id="refTable">
+  <thead>
+    <tr>
+      <th>Delay (ms)</th>
+      <th>Knob</th>
+      <th>Feedback (sin auto)</th>
+      <th>Feedback (con auto)</th>
+      <th>Repeats (sin)</th>
+      <th>Repeats (con)</th>
+      <th>Decay (sin)</th>
+      <th>Decay (con)</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+</div>
+
+<!-- Findings -->
+<div class="section">
+<h2>7. Observaciones DSP</h2>
+<div class="note" style="font-size: 0.85rem; line-height: 1.7; margin-bottom: 48px;">
+  <p id="findings"></p>
+</div>
+</div>
+
+<script>
+// ─── DSP Model ───────────────────────────────────────────────────
+const REF_DELAY = 2000; // kTimeMsMax (manual mode)
+
+function autoFeedback(knob, delayMs) {
+  if (knob <= 0.001 || delayMs <= 1.0) return knob;
+  const exp4 = Math.pow(knob, 4.0);
+  const octaves = Math.log2(REF_DELAY / delayMs);
+  const mult = Math.pow(1.5, octaves);
+  return Math.min(0.99, exp4 * mult);
+}
+
+function plainFeedback(knob) {
+  return Math.min(0.99, knob);
+}
+
+function repeatsTo60dB(fb) {
+  if (fb <= 0.001) return 0;
+  return Math.log(0.001) / Math.log(fb); // -60dB = amplitude * 0.001
+}
+
+function decayTimeSec(fb, delayMs) {
+  if (fb <= 0.001) return 0;
+  const reps = repeatsTo60dB(fb);
+  return (reps * delayMs) / 1000;
+}
+
+// ─── Data Generation ─────────────────────────────────────────────
+const knobValues = [0.35, 0.5, 0.7, 0.9];
+const knobColors = {
+  0.35: { on: '#4dd0e1', off: '#00695c' },
+  0.5:  { on: '#ffd54f', off: '#8d6e00' },
+  0.7:  { on: '#ff8a65', off: '#bf360c' },
+  0.9:  { on: '#ef5350', off: '#7f0000' }
+};
+
+// Logarithmic delay range: 5ms to 2000ms
+const delayPoints = [];
+for (let d = 5; d <= 2000; d *= 1.04) delayPoints.push(Math.round(d * 10) / 10);
+if (delayPoints[delayPoints.length - 1] < 2000) delayPoints.push(2000);
+
+// ─── Chart 1: Effective Feedback vs Delay ────────────────────────
+const datasets1 = [];
+knobValues.forEach(k => {
+  const col = knobColors[k];
+  datasets1.push({
+    label: `Knob ${k} — Auto ON`,
+    data: delayPoints.map(d => ({ x: d, y: autoFeedback(k, d) })),
+    borderColor: col.on, backgroundColor: col.on + '22',
+    borderWidth: 2, pointRadius: 0, tension: 0.3
+  });
+  datasets1.push({
+    label: `Knob ${k} — Auto OFF`,
+    data: delayPoints.map(d => ({ x: d, y: plainFeedback(k) })),
+    borderColor: col.off, backgroundColor: col.off + '22',
+    borderWidth: 2, borderDash: [6, 4], pointRadius: 0, tension: 0
+  });
+});
+
+new Chart(document.getElementById('chart1'), {
+  type: 'line',
+  data: { datasets: datasets1 },
+  options: {
+    responsive: true,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    scales: {
+      x: { type: 'logarithmic', title: { display: true, text: 'Delay (ms)', color: '#90a4ae' },
+           ticks: { color: '#78909c', callback: v => v }, grid: { color: '#2a2a2a' }, min: 5, max: 2000 },
+      y: { title: { display: true, text: 'Feedback Efectivo', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0, max: 1.05 }
+    },
+    plugins: {
+      legend: { labels: { color: '#b0bec5', font: { size: 11 } } },
+      tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(4)}` } }
+    }
+  }
+});
+
+// ─── Chart 2: Decay Time vs Delay ────────────────────────────────
+const datasets2 = [];
+knobValues.forEach(k => {
+  const col = knobColors[k];
+  datasets2.push({
+    label: `Knob ${k} — Auto ON`,
+    data: delayPoints.map(d => ({ x: d, y: Math.min(30, decayTimeSec(autoFeedback(k, d), d)) })),
+    borderColor: col.on, borderWidth: 2, pointRadius: 0, tension: 0.3
+  });
+  datasets2.push({
+    label: `Knob ${k} — Auto OFF`,
+    data: delayPoints.map(d => ({ x: d, y: Math.min(30, decayTimeSec(plainFeedback(k), d)) })),
+    borderColor: col.off, borderWidth: 2, borderDash: [6, 4], pointRadius: 0, tension: 0.3
+  });
+});
+
+new Chart(document.getElementById('chart2'), {
+  type: 'line',
+  data: { datasets: datasets2 },
+  options: {
+    responsive: true,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    scales: {
+      x: { type: 'logarithmic', title: { display: true, text: 'Delay (ms)', color: '#90a4ae' },
+           ticks: { color: '#78909c', callback: v => v }, grid: { color: '#2a2a2a' }, min: 5, max: 2000 },
+      y: { title: { display: true, text: 'Decay a −60 dB (s)', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0 }
+    },
+    plugins: {
+      legend: { labels: { color: '#b0bec5', font: { size: 11 } } },
+      tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}s` } }
+    }
+  }
+});
+
+// ─── Chart 3: Repeats to -60dB vs Delay ──────────────────────────
+const datasets3 = [];
+knobValues.forEach(k => {
+  const col = knobColors[k];
+  datasets3.push({
+    label: `Knob ${k} — Auto ON`,
+    data: delayPoints.map(d => ({ x: d, y: Math.min(200, repeatsTo60dB(autoFeedback(k, d))) })),
+    borderColor: col.on, borderWidth: 2, pointRadius: 0, tension: 0.3
+  });
+  datasets3.push({
+    label: `Knob ${k} — Auto OFF`,
+    data: delayPoints.map(d => ({ x: d, y: Math.min(200, repeatsTo60dB(plainFeedback(k))) })),
+    borderColor: col.off, borderWidth: 2, borderDash: [6, 4], pointRadius: 0, tension: 0
+  });
+});
+
+new Chart(document.getElementById('chart3'), {
+  type: 'line',
+  data: { datasets: datasets3 },
+  options: {
+    responsive: true,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    scales: {
+      x: { type: 'logarithmic', title: { display: true, text: 'Delay (ms)', color: '#90a4ae' },
+           ticks: { color: '#78909c', callback: v => v }, grid: { color: '#2a2a2a' }, min: 5, max: 2000 },
+      y: { title: { display: true, text: 'Repeticiones a −60 dB', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0 }
+    },
+    plugins: {
+      legend: { labels: { color: '#b0bec5', font: { size: 11 } } },
+      tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${Math.round(ctx.parsed.y)} reps` } }
+    }
+  }
+});
+
+// ─── Chart 4: Knob Position → Effective Feedback ─────────────────
+const knobRange = [];
+for (let k = 0; k <= 1.0; k += 0.005) knobRange.push(Math.round(k * 1000) / 1000);
+const fixedDelays = [50, 200, 500, 1000, 2000];
+const fixedColors = ['#ef5350', '#ff8a65', '#ffd54f', '#4dd0e1', '#90a4ae'];
+
+const datasets4 = [];
+fixedDelays.forEach((d, i) => {
+  datasets4.push({
+    label: `${d}ms — Auto ON`,
+    data: knobRange.map(k => ({ x: k, y: autoFeedback(k, d) })),
+    borderColor: fixedColors[i], borderWidth: 2, pointRadius: 0, tension: 0.3
+  });
+});
+datasets4.push({
+  label: 'Auto OFF (lineal)',
+  data: knobRange.map(k => ({ x: k, y: plainFeedback(k) })),
+  borderColor: '#ffffff44', borderWidth: 2, borderDash: [4, 4], pointRadius: 0
+});
+
+new Chart(document.getElementById('chart4'), {
+  type: 'line',
+  data: { datasets: datasets4 },
+  options: {
+    responsive: true,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    scales: {
+      x: { type: 'linear', title: { display: true, text: 'Posición del Knob', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0, max: 1 },
+      y: { title: { display: true, text: 'Feedback Efectivo', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0, max: 1.05 }
+    },
+    plugins: {
+      legend: { labels: { color: '#b0bec5', font: { size: 11 } } },
+      tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(4)}` } }
+    }
+  }
+});
+
+// ─── Chart 5: Decay Envelope (Knob=0.7, various delays) ─────────
+const envDelays = [50, 200, 500, 1000];
+const envColors = ['#ef5350', '#ff8a65', '#ffd54f', '#4dd0e1'];
+const datasets5on = [];
+const datasets5off = [];
+
+envDelays.forEach((d, i) => {
+  const fbOn = autoFeedback(0.7, d);
+  const fbOff = plainFeedback(0.7);
+  const maxTime = 8; // seconds
+  const pointsOn = [];
+  const pointsOff = [];
+  
+  for (let t = 0; t <= maxTime; t += d / 1000) {
+    const rep = t / (d / 1000);
+    const ampOn = Math.pow(fbOn, rep);
+    const ampOff = Math.pow(fbOff, rep);
+    pointsOn.push({ x: t, y: 20 * Math.log10(Math.max(ampOn, 0.0001)) });
+    pointsOff.push({ x: t, y: 20 * Math.log10(Math.max(ampOff, 0.0001)) });
+    if (ampOn < 0.001 && ampOff < 0.001) break;
+  }
+  
+  datasets5on.push({
+    label: `${d}ms — Auto ON (fb=${fbOn.toFixed(3)})`,
+    data: pointsOn, borderColor: envColors[i], borderWidth: 2, pointRadius: 0, tension: 0
+  });
+  datasets5off.push({
+    label: `${d}ms — Auto OFF (fb=${fbOff.toFixed(3)})`,
+    data: pointsOff, borderColor: envColors[i] + '66', borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, tension: 0
+  });
+});
+
+new Chart(document.getElementById('chart5'), {
+  type: 'line',
+  data: { datasets: [...datasets5on, ...datasets5off] },
+  options: {
+    responsive: true,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    scales: {
+      x: { type: 'linear', title: { display: true, text: 'Tiempo (s)', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0, max: 8 },
+      y: { title: { display: true, text: 'Amplitud (dB)', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: -60, max: 0 }
+    },
+    plugins: {
+      legend: { labels: { color: '#b0bec5', font: { size: 10 } } },
+      tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} dB @ ${ctx.parsed.x.toFixed(2)}s` } }
+    }
+  }
+});
+
+// ─── Reference Table ─────────────────────────────────────────────
+const tableDelays = [10, 25, 50, 100, 200, 500, 1000, 2000];
+const tableKnobs = [0.35, 0.5, 0.7, 0.9];
+const tbody = document.querySelector('#refTable tbody');
+
+tableDelays.forEach(d => {
+  tableKnobs.forEach((k, ki) => {
+    const fbOff = plainFeedback(k);
+    const fbOn = autoFeedback(k, d);
+    const repsOff = repeatsTo60dB(fbOff);
+    const repsOn = repeatsTo60dB(fbOn);
+    const decOff = decayTimeSec(fbOff, d);
+    const decOn = decayTimeSec(fbOn, d);
+    
+    const tr = document.createElement('tr');
+    const rowClass = fbOn >= 0.98 ? 'warn' : (fbOn > fbOff * 1.5 ? 'good' : '');
+    tr.innerHTML = `
+      <td>${ki === 0 ? d : ''}</td>
+      <td>${k}</td>
+      <td>${fbOff.toFixed(4)}</td>
+      <td class="${rowClass}">${fbOn.toFixed(4)}</td>
+      <td>${Math.round(repsOff)}</td>
+      <td class="${rowClass}">${Math.round(repsOn)}</td>
+      <td>${decOff.toFixed(2)}s</td>
+      <td class="${rowClass}">${decOn.toFixed(2)}s</td>
+    `;
+    tbody.appendChild(tr);
+  });
+});
+
+// ─── Findings ────────────────────────────────────────────────────
+document.getElementById('findings').innerHTML = `
+<strong>Observación 1 — Saturación a delays cortos:</strong> Con Auto Feedback ON y knob ≥ 0.9, 
+los delays por debajo de ~200ms saturan el feedback a 0.99 (casi auto-oscilación). 
+A 50ms con knob=0.9 el multiplicador de octavas es 1.5^(log2(2000/50)) ≈ 1.5^5.32 ≈ 11.8, 
+que multiplicado por 0.9^4 = 0.6561 da ~7.75, mucho más que 0.99 → se clampea.<br><br>
+
+<strong>Observación 2 — Zona muerta del knob:</strong> La curva x⁴ comprime mucho los valores bajos. 
+Con knob=0.5 y delay=2000ms, el feedback efectivo es solo 0.5^4 = 0.0625 (~6%), 
+lo que produce apenas 1-2 repeticiones audibles. Esto hace que la primera mitad del knob 
+se sienta "muerta" salvo en delays muy cortos donde el multiplicador compensa.<br><br>
+
+<strong>Observación 3 — Comportamiento discontinuo en el límite:</strong> Hay un salto abrupto entre 
+Auto OFF (lineal) y Auto ON (x⁴). Un usuario que activa/desactiva Auto Feedback con el knob 
+en posición media experimentará un cambio drástico. Por ejemplo, knob=0.7 a 500ms: 
+OFF=0.7, ON=0.7^4×2.25=0.539 — en este caso Auto ON da MENOS feedback que OFF.<br><br>
+
+<strong>Observación 4 — Inversión contra-intuitiva:</strong> Para delays largos (>~500ms), Auto Feedback 
+puede dar MENOS feedback que el modo normal, porque x⁴ comprime más de lo que el multiplicador 
+de octavas compensa. Solo en delays cortos (<~200ms para knob medio) Auto ON supera a Auto OFF. 
+Esto puede confundir al usuario.<br><br>
+
+<strong>Observación 5 — Sin filtrado frecuencial:</strong> El auto feedback no aplica ningún filtro paso-bajo 
+ni ecualizador en el bucle de realimentación. El feedback es puramente escalar (un coeficiente). 
+Esto significa que las frecuencias altas se acumulan igual que las bajas, lo que puede producir 
+un sonido metálico/resonante en delays cortos con feedback alto. Un filtro LP en el loop de feedback 
+es estándar en la mayoría de delays digitales profesionales.
+`;
+</script>
+
+</body>
+</html>

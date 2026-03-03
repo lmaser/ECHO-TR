@@ -87,13 +87,13 @@ public:
 	// Optimized delay processing functions
 	void processStereoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                          float delaySamples, float feedback, float inputGain, 
-	                          float outputGain, float mix);
+	                          float outputGain, float mix, float delaySmoothCoeff);
 	void processMonoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                        float delaySamples, float feedback, float inputGain,
-	                        float outputGain, float mix);
+	                        float outputGain, float mix, float delaySmoothCoeff);
 	void processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                            float delaySamples, float feedback, float inputGain,
-	                            float outputGain, float mix);
+	                            float outputGain, float mix, float delaySmoothCoeff);
 
 	// Loop processing
 	void processLoop (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,

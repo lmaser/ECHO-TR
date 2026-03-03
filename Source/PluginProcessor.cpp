@@ -256,7 +256,7 @@ bool ECHOTRAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 
 void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                 float delaySamples, float feedback, float inputGain, 
-                                                float outputGain, float mix)
+                                                float outputGain, float mix, float delaySmoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -268,7 +268,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	const float smoothCoeff = 0.9997f;   // ~330ms time constant
+	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
 	const float gainSmoothCoeff = 0.9955f; // ~5ms time constant
 	
@@ -313,7 +313,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 
 void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                               float delaySamples, float feedback, float inputGain,
-                                              float outputGain, float mix)
+                                              float outputGain, float mix, float delaySmoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -324,7 +324,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	const float smoothCoeff = 0.9997f;
+	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
 	const float gainSmoothCoeff = 0.9955f;
 	
@@ -367,7 +367,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 
 void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                   float delaySamples, float feedback, float inputGain,
-                                                  float outputGain, float mix)
+                                                  float outputGain, float mix, float delaySmoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -378,7 +378,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	const int wrapMask = delayBufferLength - 1;
 	int writePos = delayBufferWritePos;
 	
-	const float smoothCoeff = 0.9997f;
+	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
 	const float gainSmoothCoeff = 0.9955f;
 	
@@ -541,6 +541,12 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					lastMidiNote.store (-1, std::memory_order_relaxed);
 					currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+					
+					// Snap delay smoothing to current target to prevent read-head
+					// sweep through stale buffer data after MIDI note release
+					const float fallbackMs = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
+					const float fallbackSamples = (float) currentSampleRate * (fallbackMs / 1000.0f);
+					smoothedDelaySamples = juce::jlimit (0.0f, (float) (delayBufferLength - 2), fallbackSamples);
 				}
 			}
 		}
@@ -619,13 +625,13 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float outputGain = juce::Decibels::decibelsToGain (outputGainDb);
 	targetFeedback = juce::jlimit (0.0f, 0.99f, targetFeedback);
 	
-	// Auto feedback: exponential curve (x^4) + octave-based multiplier
+	// Auto feedback: quadratic curve (x^2) + octave-based multiplier (base 1.25)
 	if (autoFbkEnabled && targetFeedback > 0.001f && targetDelayMs > 1.0f)
 	{
-		const float exponentialFeedback = std::pow (targetFeedback, 4.0f);
+		const float exponentialFeedback = std::pow (targetFeedback, 2.0f);
 		const float referenceDelay = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
 		const float octavesFromMax = std::log2 (referenceDelay / targetDelayMs);
-		const float autoFbkMultiplier = std::pow (1.5f, octavesFromMax);
+		const float autoFbkMultiplier = std::pow (1.25f, octavesFromMax);
 		targetFeedback = juce::jmin (0.99f, exponentialFeedback * autoFbkMultiplier);
 	}
 	
@@ -670,20 +676,24 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		return;
 	}
 	
+	// MIDI mode: fast delay smoothing (~5ms) for distinct note transitions
+	// Manual/Sync: slow smoothing (~330ms) for smooth glide
+	const float delaySmoothCoeff = midiNoteActive ? 0.9955f : 0.9997f;
+	
 	if (mode == 0)
 	{
 		processMonoDelay (buffer, numSamples, numChannels, delaySamples, 
-		                  targetFeedback, inputGain, outputGain, mixValue);
+		                  targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 	else if (mode == 2) // PING-PONG
 	{
 		processPingPongDelay (buffer, numSamples, numChannels, delaySamples,
-		                      targetFeedback, inputGain, outputGain, mixValue);
+		                      targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 	else // STEREO (default)
 	{
 		processStereoDelay (buffer, numSamples, numChannels, delaySamples,
-		                    targetFeedback, inputGain, outputGain, mixValue);
+		                    targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 }
 
