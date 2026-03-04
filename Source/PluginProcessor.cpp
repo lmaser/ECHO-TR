@@ -532,6 +532,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				const int noteNumber = msg.getNoteNumber();
 				lastMidiNote.store (noteNumber, std::memory_order_relaxed);
+				lastMidiVelocity.store (msg.getVelocity(), std::memory_order_relaxed);
 				const float frequency = 440.0f * std::pow (2.0f, (noteNumber - 69) / 12.0f);
 				currentMidiFrequency.store (frequency, std::memory_order_relaxed);
 			}
@@ -676,9 +677,19 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		return;
 	}
 	
-	// MIDI mode: fast delay smoothing (~5ms) for distinct note transitions
-	// Manual/Sync: slow smoothing (~330ms) for smooth glide
-	const float delaySmoothCoeff = midiNoteActive ? 0.9955f : 0.9997f;
+	// MIDI mode: glide speed depends on velocity (inverse proportional)
+	// vel 1 → max glide (~1s), vel 127 → min glide (~2ms)
+	// Coefficients computed as exp(-1 / (sampleRate * tau)), tau = settleTime / 5
+	// Manual/Sync: slow smoothing (~330ms) for smooth knob movement
+	float delaySmoothCoeff = 0.9997f;
+	if (midiNoteActive)
+	{
+		const float vel = (float) lastMidiVelocity.load (std::memory_order_relaxed);
+		const float t = juce::jlimit (0.0f, 1.0f, (vel - 1.0f) / 126.0f); // 0=vel1, 1=vel127
+		// tau for vel1 = 1.0/5 = 0.2s, tau for vel127 = 0.002/5 = 0.0004s
+		const float tau = 0.2f - t * (0.2f - 0.0004f);
+		delaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
+	}
 	
 	if (mode == 0)
 	{

@@ -176,6 +176,7 @@ private:
 
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
+	std::atomic<int> lastMidiVelocity { 127 };
 	std::atomic<int> midiPort { 0 };
 
 	std::atomic<float>* timeMsParam = nullptr;
