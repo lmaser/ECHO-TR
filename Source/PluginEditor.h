@@ -19,6 +19,7 @@ public:
     void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     void moved() override;
+    void parentHierarchyChanged() override;
 
 
 private:

@@ -3,6 +3,10 @@
 #include <functional>
 #include <unordered_map>
 
+#if JUCE_WINDOWS
+ #include <windows.h>
+#endif
+
 //========================== Overflow helpers ==========================
 // Helpers para medir texto y aplicar truncados según prioridad de formatos.
 
@@ -564,6 +568,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         customPalette[(size_t) i] = audioProcessor.getUiCustomPaletteColour (i);
 
     setOpaque (true);
+    setBufferedToImage (true);   // keep cached frame visible during live resize
 
     applyActivePalette();
     setLookAndFeel (&lnf);
@@ -840,6 +845,24 @@ void ECHOTRAudioProcessorEditor::moved()
         promptOverlay.toFront (false);
 
     anchorEditorOwnedPromptWindows (*this, lnf);
+}
+
+void ECHOTRAudioProcessorEditor::parentHierarchyChanged()
+{
+   #if JUCE_WINDOWS
+    // Set native window background brush to black so that Windows never
+    // flashes white pixels in newly-exposed areas during live resize.
+    if (auto* peer = getPeer())
+    {
+        if (auto nativeHandle = peer->getNativeHandle())
+        {
+            static HBRUSH blackBrush = CreateSolidBrush (RGB (0, 0, 0));
+            SetClassLongPtr (static_cast<HWND> (nativeHandle),
+                             GCLP_HBRBACKGROUND,
+                             reinterpret_cast<LONG_PTR> (blackBrush));
+        }
+    }
+   #endif
 }
 
 void ECHOTRAudioProcessorEditor::parameterChanged (const juce::String& parameterID, float newValue)
