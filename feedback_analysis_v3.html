@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>ECHO-TR — Diseño Auto Feedback v3: boost = 1 + octavas × slope</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; padding: 24px; }
+  h1 { text-align: center; margin-bottom: 4px; color: #00e5ff; font-size: 1.4rem; }
+  .subtitle { text-align: center; color: #78909c; margin-bottom: 24px; font-size: 0.82rem; }
+  h2 { margin: 24px auto 6px; max-width: 1000px; color: #b0bec5; font-size: 1rem; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .chart-container { position: relative; width: 100%; max-width: 1000px; margin: 0 auto 36px; background: #1e1e1e; border-radius: 8px; padding: 16px; }
+  canvas { width: 100% !important; }
+  .formula { background: #1a1a2e; border-left: 3px solid #00e5ff; padding: 12px 16px; margin: 12px auto; max-width: 1000px; border-radius: 4px; font-family: 'Consolas', monospace; font-size: 0.82rem; color: #80cbc4; }
+  .note { max-width: 1000px; margin: 8px auto; color: #90a4ae; font-size: 0.82rem; line-height: 1.5; }
+  table { border-collapse: collapse; margin: 12px auto; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+  th { background: #263238; color: #00e5ff; padding: 7px 12px; font-size: 0.76rem; }
+  td { padding: 5px 12px; border-top: 1px solid #333; font-size: 0.76rem; text-align: center; }
+  .s1 { color: #4dd0e1; } .s2 { color: #ffd54f; } .s3 { color: #ff8a65; }
+  .warn { color: #ffab40; } .good { color: #69f0ae; }
+  .row-sep td { border-top: 2px solid #455a64; }
+  .flex { display: flex; gap: 16px; max-width: 1000px; margin: 0 auto; flex-wrap: wrap; }
+  .flex > div { flex: 1; min-width: 300px; }
+</style>
+</head>
+<body>
+
+<h1>ECHO-TR — Auto Feedback v3: Diseño de pendiente</h1>
+<p class="subtitle">boost = 1 + log₂(ref / delay) × slope · Sin deformación del knob · ref = 2000ms</p>
+
+<div class="formula">
+  <strong>Fórmula:</strong> feedback_eff = min(0.99, knob × (1.0 + log₂(2000 / delayMs) × slope))<br>
+  <strong>Invariante:</strong> A 2000ms → boost = 1.0 → feedback_eff = knob (idéntico a OFF)<br>
+  <strong>Variable libre:</strong> slope (pendiente por octava)
+</div>
+
+<!-- Chart 1: Boost factor vs delay for different slopes -->
+<h2>1. Factor de Boost vs Tiempo de Delay (3 candidatos de slope)</h2>
+<div class="chart-container"><canvas id="chart1"></canvas></div>
+
+<!-- Chart 2: Effective feedback vs delay at different knob+slope combos -->
+<h2>2. Feedback Efectivo vs Delay — Knob fijo, comparando slopes</h2>
+<div class="flex">
+  <div class="chart-container"><canvas id="chart2a"></canvas></div>
+  <div class="chart-container"><canvas id="chart2b"></canvas></div>
+</div>
+
+<!-- Chart 3: Knob response at MIDI-typical delays -->
+<h2>3. Respuesta del Knob a Delays MIDI típicos (slope = 0.12)</h2>
+<div class="chart-container"><canvas id="chart3"></canvas></div>
+
+<!-- Chart 4: Repetitions to -60dB -->
+<h2>4. Repeticiones Audibles (−60 dB) vs Delay</h2>
+<div class="chart-container"><canvas id="chart4"></canvas></div>
+
+<!-- Chart 5: Decay envelope at E4 (329Hz = 3.04ms) -->
+<h2>5. Envolvente de Decaimiento — Nota MIDI E4 (3.04ms) — Knob = 0.5</h2>
+<div class="chart-container"><canvas id="chart5"></canvas></div>
+
+<!-- Chart 6: Saturation zone -->
+<h2>6. Delay mínimo donde feedback alcanza 0.99 (auto-oscilación)</h2>
+<div class="chart-container"><canvas id="chart6"></canvas></div>
+
+<!-- Reference Table -->
+<h2>7. Tabla de Referencia — Valores clave para cada slope</h2>
+<table id="refTable"><thead><tr>
+  <th>Delay</th><th>Contexto</th><th>Octavas</th>
+  <th class="s1">Boost 0.08</th><th class="s2">Boost 0.12</th><th class="s3">Boost 0.15</th>
+  <th>Knob</th>
+  <th class="s1">Fb 0.08</th><th class="s2">Fb 0.12</th><th class="s3">Fb 0.15</th>
+  <th>Fb OFF</th>
+</tr></thead><tbody></tbody></table>
+
+<div class="note" style="margin-top:24px;">
+<strong>Resumen de los 3 candidatos:</strong><br>
+<span class="s1">● slope = 0.08</span> — Conservador. +8% por octava. Boost máximo ~2.3× en nota más aguda. Buen control, poca saturación.<br>
+<span class="s2">● slope = 0.12</span> — Equilibrado. +12% por octava. Boost ~2.1× en rango MIDI práctico. Resonancia notable con knob default (0.35).<br>
+<span class="s3">● slope = 0.15</span> — Agresivo. +15% por octava. Alcanza 0.99 con knob=0.5 en todo el rango MIDI agudo. Mucha resonancia.
+</div>
+
+<script>
+const REF = 2000;
+
+function boost(delayMs, slope) {
+  const oct = Math.log2(REF / Math.max(0.01, delayMs));
+  return 1.0 + oct * slope;
+}
+
+function autoV3(knob, delayMs, slope) {
+  return Math.min(0.99, knob * boost(delayMs, slope));
+}
+
+function reps60(fb) { return fb <= 0.001 ? 0 : Math.log(0.001) / Math.log(fb); }
+function decay60(fb, d) { return fb <= 0.001 ? 0 : (reps60(fb) * d) / 1000; }
+
+// Log delay points
+const dPts = [];
+for (let d = 0.02; d <= 2000; d *= 1.03) dPts.push(Math.round(d * 1000) / 1000);
+if (dPts[dPts.length-1] < 2000) dPts.push(2000);
+
+const slopes = [0.08, 0.12, 0.15];
+const sCol = ['#4dd0e1', '#ffd54f', '#ff8a65'];
+const sName = ['0.08 (conservador)', '0.12 (equilibrado)', '0.15 (agresivo)'];
+
+const midiAnnotations = {
+  midiC1: { type: 'line', xMin: 30.6, xMax: 30.6, borderColor: '#ffffff33', borderWidth: 1, borderDash: [3,3],
+    label: { display: true, content: 'C1', position: 'start', color: '#666', font: { size: 9 } } },
+  midiE4: { type: 'line', xMin: 3.04, xMax: 3.04, borderColor: '#ffffff33', borderWidth: 1, borderDash: [3,3],
+    label: { display: true, content: 'E4', position: 'start', color: '#666', font: { size: 9 } } },
+  midiC7: { type: 'line', xMin: 0.48, xMax: 0.48, borderColor: '#ffffff33', borderWidth: 1, borderDash: [3,3],
+    label: { display: true, content: 'C7', position: 'start', color: '#666', font: { size: 9 } } },
+};
+
+const logXY = (yLabel, yMax, annotations) => ({
+  responsive: true,
+  interaction: { mode: 'nearest', axis: 'x', intersect: false },
+  scales: {
+    x: { type: 'logarithmic', title: { display: true, text: 'Delay (ms)', color: '#90a4ae' },
+         ticks: { color: '#78909c', callback: v => v }, grid: { color: '#2a2a2a' }, min: 0.02, max: 2000 },
+    y: { title: { display: true, text: yLabel, color: '#90a4ae' },
+         ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0, ...(yMax ? { max: yMax } : {}) }
+  },
+  plugins: {
+    legend: { labels: { color: '#b0bec5', font: { size: 10 } } },
+    annotation: annotations ? { annotations } : undefined
+  }
+});
+
+// ── Chart 1: Boost factor ──
+new Chart(document.getElementById('chart1'), {
+  type: 'line',
+  data: { datasets: slopes.map((s, i) => ({
+    label: `slope = ${sName[i]}`,
+    data: dPts.map(d => ({ x: d, y: boost(d, s) })),
+    borderColor: sCol[i], borderWidth: 2.5, pointRadius: 0, tension: 0.3
+  })).concat([{
+    label: 'Sin Auto (boost = 1.0)',
+    data: [{ x: 0.02, y: 1 }, { x: 2000, y: 1 }],
+    borderColor: '#ffffff33', borderWidth: 1.5, borderDash: [4,4], pointRadius: 0
+  }]) },
+  options: logXY('Factor de Boost', 4.0, midiAnnotations)
+});
+
+// ── Chart 2a: Fb vs delay — knob=0.35 ──
+const ds2a = slopes.map((s, i) => ({
+  label: `slope ${s}`,
+  data: dPts.map(d => ({ x: d, y: autoV3(0.35, d, s) })),
+  borderColor: sCol[i], borderWidth: 2.5, pointRadius: 0, tension: 0.3
+})).concat([{
+  label: 'Sin Auto',
+  data: [{ x: 0.02, y: 0.35 }, { x: 2000, y: 0.35 }],
+  borderColor: '#ffffff33', borderWidth: 1.5, borderDash: [4,4], pointRadius: 0
+}]);
+
+new Chart(document.getElementById('chart2a'), {
+  type: 'line', data: { datasets: ds2a },
+  options: { ...logXY('Feedback (knob=0.35)', 1.05, midiAnnotations),
+    plugins: { ...logXY('', 1.05, midiAnnotations).plugins,
+      title: { display: true, text: 'Knob = 0.35 (default)', color: '#90a4ae', font: { size: 12 } } } }
+});
+
+// ── Chart 2b: Fb vs delay — knob=0.7 ──
+const ds2b = slopes.map((s, i) => ({
+  label: `slope ${s}`,
+  data: dPts.map(d => ({ x: d, y: autoV3(0.7, d, s) })),
+  borderColor: sCol[i], borderWidth: 2.5, pointRadius: 0, tension: 0.3
+})).concat([{
+  label: 'Sin Auto',
+  data: [{ x: 0.02, y: 0.7 }, { x: 2000, y: 0.7 }],
+  borderColor: '#ffffff33', borderWidth: 1.5, borderDash: [4,4], pointRadius: 0
+}]);
+
+new Chart(document.getElementById('chart2b'), {
+  type: 'line', data: { datasets: ds2b },
+  options: { ...logXY('Feedback (knob=0.7)', 1.05, midiAnnotations),
+    plugins: { ...logXY('', 1.05, midiAnnotations).plugins,
+      title: { display: true, text: 'Knob = 0.7', color: '#90a4ae', font: { size: 12 } } } }
+});
+
+// ── Chart 3: Knob response at MIDI delays (slope=0.12) ──
+const kRange = [];
+for (let k = 0; k <= 1.0; k += 0.005) kRange.push(Math.round(k * 1000) / 1000);
+const midiDelays = [30.6, 7.65, 3.04, 1.14, 0.48];
+const midiNames = ['C1 (30.6ms)', 'C3 (7.65ms)', 'E4 (3.04ms)', 'C6 (1.14ms)', 'C7 (0.48ms)'];
+const midiCol = ['#90a4ae', '#4dd0e1', '#ffd54f', '#ff8a65', '#ef5350'];
+
+const ds3 = midiDelays.map((d, i) => ({
+  label: `${midiNames[i]} — boost=${boost(d, 0.12).toFixed(2)}×`,
+  data: kRange.map(k => ({ x: k, y: autoV3(k, d, 0.12) })),
+  borderColor: midiCol[i], borderWidth: 2, pointRadius: 0, tension: 0.3
+})).concat([{
+  label: 'Sin Auto (lineal)',
+  data: kRange.map(k => ({ x: k, y: Math.min(0.99, k) })),
+  borderColor: '#ffffff33', borderWidth: 1.5, borderDash: [4,4], pointRadius: 0
+}]);
+
+new Chart(document.getElementById('chart3'), {
+  type: 'line', data: { datasets: ds3 },
+  options: {
+    responsive: true,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    scales: {
+      x: { type: 'linear', title: { display: true, text: 'Posición del Knob', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0, max: 1 },
+      y: { title: { display: true, text: 'Feedback Efectivo', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0, max: 1.05 }
+    },
+    plugins: { legend: { labels: { color: '#b0bec5', font: { size: 10 } } } }
+  }
+});
+
+// ── Chart 4: Repetitions ──
+const knobs4 = [0.35, 0.5, 0.7];
+const k4Col = ['#4dd0e1', '#ffd54f', '#ff8a65'];
+const ds4 = [];
+knobs4.forEach((k, ki) => {
+  ds4.push({
+    label: `Knob ${k} — Auto (0.12)`,
+    data: dPts.map(d => ({ x: d, y: Math.min(500, reps60(autoV3(k, d, 0.12))) })),
+    borderColor: k4Col[ki], borderWidth: 2.5, pointRadius: 0, tension: 0.3
+  });
+  ds4.push({
+    label: `Knob ${k} — OFF`,
+    data: dPts.map(d => ({ x: d, y: Math.min(500, reps60(k)) })),
+    borderColor: k4Col[ki], borderWidth: 1.5, borderDash: [5,3], pointRadius: 0
+  });
+});
+
+new Chart(document.getElementById('chart4'), {
+  type: 'line', data: { datasets: ds4 },
+  options: logXY('Repeticiones a −60 dB', undefined, midiAnnotations)
+});
+
+// ── Chart 5: Envelope at E4 ──
+const e4ms = 3.04;
+const ds5 = [];
+slopes.forEach((s, i) => {
+  const fb = autoV3(0.5, e4ms, s);
+  const pts = [];
+  for (let rep = 0; rep <= 200; rep++) {
+    const t = rep * e4ms / 1000;
+    const amp = Math.pow(fb, rep);
+    pts.push({ x: t * 1000, y: 20 * Math.log10(Math.max(amp, 0.0001)) });
+    if (amp < 0.0005) break;
+  }
+  ds5.push({
+    label: `slope ${s} (fb=${fb.toFixed(3)})`,
+    data: pts, borderColor: sCol[i], borderWidth: 2.5, pointRadius: 0, tension: 0
+  });
+});
+ds5.push({
+  label: `Sin Auto (fb=0.500)`,
+  data: (() => {
+    const pts = [];
+    for (let rep = 0; rep <= 200; rep++) {
+      const t = rep * e4ms / 1000;
+      pts.push({ x: t * 1000, y: 20 * Math.log10(Math.max(Math.pow(0.5, rep), 0.0001)) });
+      if (Math.pow(0.5, rep) < 0.0005) break;
+    }
+    return pts;
+  })(),
+  borderColor: '#ffffff44', borderWidth: 1.5, borderDash: [5,3], pointRadius: 0, tension: 0
+});
+
+new Chart(document.getElementById('chart5'), {
+  type: 'line', data: { datasets: ds5 },
+  options: {
+    responsive: true,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    scales: {
+      x: { type: 'linear', title: { display: true, text: 'Tiempo (ms)', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0 },
+      y: { title: { display: true, text: 'Amplitud (dB)', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: -60, max: 0 }
+    },
+    plugins: { legend: { labels: { color: '#b0bec5', font: { size: 10 } } } }
+  }
+});
+
+// ── Chart 6: Saturation zone ──
+const kSweep = [];
+for (let k = 0.05; k <= 1.0; k += 0.01) kSweep.push(Math.round(k * 100) / 100);
+
+function minDelay099(slope) {
+  return kSweep.map(k => {
+    // boost_needed = 0.99 / knob → octaves = (boost - 1) / slope → delay = ref / 2^octaves
+    const boostNeeded = 0.99 / k;
+    if (boostNeeded <= 1.0) return { x: k, y: 2000 }; // already at 0.99 without boost
+    const octNeeded = (boostNeeded - 1.0) / slope;
+    const dMin = REF / Math.pow(2, octNeeded);
+    return { x: k, y: Math.max(0.01, Math.min(2000, dMin)) };
+  });
+}
+
+new Chart(document.getElementById('chart6'), {
+  type: 'line',
+  data: { datasets: slopes.map((s, i) => ({
+    label: `slope ${sName[i]}`,
+    data: minDelay099(s),
+    borderColor: sCol[i], borderWidth: 2.5, pointRadius: 0, tension: 0.3,
+    fill: { target: 'origin', above: sCol[i] + '10' }
+  })) },
+  options: {
+    responsive: true,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    scales: {
+      x: { type: 'linear', title: { display: true, text: 'Posición del Knob', color: '#90a4ae' },
+           ticks: { color: '#78909c' }, grid: { color: '#2a2a2a' }, min: 0.05, max: 1.0 },
+      y: { type: 'logarithmic', title: { display: true, text: 'Delay mínimo para 0.99 (ms)', color: '#90a4ae' },
+           ticks: { color: '#78909c', callback: v => v }, grid: { color: '#2a2a2a' }, min: 0.01, max: 2000 }
+    },
+    plugins: {
+      legend: { labels: { color: '#b0bec5', font: { size: 10 } } },
+      annotation: { annotations: {
+        midiHigh: { type: 'line', yMin: 0.48, yMax: 0.48, borderColor: '#ef535066', borderWidth: 1, borderDash: [3,3],
+          label: { display: true, content: 'C7 (0.48ms)', position: 'start', color: '#ef5350', font: { size: 9 } } },
+        midiMid: { type: 'line', yMin: 3.04, yMax: 3.04, borderColor: '#ffd54f66', borderWidth: 1, borderDash: [3,3],
+          label: { display: true, content: 'E4 (3ms)', position: 'start', color: '#ffd54f', font: { size: 9 } } },
+        midiLow: { type: 'line', yMin: 30.6, yMax: 30.6, borderColor: '#90a4ae66', borderWidth: 1, borderDash: [3,3],
+          label: { display: true, content: 'C1 (30ms)', position: 'start', color: '#90a4ae', font: { size: 9 } } },
+      }}
+    }
+  }
+});
+
+// ── Table ──
+const tData = [
+  [2000, 'Max manual', 0],
+  [500, 'Manual medio', Math.log2(2000/500)],
+  [30.6, 'MIDI C1', Math.log2(2000/30.6)],
+  [7.65, 'MIDI C3', Math.log2(2000/7.65)],
+  [3.04, 'MIDI E4', Math.log2(2000/3.04)],
+  [1.14, 'MIDI C6', Math.log2(2000/1.14)],
+  [0.48, 'MIDI C7', Math.log2(2000/0.48)],
+  [0.02, '1 sample@48k', Math.log2(2000/0.02)],
+];
+const tKnobs = [0.35, 0.5, 0.7];
+const tbody = document.querySelector('#refTable tbody');
+
+tData.forEach((row, ri) => {
+  const [d, ctx, oct] = row;
+  tKnobs.forEach((k, ki) => {
+    const tr = document.createElement('tr');
+    if (ki === 0 && ri > 0) tr.className = 'row-sep';
+    const b = slopes.map(s => boost(d, s));
+    const fb = slopes.map(s => autoV3(k, d, s));
+    tr.innerHTML = `
+      <td>${ki === 0 ? d : ''}</td>
+      <td>${ki === 0 ? ctx : ''}</td>
+      <td>${ki === 0 ? oct.toFixed(1) : ''}</td>
+      <td class="s1">${ki === 0 ? b[0].toFixed(3) : ''}</td>
+      <td class="s2">${ki === 0 ? b[1].toFixed(3) : ''}</td>
+      <td class="s3">${ki === 0 ? b[2].toFixed(3) : ''}</td>
+      <td>${k}</td>
+      <td class="s1${fb[0]>=0.985?' warn':''}">${fb[0].toFixed(4)}</td>
+      <td class="s2${fb[1]>=0.985?' warn':''}">${fb[1].toFixed(4)}</td>
+      <td class="s3${fb[2]>=0.985?' warn':''}">${fb[2].toFixed(4)}</td>
+      <td>${k.toFixed(2)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+});
+</script>
+
+</body>
+</html>

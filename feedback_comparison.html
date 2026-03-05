@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>ECHO-TR — Feedback Tail Comparison: Forward vs Reverse</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; color: #c8c8d0; font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; }
+h1 { color: #e0e0e8; font-size: 1.4em; margin-bottom: 4px; }
+h2 { color: #a0a0b0; font-size: 1.0em; font-weight: 400; margin-bottom: 20px; }
+h3 { color: #d0d0d8; font-size: 1.05em; margin: 20px 0 10px; }
+
+.grid { display: grid; grid-template-columns: 320px 1fr; gap: 20px; }
+.controls { background: #14141c; border: 1px solid #2a2a3a; border-radius: 8px; padding: 16px; }
+.charts { display: flex; flex-direction: column; gap: 16px; }
+
+.control-group { margin-bottom: 14px; }
+.control-group label { display: block; font-size: 0.82em; color: #9090a0; margin-bottom: 4px; }
+.control-group .value { float: right; color: #70b0ff; font-weight: 600; font-size: 0.82em; }
+input[type="range"] { width: 100%; accent-color: #5080d0; }
+select { width: 100%; background: #1c1c2a; color: #c8c8d0; border: 1px solid #3a3a4a; padding: 4px 8px; border-radius: 4px; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.checkbox-row input { accent-color: #5080d0; }
+
+canvas { background: #0e0e16; border: 1px solid #2a2a3a; border-radius: 6px; width: 100%; }
+
+.legend { display: flex; gap: 20px; padding: 8px 12px; background: #14141c; border-radius: 6px; border: 1px solid #2a2a3a; font-size: 0.82em; }
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+
+.info-box { background: #14141c; border: 1px solid #2a2a3a; border-radius: 8px; padding: 14px; margin-top: 14px; font-size: 0.82em; line-height: 1.6; }
+.info-box code { background: #1e1e2e; color: #80b0ff; padding: 1px 5px; border-radius: 3px; font-size: 0.95em; }
+
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.metric { background: #1a1a26; border: 1px solid #2a2a3a; border-radius: 6px; padding: 10px; text-align: center; }
+.metric .label { font-size: 0.72em; color: #8080a0; text-transform: uppercase; letter-spacing: 0.5px; }
+.metric .val { font-size: 1.3em; font-weight: 700; margin-top: 2px; }
+.metric .val.fwd { color: #50b0ff; }
+.metric .val.rev { color: #ff6080; }
+.metric .val.ratio { color: #f0c040; }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.tab { padding: 6px 14px; background: #1a1a26; border: 1px solid #2a2a3a; border-radius: 4px 4px 0 0; cursor: pointer; font-size: 0.82em; }
+.tab.active { background: #2a2a40; border-bottom-color: #2a2a40; color: #70b0ff; }
+
+.comp-select { margin-bottom: 10px; }
+</style>
+</head>
+<body>
+
+<h1>ECHO-TR — Feedback Tail Analysis</h1>
+<h2>Comparación muestra-por-muestra: Forward Stereo vs Reverse (anchor-based dual head + Hann)</h2>
+
+<div class="grid">
+  <div class="controls">
+    <div class="control-group">
+      <label>Delay Time <span class="value" id="delayVal">300 ms</span></label>
+      <input type="range" id="delayMs" min="10" max="2000" value="300" step="1">
+    </div>
+    <div class="control-group">
+      <label>Feedback <span class="value" id="fbVal">0.50</span></label>
+      <input type="range" id="feedback" min="0" max="0.99" value="0.50" step="0.01">
+    </div>
+    <div class="control-group">
+      <label>Sample Rate <span class="value" id="srVal">44100 Hz</span></label>
+      <select id="sampleRate">
+        <option value="44100" selected>44100 Hz</option>
+        <option value="48000">48000 Hz</option>
+        <option value="96000">96000 Hz</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Input Gain <span class="value" id="igVal">0 dB</span></label>
+      <input type="range" id="inputGain" min="-12" max="12" value="0" step="0.5">
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="autoFbk">
+      <label for="autoFbk">Auto Feedback (x² × 1.25^oct)</label>
+    </div>
+
+    <hr style="border-color:#2a2a3a; margin: 12px 0;">
+    <h3 style="margin-top:8px;">Reverse Compensation</h3>
+
+    <div class="comp-select control-group">
+      <label>Método de compensación</label>
+      <select id="compMethod">
+        <option value="none">Sin compensación (fb directo)</option>
+        <option value="mul07">fb × 0.7071 (-3 dB)</option>
+        <option value="pow15" selected>fb^1.5 (actual)</option>
+        <option value="pow2">fb² (cuadrático)</option>
+        <option value="custom">Custom exponent</option>
+      </select>
+    </div>
+    <div class="control-group" id="customExpGroup" style="display:none;">
+      <label>Custom exponent <span class="value" id="customExpVal">1.5</span></label>
+      <input type="range" id="customExp" min="1.0" max="3.0" value="1.5" step="0.05">
+    </div>
+
+    <hr style="border-color:#2a2a3a; margin: 12px 0;">
+    <h3 style="margin-top:8px;">Métricas</h3>
+
+    <div class="metrics">
+      <div class="metric">
+        <div class="label">Forward fb efectivo</div>
+        <div class="val fwd" id="mFwdFb">—</div>
+      </div>
+      <div class="metric">
+        <div class="label">Reverse fb efectivo</div>
+        <div class="val rev" id="mRevFb">—</div>
+      </div>
+      <div class="metric">
+        <div class="label">Forward RT60</div>
+        <div class="val fwd" id="mFwdRT60">—</div>
+      </div>
+      <div class="metric">
+        <div class="label">Reverse RT60</div>
+        <div class="val rev" id="mRevRT60">—</div>
+      </div>
+      <div class="metric">
+        <div class="label">Forward repeats (-60dB)</div>
+        <div class="val fwd" id="mFwdRepeats">—</div>
+      </div>
+      <div class="metric">
+        <div class="label">Reverse repeats (-60dB)</div>
+        <div class="val rev" id="mRevRepeats">—</div>
+      </div>
+      <div class="metric" style="grid-column: span 2;">
+        <div class="label">Ratio cola Rev/Fwd</div>
+        <div class="val ratio" id="mRatio">—</div>
+      </div>
+    </div>
+
+    <div class="info-box" style="margin-top: 14px;">
+      <strong>Simulación:</strong> Impulso unitario en t=0. Se ejecuta la misma lógica de procesado
+      que el plugin (buffer circular, escritura forward, lectura con interpolación) durante 10 segundos.
+      Se mide la envolvente RMS en ventanas de 256 muestras.
+    </div>
+  </div>
+
+  <div class="charts">
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#50b0ff;"></div> Forward Stereo</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ff6080;"></div> Reverse (compensado)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ff608040;"></div> Reverse (sin compensar)</div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="envelope">Envelope (dB)</div>
+      <div class="tab" data-tab="energy">Energía acumulada</div>
+      <div class="tab" data-tab="fbsweep">Feedback Sweep</div>
+    </div>
+
+    <canvas id="mainCanvas" height="400"></canvas>
+
+    <div class="info-box" id="chartInfo">
+      Envolvente de amplitud (dB) del impulso a lo largo del tiempo. Compara la cola de decay entre forward y reverse.
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== SIMULATION ENGINE =====
+// Mirrors the exact C++ logic from PluginProcessor.cpp
+
+const SIMULATION_SECONDS = 10;
+const RMS_WINDOW = 256;
+
+function dbToGain(db) { return Math.pow(10, db / 20); }
+function gainToDb(g) { return 20 * Math.log10(Math.max(g, 1e-12)); }
+
+function computeAutoFeedback(fb, delayMs, maxMs) {
+    if (fb <= 0.001 || delayMs <= 1) return fb;
+    const expFb = Math.pow(fb, 2.0);
+    const octaves = Math.log2(maxMs / delayMs);
+    const mult = Math.pow(1.25, octaves);
+    return Math.min(0.99, expFb * mult);
+}
+
+function getCompensatedFb(fb, method, customExp) {
+    switch (method) {
+        case 'none': return fb;
+        case 'mul07': return fb * 0.7071;
+        case 'pow15': return Math.pow(fb, 1.5);
+        case 'pow2': return Math.pow(fb, 2.0);
+        case 'custom': return Math.pow(fb, customExp);
+    }
+    return fb;
+}
+
+// Forward stereo delay simulation (exact mirror of processStereoDelay)
+function simForward(sr, delayMs, feedback, inputGain) {
+    const totalSamples = Math.floor(sr * SIMULATION_SECONDS);
+    const delaySamples = Math.max(1, sr * delayMs / 1000);
+
+    // Power-of-2 buffer
+    let bufLen = 1;
+    while (bufLen < delaySamples * 4 + 1024) bufLen *= 2;
+    const wrapMask = bufLen - 1;
+    const delayBuf = new Float64Array(bufLen);
+    let writePos = 0;
+
+    const output = new Float64Array(totalSamples);
+
+    // Smoothing (fast for simulation)
+    let smoothedDelay = delaySamples;
+    const smoothCoeff = 0.9997;
+
+    for (let i = 0; i < totalSamples; i++) {
+        smoothedDelay = smoothedDelay * smoothCoeff + delaySamples * (1 - smoothCoeff);
+
+        let readPosF = writePos - smoothedDelay;
+        if (readPosF < 0) readPosF += bufLen;
+
+        const r0 = Math.floor(readPosF) & wrapMask;
+        const r1 = (r0 + 1) & wrapMask;
+        const frac = readPosF - Math.floor(readPosF);
+
+        const delayed = delayBuf[r0] + frac * (delayBuf[r1] - delayBuf[r0]);
+        const clipped = Math.max(-2, Math.min(2, delayed));
+
+        // Input: impulse at sample 0
+        const inp = (i === 0) ? 1.0 : 0.0;
+
+        delayBuf[writePos] = inp * inputGain + clipped * feedback;
+        output[i] = delayed; // wet only for comparison
+
+        writePos = (writePos + 1) & wrapMask;
+    }
+
+    return output;
+}
+
+// Reverse delay simulation (exact mirror of processReverseDelay with anchor-based approach)
+function simReverse(sr, delayMs, feedback, inputGain, compMethod, customExp) {
+    const totalSamples = Math.floor(sr * SIMULATION_SECONDS);
+    const delaySamples = Math.max(1, sr * delayMs / 1000);
+
+    let bufLen = 1;
+    while (bufLen < delaySamples * 4 + 1024) bufLen *= 2;
+    const wrapMask = bufLen - 1;
+    const delayBuf = new Float64Array(bufLen);
+    let writePos = 0;
+
+    const output = new Float64Array(totalSamples);
+
+    const smoothCoeff = 0.9997;
+    let reverseSmoothedDelay = delaySamples;
+
+    // State variables (mirrors C++ exactly)
+    let reverseCounterA = 0;
+    let reverseCounterB = 0;
+    let reverseAnchorA = 0;
+    let reverseAnchorB = 0;
+    let needsInit = true;
+
+    const fbComp = getCompensatedFb(feedback, compMethod, customExp);
+
+    for (let i = 0; i < totalSamples; i++) {
+        reverseSmoothedDelay = reverseSmoothedDelay * smoothCoeff + delaySamples * (1 - smoothCoeff);
+        const chunkLen = Math.max(1, reverseSmoothedDelay);
+
+        if (needsInit) {
+            reverseAnchorA = writePos;
+            reverseAnchorB = writePos;
+            reverseCounterA = 0;
+            reverseCounterB = chunkLen * 0.5;
+            needsInit = false;
+        }
+
+        const inp = (i === 0) ? 1.0 : 0.0;
+
+        // Head A
+        const normA = reverseCounterA / chunkLen;
+        let readPosA = reverseAnchorA - reverseCounterA;
+        if (readPosA < 0) readPosA += bufLen;
+
+        const rA0 = Math.floor(readPosA) & wrapMask;
+        const rA1 = (rA0 + 1) & wrapMask;
+        const fracA = readPosA - Math.floor(readPosA);
+        const revA = delayBuf[rA0] + fracA * (delayBuf[rA1] - delayBuf[rA0]);
+
+        // Head B
+        const normB = reverseCounterB / chunkLen;
+        let readPosB = reverseAnchorB - reverseCounterB;
+        if (readPosB < 0) readPosB += bufLen;
+
+        const rB0 = Math.floor(readPosB) & wrapMask;
+        const rB1 = (rB0 + 1) & wrapMask;
+        const fracB = readPosB - Math.floor(readPosB);
+        const revB = delayBuf[rB0] + fracB * (delayBuf[rB1] - delayBuf[rB0]);
+
+        // Hann crossfade
+        const sinA = Math.sin(Math.PI * normA);
+        const gainA = sinA * sinA;
+        const sinB = Math.sin(Math.PI * normB);
+        const gainB = sinB * sinB;
+
+        let rev = revA * gainA + revB * gainB;
+        rev = Math.max(-2, Math.min(2, rev));
+
+        delayBuf[writePos] = inp * inputGain + rev * fbComp;
+        output[i] = rev; // wet only
+
+        writePos = (writePos + 1) & wrapMask;
+
+        // Advance heads
+        reverseCounterA += 1;
+        if (reverseCounterA >= chunkLen) {
+            reverseCounterA -= chunkLen;
+            reverseAnchorA = writePos;
+        }
+        reverseCounterB += 1;
+        if (reverseCounterB >= chunkLen) {
+            reverseCounterB -= chunkLen;
+            reverseAnchorB = writePos;
+        }
+    }
+
+    return output;
+}
+
+// RMS envelope in dB
+function computeEnvelope(samples, windowSize) {
+    const numWindows = Math.floor(samples.length / windowSize);
+    const env = new Float64Array(numWindows);
+    for (let w = 0; w < numWindows; w++) {
+        let sum = 0;
+        const off = w * windowSize;
+        for (let j = 0; j < windowSize; j++) {
+            const s = samples[off + j];
+            sum += s * s;
+        }
+        env[w] = gainToDb(Math.sqrt(sum / windowSize));
+    }
+    return env;
+}
+
+// Cumulative energy
+function computeCumulativeEnergy(samples, windowSize) {
+    const numWindows = Math.floor(samples.length / windowSize);
+    const energy = new Float64Array(numWindows);
+    let cumul = 0;
+    for (let w = 0; w < numWindows; w++) {
+        const off = w * windowSize;
+        for (let j = 0; j < windowSize; j++) {
+            const s = samples[off + j];
+            cumul += s * s;
+        }
+        energy[w] = cumul;
+    }
+    return energy;
+}
+
+// Find time to reach -60dB
+function findRT60(envelope, windowSize, sr) {
+    for (let i = 0; i < envelope.length; i++) {
+        if (envelope[i] < -60) {
+            return (i * windowSize) / sr;
+        }
+    }
+    return SIMULATION_SECONDS;
+}
+
+// Count distinct repeats above -60dB (for forward: peaks)
+function countRepeats(envelope) {
+    let count = 0;
+    for (let i = 1; i < envelope.length - 1; i++) {
+        if (envelope[i] > -60 && envelope[i] > envelope[i-1] && envelope[i] >= envelope[i+1]) {
+            count++;
+        }
+    }
+    return Math.max(count, 0);
+}
+
+// ===== FEEDBACK SWEEP SIMULATION =====
+function simFeedbackSweep(sr, delayMs, inputGain, compMethod, customExp) {
+    const fbSteps = 50;
+    const fwdRT60 = new Float64Array(fbSteps);
+    const revRT60 = new Float64Array(fbSteps);
+    const revRawRT60 = new Float64Array(fbSteps);
+    const fbValues = new Float64Array(fbSteps);
+
+    for (let s = 0; s < fbSteps; s++) {
+        const fb = (s + 1) / (fbSteps + 1) * 0.99;
+        fbValues[s] = fb;
+
+        // Analytical forward RT60: repeats to -60dB = -60 / (20*log10(fb)), then × delay time
+        if (fb > 0.001) {
+            const repeatsTo60 = -60 / (20 * Math.log10(fb));
+            const rt60 = repeatsTo60 * (delayMs / 1000);
+            fwdRT60[s] = Math.min(rt60, SIMULATION_SECONDS);
+
+            const fbComp = getCompensatedFb(fb, compMethod, customExp);
+            if (fbComp > 0.001) {
+                const repeatsRev = -60 / (20 * Math.log10(fbComp));
+                revRT60[s] = Math.min(repeatsRev * (delayMs / 1000), SIMULATION_SECONDS);
+            } else {
+                revRT60[s] = delayMs / 1000;
+            }
+
+            const repeatsRaw = -60 / (20 * Math.log10(fb));
+            revRawRT60[s] = Math.min(repeatsRaw * (delayMs / 1000), SIMULATION_SECONDS);
+        } else {
+            fwdRT60[s] = delayMs / 1000;
+            revRT60[s] = delayMs / 1000;
+            revRawRT60[s] = delayMs / 1000;
+        }
+    }
+
+    return { fbValues, fwdRT60, revRT60, revRawRT60 };
+}
+
+
+// ===== DRAWING =====
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
+
+let currentTab = 'envelope';
+
+function resizeCanvas() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width * window.devicePixelRatio;
+    canvas.height = 400 * window.devicePixelRatio;
+    canvas.style.height = '400px';
+    ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+}
+
+function drawGrid(w, h, xLabel, yLabel, xMin, xMax, yMin, yMax, xUnit, yUnit) {
+    const pad = { l: 55, r: 20, t: 20, b: 35 };
+    const plotW = w - pad.l - pad.r;
+    const plotH = h - pad.t - pad.b;
+
+    ctx.strokeStyle = '#1e1e30';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#707088';
+    ctx.font = '10px Segoe UI';
+
+    // Y grid
+    const ySteps = 8;
+    for (let i = 0; i <= ySteps; i++) {
+        const y = pad.t + (i / ySteps) * plotH;
+        const val = yMax - (i / ySteps) * (yMax - yMin);
+        ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+        ctx.fillText((val >= 0 ? '+' : '') + val.toFixed(yUnit === 's' ? 1 : 0) + (yUnit || ''), 4, y + 3);
+    }
+
+    // X grid
+    const xSteps = 10;
+    for (let i = 0; i <= xSteps; i++) {
+        const x = pad.l + (i / xSteps) * plotW;
+        const val = xMin + (i / xSteps) * (xMax - xMin);
+        ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, h - pad.b); ctx.stroke();
+        ctx.fillText(val.toFixed(xUnit === '' ? 2 : (xMax > 5 ? 1 : 2)) + (xUnit || ''), x - 12, h - pad.b + 13);
+    }
+
+    // Labels
+    ctx.fillStyle = '#9090a0';
+    ctx.font = '11px Segoe UI';
+    ctx.fillText(xLabel, pad.l + plotW / 2 - 20, h - 3);
+    ctx.save();
+    ctx.translate(12, pad.t + plotH / 2 + 20);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(yLabel, 0, 0);
+    ctx.restore();
+
+    return { pad, plotW, plotH };
+}
+
+function plotLine(data, xMin, xMax, yMin, yMax, color, lineWidth, layout) {
+    const { pad, plotW, plotH } = layout;
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    for (let i = 0; i < data.length; i++) {
+        const x = pad.l + (i / (data.length - 1)) * plotW;
+        const norm = (data[i] - yMin) / (yMax - yMin);
+        const y = pad.t + (1 - norm) * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+}
+
+function plotLineXY(xData, yData, xMin, xMax, yMin, yMax, color, lineWidth, layout) {
+    const { pad, plotW, plotH } = layout;
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    for (let i = 0; i < xData.length; i++) {
+        const x = pad.l + ((xData[i] - xMin) / (xMax - xMin)) * plotW;
+        const norm = (yData[i] - yMin) / (yMax - yMin);
+        const y = pad.t + (1 - norm) * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+}
+
+// ===== MAIN UPDATE =====
+let lastResult = null;
+
+function update() {
+    const sr = parseInt(document.getElementById('sampleRate').value);
+    const delayMs = parseFloat(document.getElementById('delayMs').value);
+    const rawFb = parseFloat(document.getElementById('feedback').value);
+    const inputGainDb = parseFloat(document.getElementById('inputGain').value);
+    const autoFbkOn = document.getElementById('autoFbk').checked;
+    const compMethod = document.getElementById('compMethod').value;
+    const customExp = parseFloat(document.getElementById('customExp').value);
+
+    // Update labels
+    document.getElementById('delayVal').textContent = delayMs + ' ms';
+    document.getElementById('fbVal').textContent = rawFb.toFixed(2);
+    document.getElementById('srVal').textContent = sr + ' Hz';
+    document.getElementById('igVal').textContent = inputGainDb.toFixed(1) + ' dB';
+    document.getElementById('customExpVal').textContent = customExp.toFixed(2);
+
+    document.getElementById('customExpGroup').style.display = compMethod === 'custom' ? 'block' : 'none';
+
+    let feedback = Math.min(0.99, rawFb);
+    if (autoFbkOn) {
+        feedback = computeAutoFeedback(feedback, delayMs, 2000);
+    }
+
+    const inputGain = dbToGain(inputGainDb);
+    const fbComp = getCompensatedFb(feedback, compMethod, customExp);
+
+    // Run simulations
+    const fwdSamples = simForward(sr, delayMs, feedback, inputGain);
+    const revSamples = simReverse(sr, delayMs, feedback, inputGain, compMethod, customExp);
+    const revRawSamples = simReverse(sr, delayMs, feedback, inputGain, 'none', 1);
+
+    const fwdEnv = computeEnvelope(fwdSamples, RMS_WINDOW);
+    const revEnv = computeEnvelope(revSamples, RMS_WINDOW);
+    const revRawEnv = computeEnvelope(revRawSamples, RMS_WINDOW);
+
+    const fwdCumul = computeCumulativeEnergy(fwdSamples, RMS_WINDOW);
+    const revCumul = computeCumulativeEnergy(revSamples, RMS_WINDOW);
+    const revRawCumul = computeCumulativeEnergy(revRawSamples, RMS_WINDOW);
+
+    // Metrics
+    const fwdRT60 = findRT60(fwdEnv, RMS_WINDOW, sr);
+    const revRT60 = findRT60(revEnv, RMS_WINDOW, sr);
+    const fwdRepeats = countRepeats(fwdEnv);
+    const revRepeats = Math.floor(revRT60 / (delayMs / 1000));
+
+    document.getElementById('mFwdFb').textContent = feedback.toFixed(3);
+    document.getElementById('mRevFb').textContent = fbComp.toFixed(3);
+    document.getElementById('mFwdRT60').textContent = fwdRT60.toFixed(2) + 's';
+    document.getElementById('mRevRT60').textContent = revRT60.toFixed(2) + 's';
+    document.getElementById('mFwdRepeats').textContent = fwdRepeats;
+    document.getElementById('mRevRepeats').textContent = revRepeats;
+    document.getElementById('mRatio').textContent = (fwdRT60 > 0.01 ? (revRT60 / fwdRT60).toFixed(2) : '—') + '×';
+
+    lastResult = { sr, delayMs, feedback, inputGain, compMethod, customExp,
+                   fwdEnv, revEnv, revRawEnv, fwdCumul, revCumul, revRawCumul };
+
+    draw();
+}
+
+function draw() {
+    if (!lastResult) return;
+    resizeCanvas();
+
+    const w = canvas.width / window.devicePixelRatio;
+    const h = canvas.height / window.devicePixelRatio;
+    ctx.clearRect(0, 0, w, h);
+
+    const { sr, delayMs, fwdEnv, revEnv, revRawEnv, fwdCumul, revCumul, revRawCumul, feedback, compMethod, customExp } = lastResult;
+
+    if (currentTab === 'envelope') {
+        const xMax = SIMULATION_SECONDS;
+        const layout = drawGrid(w, h, 'Time (s)', 'Level (dB)', 0, xMax, -80, 0, 's', 'dB');
+
+        // 0 dB reference line
+        ctx.strokeStyle = '#3a3a50';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        const y0 = layout.pad.t;
+        ctx.beginPath(); ctx.moveTo(layout.pad.l, y0); ctx.lineTo(w - layout.pad.r, y0); ctx.stroke();
+        // -60 dB reference
+        const y60 = layout.pad.t + (1 - (-60 - (-80)) / (0 - (-80))) * layout.plotH;
+        ctx.beginPath(); ctx.moveTo(layout.pad.l, y60); ctx.lineTo(w - layout.pad.r, y60); ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Label -60dB
+        ctx.fillStyle = '#606078';
+        ctx.font = '10px Segoe UI';
+        ctx.fillText('-60 dB (RT60)', layout.pad.l + 5, y60 - 4);
+
+        plotLine(revRawEnv, 0, xMax, -80, 0, 'rgba(255,96,128,0.2)', 1.5, layout);
+        plotLine(fwdEnv, 0, xMax, -80, 0, '#50b0ff', 1.5, layout);
+        plotLine(revEnv, 0, xMax, -80, 0, '#ff6080', 1.5, layout);
+
+        document.getElementById('chartInfo').innerHTML =
+            'Envolvente RMS (dB) del impulso. <b style="color:#50b0ff">Forward</b> = un read head a distancia D. ' +
+            '<b style="color:#ff6080">Reverse</b> = dual head con Hann + compensación. ' +
+            '<b style="color:rgba(255,96,128,0.5)">Reverse sin comp.</b> = feedback directo sin compensar.';
+
+    } else if (currentTab === 'energy') {
+        const maxE = Math.max(
+            fwdCumul[fwdCumul.length - 1],
+            revCumul[revCumul.length - 1],
+            revRawCumul[revRawCumul.length - 1]
+        ) || 1;
+        const layout = drawGrid(w, h, 'Time (s)', 'Cumulative Energy', 0, SIMULATION_SECONDS, 0, maxE, 's', '');
+
+        plotLine(revRawCumul, 0, SIMULATION_SECONDS, 0, maxE, 'rgba(255,96,128,0.2)', 1.5, layout);
+        plotLine(fwdCumul, 0, SIMULATION_SECONDS, 0, maxE, '#50b0ff', 1.5, layout);
+        plotLine(revCumul, 0, SIMULATION_SECONDS, 0, maxE, '#ff6080', 1.5, layout);
+
+        document.getElementById('chartInfo').innerHTML =
+            'Energía total acumulada a lo largo del tiempo. Si las curvas de forward y reverse convergen, ' +
+            'la compensación de feedback está correctamente calibrada.';
+
+    } else if (currentTab === 'fbsweep') {
+        const sweep = simFeedbackSweep(sr, delayMs, lastResult.inputGain, compMethod, customExp);
+        const yMax = Math.min(SIMULATION_SECONDS, Math.max(...sweep.fwdRT60, ...sweep.revRT60, ...sweep.revRawRT60) * 1.1);
+        const layout = drawGrid(w, h, 'Feedback', 'RT60 (s)', 0, 1, 0, yMax, '', 's');
+
+        plotLineXY(Array.from(sweep.fbValues), Array.from(sweep.revRawRT60), 0, 1, 0, yMax, 'rgba(255,96,128,0.2)', 1.5, layout);
+        plotLineXY(Array.from(sweep.fbValues), Array.from(sweep.fwdRT60), 0, 1, 0, yMax, '#50b0ff', 1.5, layout);
+        plotLineXY(Array.from(sweep.fbValues), Array.from(sweep.revRT60), 0, 1, 0, yMax, '#ff6080', 1.5, layout);
+
+        document.getElementById('chartInfo').innerHTML =
+            'RT60 analítico vs feedback para delay = ' + delayMs + ' ms. ' +
+            'Si las curvas <b style="color:#50b0ff">forward</b> y <b style="color:#ff6080">reverse comp.</b> se solapan, ' +
+            'la compensación es correcta según el modelo teórico. Divergencias = problema perceptual.';
+    }
+}
+
+// ===== EVENT BINDING =====
+document.querySelectorAll('input[type="range"], select, input[type="checkbox"]').forEach(el => {
+    el.addEventListener('input', update);
+});
+
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        currentTab = tab.dataset.tab;
+        draw();
+    });
+});
+
+window.addEventListener('resize', () => { resizeCanvas(); draw(); });
+
+// Initial render
+resizeCanvas();
+update();
+</script>
+
+</body>
+</html>

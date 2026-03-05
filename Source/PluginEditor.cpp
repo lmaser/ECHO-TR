@@ -145,6 +145,7 @@ void embedAlertWindowInOverlay (ECHOTRAudioProcessorEditor* editor,
         return;
 
     editor->setPromptOverlayActive (true);
+    aw->setInterceptsMouseClicks (false, true);  // prevent drag on background, children still clickable
 
     // Position BEFORE making visible to avoid a one-frame flash at (0,0)
     const int bx = juce::jmax (0, (editor->getWidth() - aw->getWidth()) / 2);
@@ -566,9 +567,10 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 
     applyActivePalette();
     setLookAndFeel (&lnf);
-    tooltipWindow = std::make_unique<juce::TooltipWindow> (nullptr, 250);
+    tooltipWindow = std::make_unique<juce::TooltipWindow> (this, 250);
     tooltipWindow->setLookAndFeel (&lnf);
     tooltipWindow->setAlwaysOnTop (true);
+    tooltipWindow->setInterceptsMouseClicks (false, false);  // let mouse pass through (like desktop mode)
 
     setResizable (true, true);
 
@@ -626,11 +628,13 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     const int savedChannel = audioProcessor.getMidiChannel();
     midiChannelDisplay.setText (juce::String (savedChannel), juce::dontSendNotification);
     midiChannelDisplay.setJustificationType (juce::Justification::centred);
-    midiChannelDisplay.setInterceptsMouseClicks (false, false);
-    midiChannelDisplay.setBorderSize (juce::BorderSize<int> (0));  // No border, we draw it manually
+    midiChannelDisplay.setInterceptsMouseClicks (true, false);
+    midiChannelDisplay.addMouseListener (this, false);
+    midiChannelDisplay.setTooltip (savedChannel == 0 ? juce::String ("CH 0 (Omni)") : juce::String ("CH " + juce::String (savedChannel)));
+    midiChannelDisplay.setBorderSize (juce::BorderSize<int> (0));
     midiChannelDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
     midiChannelDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
-    addChildComponent (midiChannelDisplay);  // Hidden by default; resized() will show if it fits
+    addChildComponent (midiChannelDisplay);
 
     auto bindSlider = [&] (std::unique_ptr<SliderAttachment>& attachment,
                            const char* paramId,
@@ -712,12 +716,17 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 
     startTimerHz (10);
 
+    // CRT post-process effect (Retro-Windows-Terminal shader on CPU)
+    crtEffect.setEnabled (fxTailEnabled);
+    setComponentEffect (&crtEffect);
+
     refreshLegendTextCache();
     resized();  // Ensure correct initial layout (MIDI port visibility, etc.)
 }
 
 ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
 {
+    setComponentEffect (nullptr);
     stopTimer();
 
     static constexpr std::array<const char*, 5> kUiMirrorParamIds {
@@ -905,34 +914,11 @@ void ECHOTRAudioProcessorEditor::timerCallback()
         lastPersistedEditorH = h;
     }
 
-    // ── CRT animation (lightweight: no image ops, just state updates) ──
+    // ── CRT animation (advance time for ImageEffectFilter shader) ──
     if (fxTailEnabled && w > 0 && h > 0)
     {
-        ++crtTickCounter;
-
-        // Noise: advance frame every tick (~10 Hz)
-        crtNoiseIndex = (crtNoiseIndex + 1) % kCrtNoiseFrames;
-
-        // Flicker: brightness variation (visible on dark backgrounds)
-        crtFlickerAlpha = (juce::uint8) crtRng.nextInt ({ 0, 36 });
-
-        // Distortion: advance phase + occasional amplitude shifts
-        crtDistortionPhase += 0.22;
-        if (crtRng.nextInt (100) < 8)
-            crtDistortionAmplitude = 0.6f + crtRng.nextFloat() * 2.8f;  // 0.6 – 3.4 px
-
-        // Glitch bar: ~25 % chance per tick
-        if (crtRng.nextInt (100) < 25)
-        {
-            crtGlitchBarY  = crtRng.nextInt (h);
-            crtGlitchBarH  = crtRng.nextInt ({ 2, juce::jmax (5, h / 35) });
-            crtGlitchShiftPx = crtRng.nextInt ({ -10, 11 });
-        }
-        else
-        {
-            crtGlitchBarY = -1;
-        }
-
+        crtTime += 0.1f;              // ~10 Hz tick
+        crtEffect.setTime (crtTime);
         repaint();
     }
 }
@@ -975,7 +961,10 @@ void ECHOTRAudioProcessorEditor::applyPersistedUiStateFromProcessor (bool applyS
             useCustomPalette = targetUseCustomPalette;
 
         if (fxChanged)
+        {
             fxTailEnabled = targetFxTailEnabled;
+            crtEffect.setEnabled (fxTailEnabled);
+        }
 
         if (paletteChanged || paletteSwitchChanged)
             applyActivePalette();
@@ -2380,6 +2369,7 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
             {
                 safeThis->audioProcessor.setMidiChannel (0);
                 safeThis->midiChannelDisplay.setText ("0", juce::dontSendNotification);
+                safeThis->midiChannelDisplay.setTooltip ("CH 0 (Omni)");
                 return;
             }
             
@@ -2388,6 +2378,7 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
             {
                 safeThis->audioProcessor.setMidiChannel (ch);
                 safeThis->midiChannelDisplay.setText (juce::String (ch), juce::dontSendNotification);
+                safeThis->midiChannelDisplay.setTooltip ("CH " + juce::String (ch));
             }
         }),
         false);
@@ -2486,6 +2477,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     fxTailEnabled = audioProcessor.getUiFxTailEnabled();
+    crtEffect.setEnabled (fxTailEnabled);
     applyActivePalette();
 
     setPromptOverlayActive (true);
@@ -2553,6 +2545,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
             return;
 
         safeThis->fxTailEnabled = fxToggle->getToggleState();
+        safeThis->crtEffect.setEnabled (safeThis->fxTailEnabled);
         safeThis->audioProcessor.setUiFxTailEnabled (safeThis->fxTailEnabled);
         safeThis->repaint();
     };
@@ -2662,12 +2655,14 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
                 applyPromptShellSize (*colorAw);
                 layoutAlertWindowButtons (*colorAw);
 
+                const juce::Font& kHexPromptFont = kBoldFont40();
+
                 preparePromptTextEditor (*colorAw,
                                          "hex",
                                          scheme.bg,
                                          scheme.text,
                                          scheme.fg,
-                                         safeThis->lnf.getAlertWindowMessageFont(),
+                                         kHexPromptFont,
                                          true,
                                          6);
 
@@ -2681,7 +2676,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
                                                  scheme.bg,
                                                  scheme.text,
                                                  scheme.fg,
-                                                 safeThis->lnf.getAlertWindowMessageFont(),
+                                                 kHexPromptFont,
                                                  true,
                                                  6);
                     });
@@ -2704,7 +2699,7 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
                                          scheme.bg,
                                          scheme.text,
                                          scheme.fg,
-                                         safeThis->lnf.getAlertWindowMessageFont(),
+                                         kHexPromptFont,
                                          true,
                                          6);
 
@@ -3232,7 +3227,7 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getAutoFbkLabelArea() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getReverseLabelArea() const
 {
-    return makeToggleLabelArea (reverseButton, midiButton.getX() - kToggleLegendCollisionPadPx, "REV", "RV");
+    return makeToggleLabelArea (reverseButton, midiButton.getX() - kToggleLegendCollisionPadPx, "REVERSE", "RVS");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
@@ -3263,7 +3258,7 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getInfoIconArea() const
 void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
 {
     lastUserInteractionMs.store (juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
-    const auto p = e.getPosition();
+    const auto p = e.getEventRelativeTo (this).getPosition();
 
     // Check if click is on MIDI channel display (only if visible)
     if (midiChannelDisplay.isVisible() && midiChannelDisplay.getBounds().contains (p))
@@ -3284,7 +3279,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     {
         auto infoArea = getInfoIconArea();
         if (fxTailEnabled)
-            infoArea = infoArea.expanded (juce::roundToInt (crtDistortionAmplitude * 1.5f) + 2, 0);
+            infoArea = infoArea.expanded (4, 0);  // small pad for CRT distortion
         if (infoArea.contains (p))
         {
             openInfoPopup();
@@ -3545,7 +3540,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
 
         const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
         const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "AUTO FBK", "AUTO");
-        const juce::String revLabel = chooseToggleLabel (reverseButton,    revCR, "REV",     "RV");
+        const juce::String revLabel = chooseToggleLabel (reverseButton,    revCR, "REVERSE",     "RVS");
         const juce::String midiLabel = chooseToggleLabel (midiButton,    midiCR, "MIDI",     "MD");
         
         auto drawToggleLegend = [&] (const juce::Rectangle<int>& labelArea,
@@ -3605,242 +3600,15 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
 
 }
 
-// ── CRT / VHS overlay — painted OVER all children ──────────────────────
-// All effects are pre-baked overlays + trivial fill rects.
-// Zero snapshot captures, zero image scaling, zero per-pixel work at paint time.
+// ── CRT / VHS overlay — now handled entirely by CrtEffect (ImageEffectFilter).
+// paintOverChildren is intentionally empty so the source image captured by
+// the effect filter contains only the clean GUI render.
 void ECHOTRAudioProcessorEditor::paintOverChildren (juce::Graphics& g)
 {
-    if (! fxTailEnabled)
-        return;
-
-    const int W = getWidth();
-    const int H = getHeight();
-    if (W <= 0 || H <= 0)
-        return;
-
-    // ── Geometric wobble (VHS tracking / barrel distortion) ──
-    {
-        const int bandSpacing = juce::jmax (4, H / 30);
-        for (int y = 0; y < H; y += bandSpacing)
-        {
-            const double yf = (double) y;
-            const int xOff = (int) (
-                std::sin (yf * 0.015 + crtDistortionPhase) * crtDistortionAmplitude * 2.0
-              + std::sin (yf * 0.042 + crtDistortionPhase * 1.6) * crtDistortionAmplitude * 0.7
-              + std::sin (yf * 0.003 + crtDistortionPhase * 0.2) * crtDistortionAmplitude * 1.2
-            );
-            if (xOff == 0)
-                continue;
-
-            const juce::uint8 bandAlpha = (juce::uint8) juce::jlimit (26, 48,
-                36 + (int)(12.0 * std::sin (yf * 0.08 + crtDistortionPhase * 2.0)));
-            g.setColour (juce::Colour::fromRGBA (0, 0, 0, bandAlpha));
-            g.fillRect (xOff, y, W, 2);
-            g.setColour (juce::Colour::fromRGBA (255, 0, 0, (juce::uint8) (bandAlpha * 3 / 4)));
-            g.fillRect (xOff + 2, y + 2, W, 1);
-            g.setColour (juce::Colour::fromRGBA (0, 220, 255, (juce::uint8) (bandAlpha * 3 / 4)));
-            g.fillRect (xOff - 1, y - 1, W, 1);
-        }
-    }
-
-    // ── Scanlines (per-frame opacity variation) ──
-    if (crtScanlineOverlay.isValid())
-    {
-        const float scanOp = 0.55f + 0.15f * (float) std::sin (crtDistortionPhase * 0.7);
-        g.setOpacity (scanOp);
-        g.drawImageAt (crtScanlineOverlay, 0, 0);
-        g.setOpacity (1.0f);
-    }
-
-    // ── Static noise ──
-    if (crtNoiseIndex >= 0 && crtNoiseIndex < kCrtNoiseFrames
-        && crtNoiseOverlays[(size_t) crtNoiseIndex].isValid())
-        g.drawImageAt (crtNoiseOverlays[(size_t) crtNoiseIndex], 0, 0);
-
-    // ── Gaussian noise (permanent grain) ──
-    if (crtGaussianNoise.isValid())
-        g.drawImageAt (crtGaussianNoise, 0, 0);
-
-    // ── Flicker ──
-    if (crtFlickerAlpha > 0)
-    {
-        g.setColour (juce::Colour::fromRGBA (0, 0, 0, crtFlickerAlpha));
-        g.fillRect (0, 0, W, H);
-    }
-
-    // ── Glitch bar ──
-    if (crtGlitchBarY >= 0 && crtGlitchBarH > 0)
-    {
-        const int barY = juce::jlimit (0, H - 1, crtGlitchBarY);
-        const int barH = juce::jmin (crtGlitchBarH, H - barY);
-
-        g.setColour (juce::Colour::fromRGBA (255, 255, 255, (juce::uint8) 38));
-        g.fillRect (0, barY, W, barH);
-
-        g.setColour (juce::Colour::fromRGBA (255, 0, 0, (juce::uint8) 44));
-        g.fillRect (crtGlitchShiftPx, barY, W, juce::jmax (1, barH / 2));
-        g.setColour (juce::Colour::fromRGBA (0, 255, 255, (juce::uint8) 44));
-        g.fillRect (-crtGlitchShiftPx, barY + barH / 2, W, juce::jmax (1, barH - barH / 2));
-    }
-
-    // ── Chromatic aberration (pre-baked edge fringe) ──
-    // Shifts the colour-fringe overlay left/right with slight wobble
-    // for a living convergence-error look.
-    if (crtAberrationOverlay.isValid())
-    {
-        const float wobble = (float) std::sin (crtDistortionPhase * 0.45)
-                           * crtDistortionAmplitude * 0.3f;
-        const int shift = juce::roundToInt (wobble);
-        g.drawImageAt (crtAberrationOverlay, shift, 0);
-    }
-
-    // ── CRT bulge brightness (convex glass — brighter centre) ──
-    if (crtBulgeOverlay.isValid())
-        g.drawImageAt (crtBulgeOverlay, 0, 0);
-
-    // ── Vignette (always last — darkens edges) ──
-    if (crtVignetteOverlay.isValid())
-        g.drawImageAt (crtVignetteOverlay, 0, 0);
+    juce::ignoreUnused (g);
 }
 
 // ── CRT overlay generation (called from resized) ──────────────────────
-void ECHOTRAudioProcessorEditor::rebuildCrtOverlays (int w, int h)
-{
-    if (w <= 0 || h <= 0)
-        return;
-
-    // Skip rebuild if dimensions haven't changed (avoids expensive
-    // per-pixel work during rapid resize drags).
-    if (w == crtOverlayW && h == crtOverlayH)
-        return;
-
-    crtOverlayW = w;
-    crtOverlayH = h;
-
-    // ── Scanlines + phosphor grid ──
-    // Two layers baked into a single image:
-    //  a) Alternating dark lines every 3 px (visible CRT scan gaps)
-    //  b) Faint RGB sub-pixel columns (phosphor triad texture)
-    crtScanlineOverlay = juce::Image (juce::Image::ARGB, w, h, true);
-    {
-        juce::Image::BitmapData bmp (crtScanlineOverlay, juce::Image::BitmapData::writeOnly);
-
-        // a) Horizontal scan gaps: every 3rd row is a dark line
-        //    Alpha varies per row for a more organic look.
-        juce::Random scanRng (99);
-        for (int y = 0; y < h; y += 3)
-        {
-            const juce::uint8 a = (juce::uint8) scanRng.nextInt ({ 40, 65 }); // ~16-25 %
-            const auto scanGap = juce::Colour::fromRGBA (0, 0, 0, a);
-            for (int x = 0; x < w; ++x)
-                bmp.setPixelColour (x, y, scanGap);
-        }
-
-        // b) RGB phosphor sub-pixel columns (period = 3 px)
-        //    Visible tint like a real shadow-mask CRT.
-        const juce::uint8 pAlpha = 18;
-        const auto colR = juce::Colour::fromRGBA (255,   0,   0, pAlpha);
-        const auto colG = juce::Colour::fromRGBA (  0, 255,   0, pAlpha);
-        const auto colB = juce::Colour::fromRGBA (  0,   0, 255, pAlpha);
-        for (int y = 0; y < h; ++y)
-        {
-            if (y % 3 == 0) continue; // keep scan-gap dark
-            for (int x = 0; x < w; ++x)
-            {
-                switch (x % 3)
-                {
-                    case 0: bmp.setPixelColour (x, y, colR); break;
-                    case 1: bmp.setPixelColour (x, y, colG); break;
-                    case 2: bmp.setPixelColour (x, y, colB); break;
-                }
-            }
-        }
-    }
-
-    // ── CRT bulge brightness (convex glass simulation) ──
-    // Warm white centre fading to transparent at ~65 % of the diagonal.
-    crtBulgeOverlay = juce::Image (juce::Image::ARGB, w, h, true);
-    {
-        juce::Graphics bg (crtBulgeOverlay);
-        const float cx = (float) w * 0.5f;
-        const float cy = (float) h * 0.5f;
-        const float bulgeR = std::sqrt (cx * cx + cy * cy) * 0.65f;
-        juce::ColourGradient grad (juce::Colour::fromRGBA (255, 252, 248, 24), cx, cy,
-                                   juce::Colours::transparentBlack,
-                                   cx + bulgeR, cy, true);
-        bg.setFillType (juce::FillType (grad));
-        bg.fillRect (0, 0, w, h);
-    }
-
-    // ── Vignette ──
-    // Radial gradient: transparent centre → dark edges (strengthened for bulge contrast).
-    crtVignetteOverlay = juce::Image (juce::Image::ARGB, w, h, true);
-    {
-        juce::Graphics vg (crtVignetteOverlay);
-        const float cx = (float) w * 0.5f;
-        const float cy = (float) h * 0.5f;
-        const float radius = std::sqrt (cx * cx + cy * cy);
-        juce::ColourGradient grad (juce::Colours::transparentBlack, cx, cy,
-                                   juce::Colour::fromRGBA (0, 0, 0, (juce::uint8) 100), // ~39 %
-                                   cx + radius, cy, true);
-        vg.setFillType (juce::FillType (grad));
-        vg.fillRect (0, 0, w, h);
-    }
-
-    // ── Static noise / film grain frames ──
-    // Full-coverage luminance grain (every pixel gets a faint random offset)
-    // plus sparse bright specks for analog "snow" texture.
-    juce::Random noiseRng (42);
-    for (int f = 0; f < kCrtNoiseFrames; ++f)
-    {
-        crtNoiseOverlays[(size_t) f] = juce::Image (juce::Image::ARGB, w, h, true);
-        juce::Image::BitmapData bmp (crtNoiseOverlays[(size_t) f], juce::Image::BitmapData::writeOnly);
-
-        // a) Low-level luminance grain — every 2nd pixel in a checkerboard
-        //    gets a tiny brightness nudge (white or black, very low alpha).
-        for (int y = 0; y < h; y += 2)
-        {
-            for (int x = (y / 2) & 1; x < w; x += 2)
-            {
-                if (noiseRng.nextBool())
-                    bmp.setPixelColour (x, y, juce::Colour::fromRGBA (255, 255, 255, (juce::uint8) noiseRng.nextInt ({ 6, 18 })));
-                else
-                    bmp.setPixelColour (x, y, juce::Colour::fromRGBA (0, 0, 0, (juce::uint8) noiseRng.nextInt ({ 6, 18 })));
-            }
-        }
-
-        // b) Sparse bright specks (analog snow)
-        const int numSpecs = (w * h * 8) / 1000; // ~0.8 %
-        for (int i = 0; i < numSpecs; ++i)
-        {
-            const int px = noiseRng.nextInt (w);
-            const int py = noiseRng.nextInt (h);
-            const juce::uint8 a = (juce::uint8) noiseRng.nextInt ({ 30, 70 });
-            bmp.setPixelColour (px, py, juce::Colour::fromRGBA (255, 255, 255, a));
-        }
-    }
-
-    // ── Gaussian noise (static, non-animated, ~5 % opacity) ──
-    // Every pixel gets a random luminance offset for permanent film grain.
-    crtGaussianNoise = juce::Image (juce::Image::ARGB, w, h, true);
-    {
-        juce::Image::BitmapData bmp (crtGaussianNoise, juce::Image::BitmapData::writeOnly);
-        juce::Random gaussRng (7919); // fixed seed for repeatable pattern
-        const juce::uint8 targetAlpha = 26; // ~10 %
-        for (int y = 0; y < h; ++y)
-        {
-            for (int x = 0; x < w; ++x)
-            {
-                // Average of 3 uniform randoms ≈ gaussian-like distribution
-                const int sum = gaussRng.nextInt (256) + gaussRng.nextInt (256) + gaussRng.nextInt (256);
-                const juce::uint8 lum = (juce::uint8) juce::jlimit (0, 255, sum / 3);
-                bmp.setPixelColour (x, y, juce::Colour::fromRGBA (lum, lum, lum, targetAlpha));
-            }
-        }
-    }
-}
-
-
 void ECHOTRAudioProcessorEditor::updateInfoIconCache()
 {
     const auto iconArea = getInfoIconArea();
@@ -3958,7 +3726,7 @@ void ECHOTRAudioProcessorEditor::resized()
         promptOverlay.toFront (false);
 
     updateInfoIconCache();
-    rebuildCrtOverlays (W, H);
+    crtEffect.setResolution (static_cast<float> (W), static_cast<float> (H));
 
     // Don't modify the constrainer here to avoid reentrancy issues.
 }

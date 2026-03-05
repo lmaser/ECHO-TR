@@ -4,6 +4,7 @@
 #include <atomic>
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include "CrtEffect.h"
 
 class ECHOTRAudioProcessorEditor  : public juce::AudioProcessorEditor,
                                      private juce::Slider::Listener,
@@ -328,30 +329,9 @@ private:
     bool fxTailEnabled = false;
     bool useCustomPalette = false;
 
-    // CRT overlay (regenerated in resized)
-    juce::Image crtScanlineOverlay;
-    juce::Image crtVignetteOverlay;
-    juce::Image crtBulgeOverlay;         // centre brightness (convex glass sim)
-    juce::Image crtAberrationOverlay;    // pre-baked edge chromatic fringe
-    juce::Image crtGaussianNoise;        // static gaussian grain (~5 % opacity)
-    static constexpr int kCrtNoiseFrames = 4;
-    std::array<juce::Image, kCrtNoiseFrames> crtNoiseOverlays;
-    void rebuildCrtOverlays (int w, int h);
-    int crtOverlayW = 0;
-    int crtOverlayH = 0;
-
-    // CRT animation state (advanced in timerCallback)
-    juce::Random crtRng;
-    int   crtNoiseIndex        = 0;
-    juce::uint8 crtFlickerAlpha = 0;
-    int   crtGlitchBarY        = -1;   // -1 = no bar this frame
-    int   crtGlitchBarH        = 0;
-    int   crtGlitchShiftPx     = 0;    // horizontal displacement for glitch bar
-    int   crtTickCounter        = 0;    // counts timer ticks for scheduling
-
-    // CRT render state (animation driven by timerCallback)
-    double crtDistortionPhase     = 0.0;
-    float  crtDistortionAmplitude = 0.8f;
+    // CRT post-process effect (Retro-Windows-Terminal shader on CPU)
+    CrtEffect crtEffect;
+    float     crtTime = 0.0f;
 
     std::array<juce::Colour, 2> defaultPalette {
         juce::Colours::white,
