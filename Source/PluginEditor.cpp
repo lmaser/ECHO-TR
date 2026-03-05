@@ -10,43 +10,45 @@
 //========================== Overflow helpers ==========================
 // Helpers para medir texto y aplicar truncados según prioridad de formatos.
 
-static std::unordered_map<std::string, int>& getStringWidthCache()
+static std::unordered_map<std::size_t, int>& getStringWidthCache()
 {
-    static thread_local std::unordered_map<std::string, int> widthCache;
+    static thread_local std::unordered_map<std::size_t, int> widthCache;
     return widthCache;
 }
 
 static int stringWidth (const juce::Font& font, const juce::String& s)
 {
-    auto& widthCache = getStringWidthCache();
-
     if (s.isEmpty())
         return 0;
+
+    auto& widthCache = getStringWidthCache();
 
     if (widthCache.size() > 8192)
         widthCache.clear();
 
-    const int h100 = (int) std::round (font.getHeight() * 100.0f);
-    const int hs100 = (int) std::round (font.getHorizontalScale() * 100.0f);
-    std::string key;
-    key.reserve (40 + (size_t) s.length());
-    key += std::to_string (h100);
-    key += "|";
-    key += std::to_string (hs100);
-    key += "|";
-    key += font.getTypefaceName().toStdString();
-    key += font.isBold() ? "|b1" : "|b0";
-    key += font.isItalic() ? "|i1" : "|i0";
-    key += "|";
-    key += s.toStdString();
+    // FNV-1a 64-bit hash — avoids string allocation for cache key
+    std::size_t h = 14695981039346656037ull;
+    auto mix = [&] (std::size_t v) { h ^= v; h *= 1099511628211ull; };
 
-    if (const auto it = widthCache.find (key); it != widthCache.end())
+    mix (static_cast<std::size_t> ((int) (font.getHeight() * 100.0f)));
+    mix (static_cast<std::size_t> ((int) (font.getHorizontalScale() * 100.0f)));
+    mix (static_cast<std::size_t> (font.isBold()   ? 1u : 0u));
+    mix (static_cast<std::size_t> (font.isItalic()  ? 1u : 0u));
+
+    const auto& typefaceName = font.getTypefaceName();
+    for (int i = 0; i < typefaceName.length(); ++i)
+        mix (static_cast<std::size_t> (typefaceName[i]));
+
+    for (int i = 0; i < s.length(); ++i)
+        mix (static_cast<std::size_t> (s[i]));
+
+    if (const auto it = widthCache.find (h); it != widthCache.end())
         return it->second;
 
     juce::GlyphArrangement ga;
     ga.addLineOfText (font, s, 0.0f, 0.0f);
     const int width = (int) std::ceil (ga.getBoundingBox (0, -1, true).getWidth());
-    widthCache.emplace (std::move (key), width);
+    widthCache.emplace (h, width);
     return width;
 }
 
@@ -1065,20 +1067,20 @@ void ECHOTRAudioProcessorEditor::updateTimeSliderForSyncMode (bool syncEnabled)
 
 bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
 {
-    const auto oldTimeFullLen = cachedTimeTextFull.length();
-    const auto oldTimeShortLen = cachedTimeTextShort.length();
-    const auto oldFeedbackFullLen = cachedFeedbackTextFull.length();
-    const auto oldFeedbackShortLen = cachedFeedbackTextShort.length();
-    const auto oldModeFullLen = cachedModeTextFull.length();
-    const auto oldModeShortLen = cachedModeTextShort.length();
-    const auto oldModFullLen = cachedModTextFull.length();
-    const auto oldModShortLen = cachedModTextShort.length();
-    const auto oldInputFullLen = cachedInputTextFull.length();
-    const auto oldInputShortLen = cachedInputTextShort.length();
-    const auto oldOutputFullLen = cachedOutputTextFull.length();
-    const auto oldOutputShortLen = cachedOutputTextShort.length();
-    const auto oldMixFullLen = cachedMixTextFull.length();
-    const auto oldMixShortLen = cachedMixTextShort.length();
+    const auto oldTimeFull      = cachedTimeTextFull;
+    const auto oldTimeShort     = cachedTimeTextShort;
+    const auto oldFeedbackFull  = cachedFeedbackTextFull;
+    const auto oldFeedbackShort = cachedFeedbackTextShort;
+    const auto oldModeFull      = cachedModeTextFull;
+    const auto oldModeShort     = cachedModeTextShort;
+    const auto oldModFull       = cachedModTextFull;
+    const auto oldModShort      = cachedModTextShort;
+    const auto oldInputFull     = cachedInputTextFull;
+    const auto oldInputShort    = cachedInputTextShort;
+    const auto oldOutputFull    = cachedOutputTextFull;
+    const auto oldOutputShort   = cachedOutputTextShort;
+    const auto oldMixFull       = cachedMixTextFull;
+    const auto oldMixShort      = cachedMixTextShort;
 
     cachedTimeTextFull = getTimeText();
     cachedTimeTextShort = getTimeTextShort();
@@ -1095,22 +1097,22 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
     cachedMixTextFull = getMixText();
     cachedMixTextShort = getMixTextShort();
 
-    const bool lengthChanged = oldTimeFullLen != cachedTimeTextFull.length()
-                            || oldTimeShortLen != cachedTimeTextShort.length()
-                            || oldFeedbackFullLen != cachedFeedbackTextFull.length()
-                            || oldFeedbackShortLen != cachedFeedbackTextShort.length()
-                            || oldModeFullLen != cachedModeTextFull.length()
-                            || oldModeShortLen != cachedModeTextShort.length()
-                            || oldModFullLen != cachedModTextFull.length()
-                            || oldModShortLen != cachedModTextShort.length()
-                            || oldInputFullLen != cachedInputTextFull.length()
-                            || oldInputShortLen != cachedInputTextShort.length()
-                            || oldOutputFullLen != cachedOutputTextFull.length()
-                            || oldOutputShortLen != cachedOutputTextShort.length()
-                            || oldMixFullLen != cachedMixTextFull.length()
-                            || oldMixShortLen != cachedMixTextShort.length();
+    const bool changed = oldTimeFull      != cachedTimeTextFull
+                      || oldTimeShort     != cachedTimeTextShort
+                      || oldFeedbackFull  != cachedFeedbackTextFull
+                      || oldFeedbackShort != cachedFeedbackTextShort
+                      || oldModeFull      != cachedModeTextFull
+                      || oldModeShort     != cachedModeTextShort
+                      || oldModFull       != cachedModTextFull
+                      || oldModShort      != cachedModTextShort
+                      || oldInputFull     != cachedInputTextFull
+                      || oldInputShort    != cachedInputTextShort
+                      || oldOutputFull    != cachedOutputTextFull
+                      || oldOutputShort   != cachedOutputTextShort
+                      || oldMixFull       != cachedMixTextFull
+                      || oldMixShort      != cachedMixTextShort;
 
-    return lengthChanged;
+    return changed;
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getRowRepaintBounds (const juce::Slider& s) const
@@ -3016,85 +3018,78 @@ namespace
     constexpr int kMidiChannelSelectorWidthPx = 46;
     constexpr int kMidiChannelGapPx = 4;
     constexpr int kMidiChannelRightMargin = 6;
+}
 
-    struct HorizontalLayoutMetrics
+ECHOTRAudioProcessorEditor::HorizontalLayoutMetrics
+ECHOTRAudioProcessorEditor::buildHorizontalLayout (int editorW, int valueColW)
+{
+    HorizontalLayoutMetrics m;
+    m.barW = (int) std::round (editorW * 0.455);
+    m.valuePad = (int) std::round (editorW * 0.02);
+    m.valueW = valueColW;
+    m.contentW = m.barW + m.valuePad + m.valueW;
+    m.leftX = juce::jmax (6, (editorW - m.contentW) / 2);
+    return m;
+}
+
+ECHOTRAudioProcessorEditor::VerticalLayoutMetrics
+ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY)
+{
+    VerticalLayoutMetrics m;
+    m.rhythm = juce::jlimit (6, 16, (int) std::round (editorH * 0.018));
+    const int nominalBarH = juce::jlimit (14, 120, m.rhythm * 6);
+    const int nominalGapY = juce::jmax (4, m.rhythm * 4);
+
+    m.titleH = juce::jlimit (24, 56, m.rhythm * 4);
+    m.titleAreaH = m.titleH + 4;
+    const int computedTitleTopPad = 6 + biasY;
+    m.titleTopPad = (computedTitleTopPad > 8) ? computedTitleTopPad : 8;
+    const int titleGap = m.titleTopPad;
+    m.topMargin = m.titleTopPad + m.titleAreaH + titleGap;
+    m.betweenSlidersAndButtons = juce::jmax (8, m.rhythm * 2);
+    m.bottomMargin = m.titleTopPad;
+
+    m.box = juce::jlimit (40, kToggleBoxPx, (int) std::round (editorH * 0.085));
+    m.btnRowGap = juce::jlimit (4, 14, (int) std::round (editorH * 0.008));
+    m.btnRow2Y = editorH - m.bottomMargin - m.box;
+    m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
+    m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
+
+    const int nominalStack = 7 * nominalBarH + 6 * nominalGapY;
+    const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) m.availableForSliders / (double) nominalStack)
+                                               : 1.0;
+
+    m.barH = juce::jmax (14, (int) std::round (nominalBarH * stackScale));
+    m.gapY = juce::jmax (4,  (int) std::round (nominalGapY * stackScale));
+
+    auto stackHeight = [&]() { return 7 * m.barH + 6 * m.gapY; };
+
+    while (stackHeight() > m.availableForSliders && m.gapY > 4)
+        --m.gapY;
+
+    while (stackHeight() > m.availableForSliders && m.barH > 14)
+        --m.barH;
+
+    m.topY = m.topMargin;
+    return m;
+}
+
+void ECHOTRAudioProcessorEditor::updateCachedLayout()
+{
+    cachedHLayout_ = buildHorizontalLayout (getWidth(), getTargetValueColumnWidth());
+    cachedVLayout_ = buildVerticalLayout (getHeight(), kLayoutVerticalBiasPx);
+
+    const juce::Slider* sliders[7] = { &timeSlider, &feedbackSlider, &modeSlider, &modSlider,
+                                        &inputSlider, &outputSlider, &mixSlider };
+
+    for (int i = 0; i < 7; ++i)
     {
-        int barW = 0;
-        int valuePad = 0;
-        int valueW = 0;
-        int contentW = 0;
-        int leftX = 0;
-    };
-
-    struct VerticalLayoutMetrics
-    {
-        int rhythm = 0;
-        int titleH = 0;
-        int titleAreaH = 0;
-        int titleTopPad = 0;
-        int topMargin = 0;
-        int betweenSlidersAndButtons = 0;
-        int bottomMargin = 0;
-        int box = 0;
-        int btnRow1Y = 0;
-        int btnRow2Y = 0;
-        int btnRowGap = 0;
-        int availableForSliders = 0;
-        int barH = 0;
-        int gapY = 0;
-        int topY = 0;
-    };
-
-    HorizontalLayoutMetrics makeHorizontalLayoutMetrics (int editorW, int valueW)
-    {
-        HorizontalLayoutMetrics m;
-        m.barW = (int) std::round (editorW * 0.455);
-        m.valuePad = (int) std::round (editorW * 0.02);
-        m.valueW = valueW;
-        m.contentW = m.barW + m.valuePad + m.valueW;
-        m.leftX = juce::jmax (6, (editorW - m.contentW) / 2);
-        return m;
-    }
-
-    VerticalLayoutMetrics makeVerticalLayoutMetrics (int editorH, int layoutVerticalBiasPx)
-    {
-        VerticalLayoutMetrics m;
-        m.rhythm = juce::jlimit (6, 16, (int) std::round (editorH * 0.018));
-        const int nominalBarH = juce::jlimit (14, 120, m.rhythm * 6);
-        const int nominalGapY = juce::jmax (4, m.rhythm * 4);
-
-        m.titleH = juce::jlimit (24, 56, m.rhythm * 4);
-        m.titleAreaH = m.titleH + 4;
-        const int computedTitleTopPad = 6 + layoutVerticalBiasPx;
-        m.titleTopPad = (computedTitleTopPad > 8) ? computedTitleTopPad : 8;
-        const int titleGap = m.titleTopPad;
-        m.topMargin = m.titleTopPad + m.titleAreaH + titleGap;
-        m.betweenSlidersAndButtons = juce::jmax (8, m.rhythm * 2);
-        m.bottomMargin = m.titleTopPad;
-
-        m.box = juce::jlimit (40, kToggleBoxPx, (int) std::round (editorH * 0.085));
-        m.btnRowGap = juce::jlimit (4, 14, (int) std::round (editorH * 0.008));
-        m.btnRow2Y = editorH - m.bottomMargin - m.box;
-        m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
-        m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
-
-        const int nominalStack = 7 * nominalBarH + 6 * nominalGapY;
-        const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) m.availableForSliders / (double) nominalStack)
-                                                   : 1.0;
-
-        m.barH = juce::jmax (14, (int) std::round (nominalBarH * stackScale));
-        m.gapY = juce::jmax (4,  (int) std::round (nominalGapY * stackScale));
-
-        auto stackHeight = [&]() { return 7 * m.barH + 6 * m.gapY; };
-
-        while (stackHeight() > m.availableForSliders && m.gapY > 4)
-            --m.gapY;
-
-        while (stackHeight() > m.availableForSliders && m.barH > 14)
-            --m.barH;
-
-        m.topY = m.topMargin;
-        return m;
+        const auto& bb = sliders[i]->getBounds();
+        const int valueX = bb.getRight() + cachedHLayout_.valuePad;
+        const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
+        const int vw   = juce::jmin (cachedHLayout_.valueW, maxW);
+        const int y    = bb.getCentreY() - (kValueAreaHeightPx / 2);
+        cachedValueAreas_[(size_t) i] = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
     }
 }
 
@@ -3158,11 +3153,9 @@ int ECHOTRAudioProcessorEditor::getTargetValueColumnWidth() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getValueAreaFor (const juce::Rectangle<int>& barBounds) const
 {
-    const auto layout = makeHorizontalLayoutMetrics (getWidth(), getTargetValueColumnWidth());
-
-    const int valueX = barBounds.getRight() + layout.valuePad;
+    const int valueX = barBounds.getRight() + cachedHLayout_.valuePad;
     const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
-    const int valueW = juce::jmin (layout.valueW, maxW);
+    const int valueW = juce::jmin (cachedHLayout_.valueW, maxW);
 
     const int y = barBounds.getCentreY() - (kValueAreaHeightPx / 2);
     return { valueX, y, juce::jmax (0, valueW), kValueAreaHeightPx };
@@ -3170,26 +3163,12 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getValueAreaFor (const juce::Re
 
 juce::Slider* ECHOTRAudioProcessorEditor::getSliderForValueAreaPoint (juce::Point<int> p)
 {
-    if (getValueAreaFor (timeSlider.getBounds()).contains (p))
-        return &timeSlider;
+    juce::Slider* sliders[7] = { &timeSlider, &feedbackSlider, &modeSlider, &modSlider,
+                                  &inputSlider, &outputSlider, &mixSlider };
 
-    if (getValueAreaFor (feedbackSlider.getBounds()).contains (p))
-        return &feedbackSlider;
-
-    if (getValueAreaFor (modeSlider.getBounds()).contains (p))
-        return &modeSlider;
-
-    if (getValueAreaFor (modSlider.getBounds()).contains (p))
-        return &modSlider;
-
-    if (getValueAreaFor (inputSlider.getBounds()).contains (p))
-        return &inputSlider;
-
-    if (getValueAreaFor (outputSlider.getBounds()).contains (p))
-        return &outputSlider;
-
-    if (getValueAreaFor (mixSlider.getBounds()).contains (p))
-        return &mixSlider;
+    for (int i = 0; i < 7; ++i)
+        if (cachedValueAreas_[(size_t) i].contains (p))
+            return sliders[i];
 
     return nullptr;
 }
@@ -3265,12 +3244,10 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getInfoIconArea() const
 {
-    const auto timeValueArea = getValueAreaFor (timeSlider.getBounds());
-    const int contentRight = timeValueArea.getRight();
-    const auto verticalLayout = makeVerticalLayoutMetrics (getHeight(), kLayoutVerticalBiasPx);
-    const int titleH = verticalLayout.titleH;
-    const int titleY = verticalLayout.titleTopPad;
-    const int titleAreaH = verticalLayout.titleAreaH;
+    const int contentRight = cachedValueAreas_[0].getRight();  // time slider value area
+    const int titleH = cachedVLayout_.titleH;
+    const int titleY = cachedVLayout_.titleTopPad;
+    const int titleAreaH = cachedVLayout_.titleAreaH;
     const int size = juce::jlimit (20, 36, titleH);
 
     const int x = contentRight - size;
@@ -3363,15 +3340,8 @@ void ECHOTRAudioProcessorEditor::mouseDoubleClick (const juce::MouseEvent& e)
 void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
 {
     const int W = getWidth();
-    const auto horizontalLayout = makeHorizontalLayoutMetrics (W, getTargetValueColumnWidth());
-    const auto verticalLayout = makeVerticalLayoutMetrics (getHeight(), kLayoutVerticalBiasPx);
-    const auto timeValueArea = getValueAreaFor (timeSlider.getBounds());
-    const auto feedbackValueArea = getValueAreaFor (feedbackSlider.getBounds());
-    const auto modeValueArea = getValueAreaFor (modeSlider.getBounds());
-    const auto modValueArea = getValueAreaFor (modSlider.getBounds());
-    const auto inputValueArea = getValueAreaFor (inputSlider.getBounds());
-    const auto outputValueArea = getValueAreaFor (outputSlider.getBounds());
-    const auto mixValueArea = getValueAreaFor (mixSlider.getBounds());
+    const auto& horizontalLayout = cachedHLayout_;
+    const auto& verticalLayout   = cachedVLayout_;
 
     const auto scheme = activeScheme;
 
@@ -3497,52 +3467,22 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     }
 
     {
-        drawLegendForMode (timeValueArea,
-                           cachedTimeTextFull,
-                           cachedTimeTextShort,
-                           juce::String (( int) timeSlider.getValue()));
-    }
+        const juce::String* fullTexts[7]  = { &cachedTimeTextFull, &cachedFeedbackTextFull, &cachedModeTextFull,
+                                               &cachedModTextFull, &cachedInputTextFull, &cachedOutputTextFull, &cachedMixTextFull };
+        const juce::String* shortTexts[7] = { &cachedTimeTextShort, &cachedFeedbackTextShort, &cachedModeTextShort,
+                                               &cachedModTextShort, &cachedInputTextShort, &cachedOutputTextShort, &cachedMixTextShort };
+        const juce::String intTexts[7] = {
+            juce::String ((int) timeSlider.getValue()),
+            juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)),
+            juce::String ((int) modeSlider.getValue()),
+            juce::String ((int) modSlider.getValue()),
+            juce::String ((int) inputSlider.getValue()),
+            juce::String ((int) outputSlider.getValue()),
+            juce::String ((int) std::lround (mixSlider.getValue() * 100.0))
+        };
 
-    {
-        drawLegendForMode (feedbackValueArea,
-                           cachedFeedbackTextFull,
-                           cachedFeedbackTextShort,
-                           juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)));
-    }
-
-    {
-        drawLegendForMode (modeValueArea,
-                           cachedModeTextFull,
-                           cachedModeTextShort,
-                           juce::String ((int) modeSlider.getValue()));
-    }
-
-    {
-        drawLegendForMode (modValueArea,
-                           cachedModTextFull,
-                           cachedModTextShort,
-                           juce::String ((int) modSlider.getValue()));
-    }
-
-    {
-        drawLegendForMode (inputValueArea,
-                           cachedInputTextFull,
-                           cachedInputTextShort,
-                           juce::String ((int) inputSlider.getValue()));
-    }
-
-    {
-        drawLegendForMode (outputValueArea,
-                           cachedOutputTextFull,
-                           cachedOutputTextShort,
-                           juce::String ((int) outputSlider.getValue()));
-    }
-
-    {
-        drawLegendForMode (mixValueArea,
-                           cachedMixTextFull,
-                           cachedMixTextShort,
-                           juce::String ((int) std::lround (mixSlider.getValue() * 100.0)));
+        for (int i = 0; i < 7; ++i)
+            drawLegendForMode (cachedValueAreas_[(size_t) i], *fullTexts[i], *shortTexts[i], intTexts[i]);
     }
 
     {
@@ -3691,8 +3631,8 @@ void ECHOTRAudioProcessorEditor::resized()
         }
     }
 
-    const auto horizontalLayout = makeHorizontalLayoutMetrics (W, getTargetValueColumnWidth());
-    const auto verticalLayout = makeVerticalLayoutMetrics (H, kLayoutVerticalBiasPx);
+    const auto horizontalLayout = buildHorizontalLayout (W, getTargetValueColumnWidth());
+    const auto verticalLayout = buildVerticalLayout (H, kLayoutVerticalBiasPx);
 
     // Position 7 sliders in 7 separate rows
     timeSlider.setBounds     (horizontalLayout.leftX, verticalLayout.topY + 0 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
@@ -3747,6 +3687,9 @@ void ECHOTRAudioProcessorEditor::resized()
     promptOverlay.setBounds (getLocalBounds());
     if (promptOverlayActive)
         promptOverlay.toFront (false);
+
+    // Cache layout metrics + value areas AFTER sliders are positioned
+    updateCachedLayout();
 
     updateInfoIconCache();
     crtEffect.setResolution (static_cast<float> (W), static_cast<float> (H));

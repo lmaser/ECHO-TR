@@ -144,6 +144,38 @@ private:
 
     ECHOScheme activeScheme;
 
+    struct HorizontalLayoutMetrics
+    {
+        int barW = 0;
+        int valuePad = 0;
+        int valueW = 0;
+        int contentW = 0;
+        int leftX = 0;
+    };
+
+    struct VerticalLayoutMetrics
+    {
+        int rhythm = 0;
+        int titleH = 0;
+        int titleAreaH = 0;
+        int titleTopPad = 0;
+        int topMargin = 0;
+        int betweenSlidersAndButtons = 0;
+        int bottomMargin = 0;
+        int box = 0;
+        int btnRow1Y = 0;
+        int btnRow2Y = 0;
+        int btnRowGap = 0;
+        int availableForSliders = 0;
+        int barH = 0;
+        int gapY = 0;
+        int topY = 0;
+    };
+
+    static HorizontalLayoutMetrics buildHorizontalLayout (int editorW, int valueColW);
+    static VerticalLayoutMetrics buildVerticalLayout (int editorH, int biasY);
+    void updateCachedLayout();
+
     class MinimalLNF : public juce::LookAndFeel_V4
     {
     public:
@@ -307,6 +339,10 @@ private:
     
     mutable std::uint64_t cachedValueColumnWidthKey = 0;
     mutable int cachedValueColumnWidth = 90;
+
+    HorizontalLayoutMetrics cachedHLayout_;
+    VerticalLayoutMetrics cachedVLayout_;
+    std::array<juce::Rectangle<int>, 7> cachedValueAreas_;
 
     static constexpr double kDefaultTimeMs = (double) ECHOTRAudioProcessor::kTimeMsDefault;
     static constexpr double kDefaultFeedback = (double) ECHOTRAudioProcessor::kFeedbackDefault;
