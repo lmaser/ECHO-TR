@@ -615,12 +615,12 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     syncButton.setButtonText ("");
     autoFbkButton.setButtonText ("");
     midiButton.setButtonText ("");
-    loopButton.setButtonText ("");
+    reverseButton.setButtonText ("");
 
     addAndMakeVisible (syncButton);
     addAndMakeVisible (autoFbkButton);
     addAndMakeVisible (midiButton);
-    addAndMakeVisible (loopButton);
+    addAndMakeVisible (reverseButton);
 
     // Initialize MIDI port display
     const int savedPort = audioProcessor.getMidiPort();
@@ -674,7 +674,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindButton (syncAttachment, ECHOTRAudioProcessor::kParamSync, syncButton);
     bindButton (autoFbkAttachment, ECHOTRAudioProcessor::kParamAutoFbk, autoFbkButton);
     bindButton (midiAttachment, ECHOTRAudioProcessor::kParamMidi, midiButton);
-    bindButton (loopAttachment, ECHOTRAudioProcessor::kParamLoop, loopButton);
+    bindButton (reverseAttachment, ECHOTRAudioProcessor::kParamReverse, reverseButton);
 
     static constexpr std::array<const char*, 5> kUiMirrorParamIds {
         ECHOTRAudioProcessor::kParamSync,        // Listen for sync mode changes
@@ -809,7 +809,7 @@ void ECHOTRAudioProcessorEditor::setPromptOverlayActive (bool shouldBeActive)
     const std::array<juce::Component*, 11> interactiveControls {
         &timeSlider, &feedbackSlider, &modeSlider, &modSlider,
         &inputSlider, &outputSlider, &mixSlider,
-        &syncButton, &autoFbkButton, &loopButton, &midiButton
+        &syncButton, &autoFbkButton, &reverseButton, &midiButton
     };
     for (auto* control : interactiveControls)
         control->setEnabled (enableControls);
@@ -3226,9 +3226,9 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getAutoFbkLabelArea() const
     return makeToggleLabelArea (autoFbkButton, getWidth() - kToggleLegendCollisionPadPx, "AUTO FBK", "AUTO");
 }
 
-juce::Rectangle<int> ECHOTRAudioProcessorEditor::getLoopLabelArea() const
+juce::Rectangle<int> ECHOTRAudioProcessorEditor::getReverseLabelArea() const
 {
-    return makeToggleLabelArea (loopButton, midiButton.getX() - kToggleLegendCollisionPadPx, "LOOP", "LP");
+    return makeToggleLabelArea (reverseButton, midiButton.getX() - kToggleLegendCollisionPadPx, "REV", "RV");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
@@ -3300,9 +3300,9 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (getLoopLabelArea().contains (p))
+    if (getReverseLabelArea().contains (p))
     {
-        loopButton.setToggleState (! loopButton.getToggleState(), juce::sendNotificationSync);
+        reverseButton.setToggleState (! reverseButton.getToggleState(), juce::sendNotificationSync);
         return;
     }
 
@@ -3534,14 +3534,14 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         
         const int syncCR  = autoFbkButton.getX() - kToggleLegendCollisionPadPx;
         const int autoCR  = W - kToggleLegendCollisionPadPx;
-        const int loopCR  = midiButton.getX() - kToggleLegendCollisionPadPx;
+        const int revCR  = midiButton.getX() - kToggleLegendCollisionPadPx;
         // No collision-pad for MIDI vs port — kMidiPortGapPx handles spacing
         const int midiCR  = midiPortDisplay.isVisible() ? midiPortDisplay.getX()
                                                         : W - kToggleLegendCollisionPadPx;
 
         const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
         const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "AUTO FBK", "AUTO");
-        const juce::String loopLabel = chooseToggleLabel (loopButton,    loopCR, "LOOP",     "LP");
+        const juce::String revLabel = chooseToggleLabel (reverseButton,    revCR, "REV",     "RV");
         const juce::String midiLabel = chooseToggleLabel (midiButton,    midiCR, "MIDI",     "MD");
         
         auto drawToggleLegend = [&] (const juce::Rectangle<int>& labelArea,
@@ -3564,8 +3564,8 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         drawToggleLegend (getSyncLabelArea(),    syncLabel, syncCR);
         drawToggleLegend (getAutoFbkLabelArea(), autoLabel, autoCR);
 
-        // Row 2: LOOP + MIDI
-        drawToggleLegend (getLoopLabelArea(), loopLabel, loopCR);
+        // Row 2: REV + MIDI
+        drawToggleLegend (getReverseLabelArea(), revLabel, revCR);
         drawToggleLegend (getMidiLabelArea(), midiLabel, midiCR);
     }
     
@@ -3922,13 +3922,13 @@ void ECHOTRAudioProcessorEditor::resized()
 
     // Each row has 2 buttons: left-anchored + right-anchored
     // Row 1: SYNC (left) + AUTO FBK (right)
-    // Row 2: LOOP (left) + MIDI+port (right)
+    // Row 2: REV (left) + MIDI+port (right)
     const int leftBlockX = buttonAreaX;
     const int rightBlockX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
 
     syncButton.setBounds    (leftBlockX,  verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
     autoFbkButton.setBounds (rightBlockX, verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
-    loopButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
+    reverseButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     midiButton.setBounds    (rightBlockX, verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     
     // Position MIDI port display to the right of the actual MIDI label

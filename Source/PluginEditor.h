@@ -108,7 +108,7 @@ private:
     juce::ToggleButton syncButton;
     juce::ToggleButton midiButton;
     juce::ToggleButton autoFbkButton;
-    juce::ToggleButton loopButton;
+    juce::ToggleButton reverseButton;
 
     juce::Label midiPortDisplay;
 
@@ -127,7 +127,7 @@ private:
     std::unique_ptr<ButtonAttachment> syncAttachment;
     std::unique_ptr<ButtonAttachment> midiAttachment;
     std::unique_ptr<ButtonAttachment> autoFbkAttachment;
-    std::unique_ptr<ButtonAttachment> loopAttachment;
+    std::unique_ptr<ButtonAttachment> reverseAttachment;
 
     juce::ComponentBoundsConstrainer resizeConstrainer;
     std::unique_ptr<juce::ResizableCornerComponent> resizerCorner;
@@ -274,7 +274,7 @@ private:
     juce::Slider* getSliderForValueAreaPoint (juce::Point<int> p);
     juce::Rectangle<int> getSyncLabelArea() const;
     juce::Rectangle<int> getAutoFbkLabelArea() const;
-    juce::Rectangle<int> getLoopLabelArea() const;
+    juce::Rectangle<int> getReverseLabelArea() const;
     juce::Rectangle<int> getMidiLabelArea() const;
     juce::Rectangle<int> getInfoIconArea() const;
     void updateInfoIconCache();

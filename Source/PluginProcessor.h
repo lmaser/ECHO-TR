@@ -23,7 +23,7 @@ public:
 	static constexpr const char* kParamSync       = "sync";
 	static constexpr const char* kParamMidi       = "midi";
 	static constexpr const char* kParamAutoFbk    = "auto_fbk";
-	static constexpr const char* kParamLoop       = "loop";
+	static constexpr const char* kParamReverse    = "reverse";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -95,9 +95,10 @@ public:
 	                            float delaySamples, float feedback, float inputGain,
 	                            float outputGain, float mix, float delaySmoothCoeff);
 
-	// Loop processing
-	void processLoop (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
-	                   float loopTimeSamples, float inputGain, float outputGain, float mix);
+	// Reverse delay processing (chunk-based dual read with crossfade)
+	void processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+	                          float delaySamples, float feedback, float inputGain,
+	                          float outputGain, float mix, float delaySmoothCoeff);
 
 	juce::AudioProcessorEditor* createEditor() override;
 	bool hasEditor() const override;
@@ -164,15 +165,11 @@ private:
 	float smoothedMix = 0.5f;
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
-	enum class LoopState { Off, Recording, Playing };
-	LoopState loopState = LoopState::Off;
-	juce::AudioBuffer<float> loopBuffer;
-	int loopBufferLength = 0;
-	int loopRecordedLength = 0;
-	int loopWritePos = 0;
-	float loopReadPos = 0.0f;
-	float smoothedLoopTimeSamples = 0.0f;
-	static constexpr int kLoopCrossfadeSamples = 64;
+	// Reverse delay state (chunk-based dual read with Hann crossfade)
+	// Uses the same delayBuffer — reads backwards in chunks of delaySamples length
+	float reverseChunkPos = 0.0f;    // countdown within current chunk (delaySamples → 0)
+	int reverseChunkPhase = 0;       // alternates 0/1 for crossfade overlap tracking
+	float reverseSmoothedDelay = 0.0f; // smoothed delay for reverse (independent of forward)
 
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
@@ -190,7 +187,7 @@ private:
 	std::atomic<float>* syncParam = nullptr;
 	std::atomic<float>* midiParam = nullptr;
 	std::atomic<float>* autoFbkParam = nullptr;
-	std::atomic<float>* loopParam = nullptr;
+	std::atomic<float>* reverseParam = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;
