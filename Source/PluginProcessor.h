@@ -132,8 +132,8 @@ public:
 	void setUiFxTailEnabled (bool shouldEnableFxTail);
 	bool getUiFxTailEnabled() const noexcept;
 
-	void setMidiPort (int portNumber);
-	int getMidiPort() const noexcept;
+	void setMidiChannel (int channel);
+	int getMidiChannel() const noexcept;
 
 	void setUiCustomPaletteColour (int index, juce::Colour colour);
 	juce::Colour getUiCustomPaletteColour (int index) const noexcept;
@@ -165,16 +165,20 @@ private:
 	float smoothedMix = 0.5f;
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
-	// Reverse delay state (chunk-based dual read with Hann crossfade)
-	// Uses the same delayBuffer — reads backwards in chunks of delaySamples length
-	float reverseChunkPos = 0.0f;    // countdown within current chunk (delaySamples → 0)
-	int reverseChunkPhase = 0;       // alternates 0/1 for crossfade overlap tracking
+	// Reverse delay state (anchor-based dual read with Hann crossfade)
+	// Two independent heads (A & B), offset by half a chunk. Each head reads
+	// backwards from an anchor point captured when its chunk restarted.
+	float reverseCounterA = 0.0f;      // sample counter within head A (0 → chunkLen)
+	float reverseCounterB = 0.0f;      // sample counter within head B (0 → chunkLen)
+	int   reverseAnchorA  = 0;         // writePos snapshot when head A's chunk started
+	int   reverseAnchorB  = 0;         // writePos snapshot when head B's chunk started
 	float reverseSmoothedDelay = 0.0f; // smoothed delay for reverse (independent of forward)
+	bool  reverseNeedsInit = true;     // first-call initialisation flag
 
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
 	std::atomic<int> lastMidiVelocity { 127 };
-	std::atomic<int> midiPort { 0 };
+	std::atomic<int> midiChannel { 0 };
 
 	std::atomic<float>* timeMsParam = nullptr;
 	std::atomic<float>* timeSyncParam = nullptr;

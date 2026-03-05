@@ -26,7 +26,7 @@ private:
     void mouseDrag (const juce::MouseEvent& e) override;
 
     void openNumericEntryPopupForSlider (juce::Slider& s);
-    void openMidiPortPrompt();
+    void openMidiChannelPrompt();
     void openInfoPopup();
     void openGraphicsPopup();
     void setPromptOverlayActive (bool shouldBeActive);
@@ -110,7 +110,7 @@ private:
     juce::ToggleButton autoFbkButton;
     juce::ToggleButton reverseButton;
 
-    juce::Label midiPortDisplay;
+    juce::Label midiChannelDisplay;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
@@ -301,6 +301,7 @@ private:
     juce::String cachedMixTextShort;
     
     juce::String cachedMidiDisplay;
+    bool cachedTimeSliderHeld = false;
     
     mutable std::uint64_t cachedValueColumnWidthKey = 0;
     mutable int cachedValueColumnWidth = 90;

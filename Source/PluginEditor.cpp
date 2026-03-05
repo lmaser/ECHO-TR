@@ -622,15 +622,15 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     addAndMakeVisible (midiButton);
     addAndMakeVisible (reverseButton);
 
-    // Initialize MIDI port display
-    const int savedPort = audioProcessor.getMidiPort();
-    midiPortDisplay.setText (juce::String (savedPort), juce::dontSendNotification);
-    midiPortDisplay.setJustificationType (juce::Justification::centred);
-    midiPortDisplay.setInterceptsMouseClicks (false, false);
-    midiPortDisplay.setBorderSize (juce::BorderSize<int> (0));  // No border, we draw it manually
-    midiPortDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
-    midiPortDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
-    addChildComponent (midiPortDisplay);  // Hidden by default; resized() will show if it fits
+    // Initialize MIDI channel display
+    const int savedChannel = audioProcessor.getMidiChannel();
+    midiChannelDisplay.setText (juce::String (savedChannel), juce::dontSendNotification);
+    midiChannelDisplay.setJustificationType (juce::Justification::centred);
+    midiChannelDisplay.setInterceptsMouseClicks (false, false);
+    midiChannelDisplay.setBorderSize (juce::BorderSize<int> (0));  // No border, we draw it manually
+    midiChannelDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    midiChannelDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+    addChildComponent (midiChannelDisplay);  // Hidden by default; resized() will show if it fits
 
     auto bindSlider = [&] (std::unique_ptr<SliderAttachment>& attachment,
                            const char* paramId,
@@ -759,8 +759,8 @@ void ECHOTRAudioProcessorEditor::applyActivePalette()
     activeScheme = scheme;
     lnf.setScheme (activeScheme);
     
-    // Apply text color to MIDI port display
-    midiPortDisplay.setColour (juce::Label::textColourId, scheme.text);
+    // Apply text color to MIDI channel display
+    midiChannelDisplay.setColour (juce::Label::textColourId, scheme.text);
 }
 
 void ECHOTRAudioProcessorEditor::applyLabelTextColour (juce::Label& label, juce::Colour colour)
@@ -882,9 +882,11 @@ void ECHOTRAudioProcessorEditor::timerCallback()
         return;
 
     const auto newMidiDisplay = audioProcessor.getCurrentTimeDisplay();
-    if (newMidiDisplay != cachedMidiDisplay)
+    const bool timeSliderHeld = timeSlider.isMouseButtonDown();
+    if (newMidiDisplay != cachedMidiDisplay || timeSliderHeld != cachedTimeSliderHeld)
     {
         cachedMidiDisplay = newMidiDisplay;
+        cachedTimeSliderHeld = timeSliderHeld;
         refreshLegendTextCache();
         repaint();
     }
@@ -2168,14 +2170,14 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         }));
 }
 
-void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
+void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
 {
     lnf.setScheme (activeScheme);
     const auto scheme = activeScheme;
 
-    const juce::String suffixText = "PORT";
-    const int port = audioProcessor.getMidiPort();
-    const juce::String currentValue = juce::String (port);
+    const juce::String suffixText = "CH";
+    const int channel = audioProcessor.getMidiChannel();
+    const juce::String currentValue = juce::String (channel);
     
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
     aw->setLookAndFeel (&lnf);
@@ -2183,19 +2185,19 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
     
     juce::Label* suffixLabel = nullptr;
     
-    // Numeric input filter for MIDI port (0-127)
-    struct MidiPortInputFilter : juce::TextEditor::InputFilter
+    // Numeric input filter for MIDI channel (0-16)
+    struct MidiChannelInputFilter : juce::TextEditor::InputFilter
     {
         juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
         {
             juce::ignoreUnused (editor); // Suppress unused parameter warning
-            // Allow digits 0-127
+            // Allow digits 0-16
             juce::String result;
             for (auto c : newText)
             {
                 if (juce::CharacterFunctions::isDigit (c))
                     result += c;
-                if (result.length() >= 3)
+                if (result.length() >= 2)
                     break;
             }
             return result;
@@ -2279,7 +2281,7 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
         if (layoutValueAndSuffix)
             layoutValueAndSuffix();
         
-        te->setInputFilter (new MidiPortInputFilter(), true);
+        te->setInputFilter (new MidiChannelInputFilter(), true);
         te->onTextChange = [te, layoutValueAndSuffix]() mutable
         {
             if (layoutValueAndSuffix)
@@ -2376,16 +2378,16 @@ void ECHOTRAudioProcessorEditor::openMidiPortPrompt()
             
             if (txt == "0" || txt.isEmpty())
             {
-                safeThis->audioProcessor.setMidiPort (0);
-                safeThis->midiPortDisplay.setText ("0", juce::dontSendNotification);
+                safeThis->audioProcessor.setMidiChannel (0);
+                safeThis->midiChannelDisplay.setText ("0", juce::dontSendNotification);
                 return;
             }
             
-            int port = txt.getIntValue();
-            if (port >= 1 && port <= 127)
+            int ch = txt.getIntValue();
+            if (ch >= 1 && ch <= 16)
             {
-                safeThis->audioProcessor.setMidiPort (port);
-                safeThis->midiPortDisplay.setText (juce::String (port), juce::dontSendNotification);
+                safeThis->audioProcessor.setMidiChannel (ch);
+                safeThis->midiChannelDisplay.setText (juce::String (ch), juce::dontSendNotification);
             }
         }),
         false);
@@ -2798,7 +2800,9 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
 
 juce::String ECHOTRAudioProcessorEditor::getTimeText() const
 {
-    if (cachedMidiDisplay.isNotEmpty())
+    // When user is interacting with the time slider, always show the manual
+    // time value (not the MIDI note) so they can see what they're adjusting.
+    if (cachedMidiDisplay.isNotEmpty() && ! timeSlider.isMouseButtonDown())
         return cachedMidiDisplay;
 
     const bool isSyncOn = syncButton.getToggleState();
@@ -2816,7 +2820,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
 
 juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
 {
-    if (cachedMidiDisplay.isNotEmpty())
+    if (cachedMidiDisplay.isNotEmpty() && ! timeSlider.isMouseButtonDown())
         return cachedMidiDisplay;
 
     const bool isSyncOn = syncButton.getToggleState();
@@ -2991,9 +2995,9 @@ namespace
     constexpr int kToggleBoxPx = 72;
     constexpr int kMinToggleBlocksGapPx = 10;
     constexpr int kMinSliderGapPx = 4;
-    constexpr int kMidiPortSelectorWidthPx = 46;
-    constexpr int kMidiPortGapPx = 4;
-    constexpr int kMidiPortRightMargin = 6;
+    constexpr int kMidiChannelSelectorWidthPx = 46;
+    constexpr int kMidiChannelGapPx = 4;
+    constexpr int kMidiChannelRightMargin = 6;
 
     struct HorizontalLayoutMetrics
     {
@@ -3233,10 +3237,10 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getReverseLabelArea() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
 {
-    // Collision with port box — no collision-pad subtraction here
-    // because kMidiPortGapPx already provides the visual spacing.
-    const int cr = midiPortDisplay.isVisible()
-        ? midiPortDisplay.getX()
+    // Collision with channel box — no collision-pad subtraction here
+    // because kMidiChannelGapPx already provides the visual spacing.
+    const int cr = midiChannelDisplay.isVisible()
+        ? midiChannelDisplay.getX()
         : getWidth() - kToggleLegendCollisionPadPx;
     return makeToggleLabelArea (midiButton, cr, "MIDI", "MD");
 }
@@ -3261,10 +3265,10 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     lastUserInteractionMs.store (juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
     const auto p = e.getPosition();
 
-    // Check if click is on MIDI port display (only if visible)
-    if (midiPortDisplay.isVisible() && midiPortDisplay.getBounds().contains (p))
+    // Check if click is on MIDI channel display (only if visible)
+    if (midiChannelDisplay.isVisible() && midiChannelDisplay.getBounds().contains (p))
     {
-        openMidiPortPrompt();
+        openMidiChannelPrompt();
         return;
     }
 
@@ -3535,8 +3539,8 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const int syncCR  = autoFbkButton.getX() - kToggleLegendCollisionPadPx;
         const int autoCR  = W - kToggleLegendCollisionPadPx;
         const int revCR  = midiButton.getX() - kToggleLegendCollisionPadPx;
-        // No collision-pad for MIDI vs port — kMidiPortGapPx handles spacing
-        const int midiCR  = midiPortDisplay.isVisible() ? midiPortDisplay.getX()
+        // No collision-pad for MIDI vs channel — kMidiChannelGapPx handles spacing
+        const int midiCR  = midiChannelDisplay.isVisible() ? midiChannelDisplay.getX()
                                                         : W - kToggleLegendCollisionPadPx;
 
         const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
@@ -3569,18 +3573,18 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         drawToggleLegend (getMidiLabelArea(), midiLabel, midiCR);
     }
     
-    // Draw MIDI port display border (matching checkbox style) - only if visible
-    if (midiPortDisplay.isVisible())
+    // Draw MIDI channel display border (matching checkbox style) - only if visible
+    if (midiChannelDisplay.isVisible())
     {
-        auto portBounds = midiPortDisplay.getBounds().toFloat();
+        auto chBounds = midiChannelDisplay.getBounds().toFloat();
         
         // Draw background (same as checkbox)
         g.setColour (scheme.bg);
-        g.fillRect (portBounds);
+        g.fillRect (chBounds);
         
         // Draw border with same width as checkbox
         g.setColour (scheme.outline);
-        g.drawRect (portBounds, 4.0f);
+        g.drawRect (chBounds, 4.0f);
     }
     g.setColour (scheme.text);
 
@@ -3918,11 +3922,11 @@ void ECHOTRAudioProcessorEditor::resized()
                                                juce::jmax (14, verticalLayout.box - 2),
                                                (int) std::lround ((double) verticalLayout.box * 0.65));
     const int toggleHitW = toggleVisualSide + 6;
-    const int midiPortSide = toggleVisualSide;
+    const int midiChSide = toggleVisualSide;
 
     // Each row has 2 buttons: left-anchored + right-anchored
     // Row 1: SYNC (left) + AUTO FBK (right)
-    // Row 2: REV (left) + MIDI+port (right)
+    // Row 2: REV (left) + MIDI+channel (right)
     const int leftBlockX = buttonAreaX;
     const int rightBlockX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
 
@@ -3931,20 +3935,20 @@ void ECHOTRAudioProcessorEditor::resized()
     reverseButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     midiButton.setBounds    (rightBlockX, verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     
-    // Position MIDI port display to the right of the actual MIDI label
+    // Position MIDI channel display to the right of the actual MIDI label
     const int midiVisualRight = getToggleVisualBoxLeftPx (midiButton) + getToggleVisualBoxSidePx (midiButton);
     const int midiLabelX = midiVisualRight + labelGap;
     const int midiLabelFullW = stringWidth (labelFont, "MIDI") + 2;
     const int midiLabelShortW = stringWidth (labelFont, "MD") + 2;
-    const int midiMaxLabelSpace = juce::jmax (0, W - midiLabelX - midiPortSide - kMidiPortGapPx - kMidiPortRightMargin);
+    const int midiMaxLabelSpace = juce::jmax (0, W - midiLabelX - midiChSide - kMidiChannelGapPx - kMidiChannelRightMargin);
     const int midiActualLabelW = (midiLabelFullW <= midiMaxLabelSpace) ? midiLabelFullW : midiLabelShortW;
-    const int midiPortX = midiLabelX + midiActualLabelW + kMidiPortGapPx;
-    const int midiPortY = verticalLayout.btnRow2Y + (verticalLayout.box - midiPortSide) / 2;
-    midiPortDisplay.setBounds (midiPortX, midiPortY, midiPortSide, midiPortSide);
+    const int midiChX = midiLabelX + midiActualLabelW + kMidiChannelGapPx;
+    const int midiChY = verticalLayout.btnRow2Y + (verticalLayout.box - midiChSide) / 2;
+    midiChannelDisplay.setBounds (midiChX, midiChY, midiChSide, midiChSide);
     
-    // Hide MIDI port if it would overflow the right edge
-    const bool midiPortFits = (midiPortX + midiPortSide + kMidiPortRightMargin) <= W;
-    midiPortDisplay.setVisible (midiPortFits);
+    // Hide MIDI channel if it would overflow the right edge
+    const bool midiChFits = (midiChX + midiChSide + kMidiChannelRightMargin) <= W;
+    midiChannelDisplay.setVisible (midiChFits);
 
     if (resizerCorner != nullptr)
         resizerCorner->setBounds (W - kResizerCornerPx, H - kResizerCornerPx, kResizerCornerPx, kResizerCornerPx);

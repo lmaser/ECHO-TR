@@ -206,9 +206,12 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedMix = 0.5f;
 
 	// Reset reverse delay state
-	reverseChunkPos = 0.0f;
-	reverseChunkPhase = 0;
+	reverseCounterA = 0.0f;
+	reverseCounterB = 0.0f;
+	reverseAnchorA  = 0;
+	reverseAnchorB  = 0;
 	reverseSmoothedDelay = 0.0f;
+	reverseNeedsInit = true;
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -216,9 +219,12 @@ void ECHOTRAudioProcessor::releaseResources()
 	delayBuffer.setSize (0, 0);
 	delayBufferLength = 0;
 	delayBufferWritePos = 0;
-	reverseChunkPos = 0.0f;
-	reverseChunkPhase = 0;
+	reverseCounterA = 0.0f;
+	reverseCounterB = 0.0f;
+	reverseAnchorA  = 0;
+	reverseAnchorB  = 0;
 	reverseSmoothedDelay = 0.0f;
+	reverseNeedsInit = true;
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -418,11 +424,11 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
                                                  float delaySamples, float feedback, float inputGain,
                                                  float outputGain, float mix, float delaySmoothCoeff)
 {
-	// Chunk-based reverse delay with Hann crossfade.
-	// Audio is recorded forward into the delay buffer. Playback reads BACKWARDS
-	// through chunks of length = delaySamples. When a chunk finishes (countdown
-	// hits 0), the next chunk starts from the current write position. Two
-	// overlapping read heads with Hann crossfade eliminate clicks at boundaries.
+	// Anchor-based reverse delay with Hann crossfade.
+	// Two independent read heads (A & B), staggered by half a chunk.
+	// Each head captures an anchor (= writePos) when its chunk restarts,
+	// then reads BACKWARDS from that fixed point: readPos = anchor - counter.
+	// This guarantees read speed = -1 sample/sample → true 1× reverse playback.
 
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -445,53 +451,52 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 		const float chunkLen = juce::jmax (1.0f, reverseSmoothedDelay);
 
-		// Write input + feedback into delay buffer (same as forward delay)
+		// First-time init: seed both anchors and stagger head B by half a chunk
+		if (reverseNeedsInit)
+		{
+			reverseAnchorA  = writePos;
+			reverseAnchorB  = writePos;
+			reverseCounterA = 0.0f;
+			reverseCounterB = chunkLen * 0.5f;
+			reverseNeedsInit = false;
+		}
+
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 
-		// Chunk A: current chunk position (counts down from chunkLen to 0)
-		// Chunk B: offset by half a chunk (phase shifted by chunkLen/2)
-		// Both read backwards from their respective start points.
-
-		// Normalised position within chunk A [0, 1)
-		const float normA = reverseChunkPos / chunkLen;
-		// Chunk B is offset by half a chunk
-		const float chunkPosB = std::fmod (reverseChunkPos + chunkLen * 0.5f, chunkLen);
-		const float normB = chunkPosB / chunkLen;
-
-		// Read positions: start of chunk was at (writePos - 1) when the chunk began,
-		// so the "end" of the reversed audio (start of playback) is at writePos - chunkLen,
-		// and we read forwards from there. But we want REVERSE, so:
-		// readA = (writePos - normA * chunkLen)   (counting back from writePos)
-		// This means normA=0 reads from writePos (newest), normA→1 reads oldest.
-		// For true reverse: normA=0 should read oldest, normA→1 newest.
-		// So: readA = (writePos - chunkLen + normA * chunkLen) = writePos - chunkLen*(1 - normA)
-		float readPosA = (float) writePos - chunkLen * (1.0f - normA);
+		// ---- Head A: read backwards from anchorA ----
+		const float normA = reverseCounterA / chunkLen;
+		float readPosA = (float) reverseAnchorA - reverseCounterA;
 		if (readPosA < 0.0f) readPosA += (float) delayBufferLength;
-		float readPosB = (float) writePos - chunkLen * (1.0f - normB);
-		if (readPosB < 0.0f) readPosB += (float) delayBufferLength;
 
-		// Linear interpolation for chunk A
 		const int rA0 = ((int) readPosA) & wrapMask;
 		const int rA1 = (rA0 + 1) & wrapMask;
 		const float fracA = readPosA - std::floor (readPosA);
 		const float revLA = delayL[rA0] + fracA * (delayL[rA1] - delayL[rA0]);
 		const float revRA = delayR[rA0] + fracA * (delayR[rA1] - delayR[rA0]);
 
-		// Linear interpolation for chunk B
+		// ---- Head B: read backwards from anchorB ----
+		const float normB = reverseCounterB / chunkLen;
+		float readPosB = (float) reverseAnchorB - reverseCounterB;
+		if (readPosB < 0.0f) readPosB += (float) delayBufferLength;
+
 		const int rB0 = ((int) readPosB) & wrapMask;
 		const int rB1 = (rB0 + 1) & wrapMask;
 		const float fracB = readPosB - std::floor (readPosB);
 		const float revLB = delayL[rB0] + fracB * (delayL[rB1] - delayL[rB0]);
 		const float revRB = delayR[rB0] + fracB * (delayR[rB1] - delayR[rB0]);
 
-		// Hann crossfade: chunk A uses sin^2(pi*normA), chunk B uses sin^2(pi*normB)
-		// This ensures equal-power crossfade: gainA^2 + gainB^2 = 1
+		// Hann crossfade: sin²(π·norm) per head, then normalise so weights
+		// always sum to exactly 1.0. Without normalisation, smoothing-induced
+		// phase drift between heads causes gainA+gainB > 1 → runaway energy.
 		const float pi = juce::MathConstants<float>::pi;
 		const float sinA = std::sin (pi * normA);
-		const float gainA = sinA * sinA;
+		const float rawGainA = sinA * sinA;
 		const float sinB = std::sin (pi * normB);
-		const float gainB = sinB * sinB;
+		const float rawGainB = sinB * sinB;
+		const float totalGain = juce::jmax (rawGainA + rawGainB, 0.001f);
+		const float gainA = rawGainA / totalGain;
+		const float gainB = rawGainB / totalGain;
 
 		float revL = revLA * gainA + revLB * gainB;
 		float revR = revRA * gainA + revRB * gainB;
@@ -499,7 +504,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		revL = juce::jlimit (-2.0f, 2.0f, revL);
 		revR = juce::jlimit (-2.0f, 2.0f, revR);
 
-		// Write to delay buffer: input + reversed signal * feedback
+		// Write to delay buffer: input + reversed signal × feedback
+		// No extra compensation needed — normalised crossfade keeps energy parity with forward.
 		delayL[writePos] = inputL * smoothedInputGain + revL * feedback;
 		delayR[writePos] = inputR * smoothedInputGain + revR * feedback;
 
@@ -510,10 +516,21 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		// Advance write position
 		writePos = (writePos + 1) & wrapMask;
 
-		// Advance chunk countdown
-		reverseChunkPos += 1.0f;
-		if (reverseChunkPos >= chunkLen)
-			reverseChunkPos -= chunkLen;
+		// Advance head A — reset anchor when chunk completes
+		reverseCounterA += 1.0f;
+		if (reverseCounterA >= chunkLen)
+		{
+			reverseCounterA -= chunkLen;
+			reverseAnchorA = writePos;
+		}
+
+		// Advance head B — reset anchor when chunk completes
+		reverseCounterB += 1.0f;
+		if (reverseCounterB >= chunkLen)
+		{
+			reverseCounterB -= chunkLen;
+			reverseAnchorB = writePos;
+		}
 	}
 
 	delayBufferWritePos = writePos;
@@ -528,7 +545,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	
 	// Process MIDI messages for note tracking
 	const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
-	const int selectedMidiPort = midiPort.load (std::memory_order_relaxed);
+	const int selectedMidiChannel = midiChannel.load (std::memory_order_relaxed);
 	
 	if (midiEnabled)
 	{
@@ -536,8 +553,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			const auto msg = metadata.getMessage();
 			
-			// Filter by MIDI channel (0 = omni)
-			if (selectedMidiPort > 0 && msg.getChannel() != selectedMidiPort)
+			// Filter by MIDI channel (0 = omni, 1-16 = specific channel)
+			if (selectedMidiChannel > 0 && msg.getChannel() != selectedMidiChannel)
 				continue;
 			
 			if (msg.isNoteOn())
@@ -727,10 +744,10 @@ void ECHOTRAudioProcessor::setStateInformation (const void* data, int sizeInByte
 		{
 			apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
 
-			// Sync midiPort atomic from restored state so processBlock sees the correct value
-			const auto restoredPort = apvts.state.getProperty (UiStateKeys::midiPort);
-			if (! restoredPort.isVoid())
-				midiPort.store ((int) restoredPort, std::memory_order_relaxed);
+			// Sync midiChannel atomic from restored state so processBlock sees the correct value
+			const auto restoredChannel = apvts.state.getProperty (UiStateKeys::midiPort);
+			if (! restoredChannel.isVoid())
+				midiChannel.store ((int) restoredChannel, std::memory_order_relaxed);
 		}
 	}
 }
@@ -920,20 +937,20 @@ bool ECHOTRAudioProcessor::getUiFxTailEnabled() const noexcept
 	return uiFxTailEnabled.load (std::memory_order_relaxed) != 0;
 }
 
-void ECHOTRAudioProcessor::setMidiPort (int portNumber)
+void ECHOTRAudioProcessor::setMidiChannel (int channel)
 {
-	const int port = juce::jlimit (0, 127, portNumber);
-	midiPort.store (port, std::memory_order_relaxed);
-	apvts.state.setProperty (UiStateKeys::midiPort, port, nullptr);
+	const int ch = juce::jlimit (0, 16, channel);
+	midiChannel.store (ch, std::memory_order_relaxed);
+	apvts.state.setProperty (UiStateKeys::midiPort, ch, nullptr); // key kept for preset compat
 }
 
-int ECHOTRAudioProcessor::getMidiPort() const noexcept
+int ECHOTRAudioProcessor::getMidiChannel() const noexcept
 {
 	const auto fromState = apvts.state.getProperty (UiStateKeys::midiPort);
 	if (! fromState.isVoid())
-		return (int) fromState;
+		return juce::jlimit (0, 16, (int) fromState);
 	
-	return midiPort.load (std::memory_order_relaxed);
+	return midiChannel.load (std::memory_order_relaxed);
 }
 
 void ECHOTRAudioProcessor::setUiCustomPaletteColour (int index, juce::Colour colour)
