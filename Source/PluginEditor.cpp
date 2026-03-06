@@ -519,6 +519,37 @@ void ECHOTRAudioProcessorEditor::MinimalLNF::drawBubble (juce::Graphics& g,
                       findColour (juce::TooltipWindow::outlineColourId));
 }
 
+void ECHOTRAudioProcessorEditor::MinimalLNF::drawScrollbar (juce::Graphics& g,
+                                                             juce::ScrollBar&,
+                                                             int x, int y, int width, int height,
+                                                             bool isScrollbarVertical,
+                                                             int thumbStartPosition, int thumbSize,
+                                                             bool isMouseOver, bool isMouseDown)
+{
+    juce::ignoreUnused (x, y, width, height);
+
+    const auto thumbColour = scheme.text.withAlpha (isMouseDown ? 0.7f
+                                                     : isMouseOver ? 0.5f
+                                                                   : 0.3f);
+    constexpr float barThickness = 7.0f;
+    constexpr float cornerRadius = 3.5f;
+
+    if (isScrollbarVertical)
+    {
+        const float bx = (float) (x + width) - barThickness - 1.0f;
+        g.setColour (thumbColour);
+        g.fillRoundedRectangle (bx, (float) thumbStartPosition,
+                                barThickness, (float) thumbSize, cornerRadius);
+    }
+    else
+    {
+        const float by = (float) (y + height) - barThickness - 1.0f;
+        g.setColour (thumbColour);
+        g.fillRoundedRectangle ((float) thumbStartPosition, by,
+                                (float) thumbSize, barThickness, cornerRadius);
+    }
+}
+
 juce::Font ECHOTRAudioProcessorEditor::MinimalLNF::getTextButtonFont (juce::TextButton&, int buttonHeight)
 {
     const float h = juce::jlimit (12.0f, 26.0f, buttonHeight * 0.48f);
@@ -1257,6 +1288,36 @@ namespace
         }
     };
 
+    // Label that renders using TextLayout instead of the default
+    // drawFittedText / GlyphArrangement path.  This guarantees that
+    // the rendered line-wrapping matches the TextLayout-based height
+    // measurement in layoutInfoPopupContent, preventing clipping.
+    struct TextLayoutLabel final : public juce::Label
+    {
+        using juce::Label::Label;
+
+        void paint (juce::Graphics& g) override
+        {
+            g.fillAll (findColour (backgroundColourId));
+
+            if (isBeingEdited())
+                return;
+
+            const auto f     = getFont();
+            const auto area  = getBorderSize().subtractedFrom (getLocalBounds()).toFloat();
+            const auto alpha = isEnabled() ? 1.0f : 0.5f;
+
+            juce::AttributedString as;
+            as.append (getText(), f,
+                       findColour (textColourId).withMultipliedAlpha (alpha));
+            as.setJustification (getJustificationType());
+
+            juce::TextLayout layout;
+            layout.createLayout (as, area.getWidth());
+            layout.draw (g, area);
+        }
+    };
+
 }
 
 static void layoutAlertWindowButtons (juce::AlertWindow& aw)
@@ -1308,39 +1369,71 @@ static void layoutInfoPopupContent (juce::AlertWindow& aw)
     const int contentTop = kPromptBodyTopPad;
     const int contentBottom = getAlertButtonsTop (aw) - kPromptBodyBottomPad;
     const int contentH = juce::jmax (0, contentBottom - contentTop);
+    const int bodyW = aw.getWidth() - (2 * kPromptInnerMargin);
 
-    auto* infoLabel = dynamic_cast<juce::Label*> (aw.findChildWithID ("infoText"));
-    auto* infoLink = dynamic_cast<juce::HyperlinkButton*> (aw.findChildWithID ("infoLink"));
-
-    if (infoLabel != nullptr && infoLink != nullptr)
-    {
-        const int labelH = juce::jlimit (26, juce::jmax (26, contentH), (int) std::lround (contentH * 0.34));
-        const int linkH = juce::jlimit (20, 34, (int) std::lround (contentH * 0.18));
-
-        const int freeH = juce::jmax (0, contentH - labelH - linkH);
-        const int gap = freeH / 3;
-        const int labelY = contentTop + gap;
-        const int linkY = labelY + labelH + gap;
-
-        infoLabel->setBounds (kPromptInnerMargin,
-                              labelY,
-                              aw.getWidth() - (2 * kPromptInnerMargin),
-                              labelH);
-
-        infoLink->setBounds (kPromptInnerMargin,
-                             linkY,
-                             aw.getWidth() - (2 * kPromptInnerMargin),
-                             linkH);
+    // Find the viewport that wraps all body content
+    auto* viewport = dynamic_cast<juce::Viewport*> (aw.findChildWithID ("bodyViewport"));
+    if (viewport == nullptr)
         return;
+
+    viewport->setBounds (kPromptInnerMargin, contentTop, bodyW, contentH);
+
+    auto* content = viewport->getViewedComponent();
+    if (content == nullptr)
+        return;
+
+    // Layout children inside content component top-to-bottom
+    constexpr int kItemGap = 10;
+    int y = 0;
+    const int innerW = bodyW - 10;  // leave room for scrollbar
+
+    for (int i = 0; i < content->getNumChildComponents(); ++i)
+    {
+        auto* child = content->getChildComponent (i);
+        if (child == nullptr || ! child->isVisible())
+            continue;
+
+        // Labels measure preferred height from font
+        int itemH = 30;
+        if (auto* label = dynamic_cast<juce::Label*> (child))
+        {
+            auto font = label->getFont();
+            const auto text = label->getText();
+            const auto border = label->getBorderSize();
+
+            // Single-line labels (no newlines): use font height directly
+            if (! text.containsChar ('\n'))
+            {
+                itemH = (int) std::ceil (font.getHeight()) + border.getTopAndBottom();
+            }
+            else
+            {
+                // Multi-line: measure with TextLayout
+                juce::AttributedString as;
+                as.append (text, font, label->findColour (juce::Label::textColourId));
+                as.setJustification (label->getJustificationType());
+                juce::TextLayout layout;
+                const int textAreaW = innerW - border.getLeftAndRight();
+                layout.createLayout (as, (float) juce::jmax (1, textAreaW));
+                itemH = juce::jmax (20, (int) std::ceil (layout.getHeight()
+                                                         + font.getDescent())
+                                        + border.getTopAndBottom() + 4);
+            }
+        }
+        else if (dynamic_cast<juce::HyperlinkButton*> (child) != nullptr)
+        {
+            itemH = 28;
+        }
+
+        child->setBounds (0, y, innerW, itemH);
+        y += itemH + kItemGap;
     }
 
-    if (infoLabel != nullptr)
-    {
-        infoLabel->setBounds (kPromptInnerMargin,
-                              contentTop,
-                              aw.getWidth() - (2 * kPromptInnerMargin),
-                              juce::jmax (20, contentH));
-    }
+    // Remove trailing gap
+    if (y > kItemGap)
+        y -= kItemGap;
+
+    content->setSize (innerW, juce::jmax (contentH, y));
 }
 
 static juce::String colourToHexRgb (juce::Colour c)
@@ -2513,28 +2606,64 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
 
     applyPromptShellSize (*aw);
 
-    auto* infoLabel = new juce::Label ("infoText", "NMSTR -> INFO SOON");
+    // ── Body content inside a scrollable viewport ──
+    auto* bodyContent = new juce::Component();
+    bodyContent->setComponentID ("bodyContent");
+
+    auto infoFont = lnf.getAlertWindowMessageFont();
+    infoFont.setHeight (infoFont.getHeight() * 1.45f);
+    auto linkFont = infoFont;
+    linkFont.setHeight (infoFont.getHeight() * 1.08f);
+    auto poemFont = infoFont;
+    poemFont.setItalic (true);
+
+    auto* infoLabel = new juce::Label ("infoText", "BY NEMESTER");
     infoLabel->setComponentID ("infoText");
     infoLabel->setJustificationType (juce::Justification::centred);
     applyLabelTextColour (*infoLabel, activeScheme.text);
-    auto infoFont = lnf.getAlertWindowMessageFont();
-    infoFont.setHeight (infoFont.getHeight() * 1.45f);
     infoLabel->setFont (infoFont);
-    aw->addAndMakeVisible (infoLabel);
+    bodyContent->addAndMakeVisible (infoLabel);
 
     auto* infoLink = new juce::HyperlinkButton ("GitHub Repository",
                                                 juce::URL ("https://github.com/lmaser/ECHO-TR"));
     infoLink->setComponentID ("infoLink");
     infoLink->setJustificationType (juce::Justification::centred);
-    infoLink->setColour (juce::HyperlinkButton::textColourId,
-                         activeScheme.text);
-    auto linkFont = infoFont;
-    linkFont.setHeight (infoFont.getHeight() * 0.72f);
+    infoLink->setColour (juce::HyperlinkButton::textColourId, activeScheme.text);
     infoLink->setFont (linkFont, false, juce::Justification::centred);
-    aw->addAndMakeVisible (infoLink);
-    
-    // Capture infoLink to delete explicitly before AlertWindow destruction
-    juce::Component::SafePointer<juce::HyperlinkButton> safeInfoLink (infoLink);
+    infoLink->setTooltip ("");
+    bodyContent->addAndMakeVisible (infoLink);
+
+    // Helper: create a single-line centered italic poem label
+    auto addPoemLine = [&] (const juce::String& id, const juce::String& text)
+    {
+        auto* l = new juce::Label (id, text);
+        l->setComponentID (id);
+        l->setJustificationType (juce::Justification::centred);
+        applyLabelTextColour (*l, activeScheme.text);
+        l->setFont (poemFont);
+        l->setBorderSize (juce::BorderSize<int> (0));
+        bodyContent->addAndMakeVisible (l);
+        return l;
+    };
+
+    // Each verse is its own single-line label — no word-wrap, no height measurement issues
+    addPoemLine ("poemSpacer",  "");
+    addPoemLine ("poemLine1",   juce::String (juce::CharPointer_UTF8 ("\xc2\xab Flores tronchadas,")));
+    addPoemLine ("poemLine2",   "marchitas hojas");
+    addPoemLine ("poemLine3",   "arrastra el viento;");
+    addPoemLine ("poemLine4",   "en los espacios tristes");
+    addPoemLine ("poemLine5",   "gemidos");
+    addPoemLine ("poemLine6",   juce::String (juce::CharPointer_UTF8 ("repite el eco. \xc2\xbb")));
+    addPoemLine ("poemSpacer2", "");
+    addPoemLine ("authorText",  juce::String (juce::CharPointer_UTF8 ("B\xc3\xa9" "cquer")));
+
+    auto* viewport = new juce::Viewport();
+    viewport->setComponentID ("bodyViewport");
+    viewport->setViewedComponent (bodyContent, true);  // viewport owns bodyContent
+    viewport->setScrollBarsShown (true, false);         // vertical only
+    viewport->setScrollBarThickness (8);
+    viewport->setLookAndFeel (&lnf);
+    aw->addAndMakeVisible (viewport);
 
     layoutInfoPopupContent (*aw);
 
@@ -2564,12 +2693,8 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
     });
 
     aw->enterModalState (true,
-        juce::ModalCallbackFunction::create ([safeThis = juce::Component::SafePointer<ECHOTRAudioProcessorEditor> (this), aw, safeInfoLink] (int result) mutable
+        juce::ModalCallbackFunction::create ([safeThis = juce::Component::SafePointer<ECHOTRAudioProcessorEditor> (this), aw] (int result) mutable
         {
-            // Explicitly delete the HyperlinkButton before destroying the AlertWindow
-            if (safeInfoLink != nullptr)
-                delete safeInfoLink.getComponent();
-            
             std::unique_ptr<juce::AlertWindow> killer (aw);
 
             if (safeThis == nullptr)

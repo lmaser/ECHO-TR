@@ -235,6 +235,14 @@ private:
                  const juce::Point<float>& tip,
                  const juce::Rectangle<float>& body) override;
 
+        void drawScrollbar (juce::Graphics& g, juce::ScrollBar& bar,
+                    int x, int y, int width, int height,
+                    bool isScrollbarVertical, int thumbStartPosition, int thumbSize,
+                    bool isMouseOver, bool isMouseDown) override;
+
+        int getMinimumScrollbarThumbSize (juce::ScrollBar&) override { return 16; }
+        int getScrollbarButtonSize (juce::ScrollBar&) override      { return 0; }  // no arrow buttons
+
         juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
         juce::Font getAlertWindowMessageFont() override;
         juce::Font getLabelFont (juce::Label& label) override;
