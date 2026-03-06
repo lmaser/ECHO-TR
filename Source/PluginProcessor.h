@@ -35,7 +35,7 @@ public:
 
 	// Parameter ranges and defaults
 	static constexpr float kTimeMsMin = 0.0f;
-	static constexpr float kTimeMsMax = 2000.0f;
+	static constexpr float kTimeMsMax = 5000.0f;
 	static constexpr float kTimeMsMaxSync = 20000.0f;
 	static constexpr float kTimeMsDefault = 500.0f;
 
@@ -65,7 +65,7 @@ public:
 
 	static constexpr float kMixMin = 0.0f;
 	static constexpr float kMixMax = 1.0f;
-	static constexpr float kMixDefault = 0.5f;
+	static constexpr float kMixDefault = 1.0f;
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);

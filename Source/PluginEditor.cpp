@@ -2835,7 +2835,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
     const float ms = (float) timeSlider.getValue();
     if (ms >= 1000.0f)
         return juce::String (ms / 1000.0f, 3) + " S TIME";
-    return juce::String ((int)ms) + " MS TIME";
+    return juce::String ((int) std::lround (ms)) + " MS TIME";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
@@ -2853,7 +2853,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     const float ms = (float) timeSlider.getValue();
     if (ms >= 1000.0f)
         return juce::String (ms / 1000.0f, 3) + " S";
-    return juce::String ((int)ms) + " MS";
+    return juce::String ((int) std::lround (ms)) + " MS";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getFeedbackText() const
@@ -2980,9 +2980,9 @@ juce::String ECHOTRAudioProcessorEditor::getMixTextShort() const
 
 namespace
 {
-    constexpr const char* kTimeLegendFull  = "2000 MS TIME";
-    constexpr const char* kTimeLegendShort = "2000 MS";  // Use MS format (wider than "2.000 S")
-    constexpr const char* kTimeLegendInt   = "2000";
+    constexpr const char* kTimeLegendFull  = "5000 MS TIME";
+    constexpr const char* kTimeLegendShort = "5000 MS";  // Use MS format (wider than "5.000 S")
+    constexpr const char* kTimeLegendInt   = "5000";
 
     constexpr const char* kFeedbackLegendFull  = "100% FEEDBACK";
     constexpr const char* kFeedbackLegendShort = "100% FBK";
