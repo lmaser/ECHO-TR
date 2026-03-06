@@ -354,7 +354,7 @@ private:
     static constexpr int kMinW = 360;
     static constexpr int kMinH = 540;
     static constexpr int kMaxW = 800;
-    static constexpr int kMaxH = 800;
+    static constexpr int kMaxH = 540;
 
     static constexpr int kLayoutVerticalBiasPx = 10;
 

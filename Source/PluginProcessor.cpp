@@ -293,6 +293,10 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	reverseChunkLen   = 0.0f;
 	revSmoothedDelay  = 0.0f;
 	reverseNeedsInit  = true;
+
+	// Reset auto-feedback envelope
+	autoFbkEnvelope         = 1.0f;
+	autoFbkLastDelaySamples = -1.0f;
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -305,6 +309,8 @@ void ECHOTRAudioProcessor::releaseResources()
 	reverseChunkLen   = 0.0f;
 	revSmoothedDelay  = 0.0f;
 	reverseNeedsInit  = true;
+	autoFbkEnvelope         = 1.0f;
+	autoFbkLastDelaySamples = -1.0f;
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -728,17 +734,6 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float outputGain = fastDecibelsToGain (outputGainDb);
 	targetFeedback = juce::jlimit (0.0f, kFeedbackMax, targetFeedback);
 	
-	// Auto feedback: only compute when feedback < 100% (self-oscillation range is manual)
-	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);
-	if (autoFbkEnabled && targetFeedback > 0.001f && targetFeedback < 1.0f && targetDelayMs > 1.0f)
-	{
-		const float exponentialFeedback = targetFeedback * targetFeedback;
-		const float referenceDelay = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
-		const float octavesFromMax = std::log2 (referenceDelay / targetDelayMs);
-		const float autoFbkMultiplier = std::exp2 (octavesFromMax * 0.32192809489f);
-		targetFeedback = juce::jmin (0.99f, exponentialFeedback * autoFbkMultiplier);
-	}
-	
 	// MOD frequency multiplier (pure arithmetic, no transcendentals)
 	float freqMultiplier;
 	if (modValue < 0.5f)
@@ -749,6 +744,43 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	float delaySamples = juce::jmax (0.0f, (float) currentSampleRate * (targetDelayMs / 1000.0f));
 	delaySamples /= freqMultiplier;
 	delaySamples = juce::jlimit (0.0f, (float) (delayBufferLength - 2), delaySamples);
+
+	// Auto feedback: envelope resets to 0 on note/time/MOD change, then ramps
+	// back to 1.0.  Feedback is multiplied by the envelope so the delay
+	// "clears" between changes with a smooth fade-in of the feedback tail.
+	// Detection runs on the FINAL delaySamples (post-MOD) so MOD tweaks also
+	// trigger the reset.
+	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);
+	if (autoFbkEnabled && targetFeedback > 0.001f)
+	{
+		// Detect change: >2 % relative deviation from the last delaySamples
+		const float delayDelta = std::abs (delaySamples - autoFbkLastDelaySamples);
+		const bool delayChanged = (autoFbkLastDelaySamples < 0.0f)
+		                        ? false  // first call after init → don't reset
+		                        : (delayDelta > autoFbkLastDelaySamples * 0.02f);
+
+		if (delayChanged)
+			autoFbkEnvelope = 0.0f;  // reset envelope → feedback drops to 0
+
+		autoFbkLastDelaySamples = delaySamples;
+
+		// Ramp envelope towards 1.0 using EMA.
+		// Tau ~60 ms → 95 % recovered in ~180 ms — quick, percussive fade-in.
+		constexpr float kAutoFbkTau = 0.06f;  // seconds
+		const float envCoeff = std::exp (-1.0f / ((float) currentSampleRate * kAutoFbkTau));
+		for (int i = 0; i < numSamples; ++i)
+			autoFbkEnvelope = envCoeff * autoFbkEnvelope + (1.0f - envCoeff) * 1.0f;
+
+		autoFbkEnvelope = juce::jlimit (0.0f, 1.0f, autoFbkEnvelope);
+		targetFeedback *= autoFbkEnvelope;
+	}
+	else
+	{
+		// When auto-feedback is off, keep tracking delay so enabling it
+		// mid-session doesn't trigger a false reset.
+		autoFbkLastDelaySamples = delaySamples;
+		autoFbkEnvelope         = 1.0f;
+	}
 
 	// Bypass if delay < 1 sample
 	if (delaySamples < 1.0f)

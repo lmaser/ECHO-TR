@@ -181,6 +181,10 @@ private:
 	float revSmoothedDelay  = 0.0f;   // EMA-smoothed delay for reverse (independent)
 	bool  reverseNeedsInit  = true;   // first-call initialisation flag
 
+	// Auto-feedback envelope: ramps 0→1 after each note/time/MOD change.
+	// Multiplied with the user's feedback value so it "resets" on change.
+	float autoFbkEnvelope          = 1.0f;  // current envelope level (0 = silent, 1 = full)
+	float autoFbkLastDelaySamples  = -1.0f; // previous final delay in samples; -1 = uninitialised
 
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
