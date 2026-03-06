@@ -377,7 +377,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 			const float inputL = channelL[i];
 			const float delayedL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
 			delayL[writePos] = feedbackSoftClip (inputL * smoothedInputGain + delayedL * feedback);
-			channelL[i] = (inputL * (1.0f - smoothedMix) + delayedL * smoothedMix) * smoothedOutputGain;
+			channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
 		}
 		
 		if (channelR != nullptr)
@@ -385,7 +385,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 			const float inputR = channelR[i];
 			const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
 			delayR[writePos] = feedbackSoftClip (inputR * smoothedInputGain + delayedR * feedback);
-			channelR[i] = (inputR * (1.0f - smoothedMix) + delayedR * smoothedMix) * smoothedOutputGain;
+			channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
 		}
 		
 		writePos = (writePos + 1) & wrapMask;
@@ -437,9 +437,8 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		delayL[writePos] = toWrite;
 		delayR[writePos] = toWrite;
 		
-		const float output = (inputMid * (1.0f - smoothedMix) + delayed * smoothedMix) * smoothedOutputGain;
-		if (channelL != nullptr) channelL[i] = output;
-		if (channelR != nullptr) channelR[i] = output;
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + delayed * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + delayed * smoothedMix * smoothedOutputGain;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -490,8 +489,8 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		delayL[writePos] = feedbackSoftClip (inputMono * smoothedInputGain + delayedR * feedback);
 		delayR[writePos] = feedbackSoftClip (delayedL * feedback);
 		
-		if (channelL != nullptr) channelL[i] = (inputL * (1.0f - smoothedMix) + delayedL * smoothedMix) * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = (inputR * (1.0f - smoothedMix) + delayedR * smoothedMix) * smoothedOutputGain;
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -593,8 +592,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		delayR[writePos] = feedbackSoftClip (inputR * smoothedInputGain + revR * feedback);
 
 		// Output: dry/wet mix
-		if (channelL != nullptr) channelL[i] = (inputL * (1.0f - smoothedMix) + revL * smoothedMix) * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = (inputR * (1.0f - smoothedMix) + revR * smoothedMix) * smoothedOutputGain;
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + revL * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + revR * smoothedMix * smoothedOutputGain;
 
 		// Advance write position
 		writePos = (writePos + 1) & wrapMask;
@@ -779,9 +778,26 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		autoFbkLastDelaySamples = delaySamples;
 
 		// Ramp envelope towards 1.0 using EMA.
-		// Tau ~60 ms → 95 % recovered in ~180 ms — quick, percussive fade-in.
-		constexpr float kAutoFbkTau = 0.06f;  // seconds
-		const float envCoeff = std::exp (-1.0f / ((float) currentSampleRate * kAutoFbkTau));
+		// When a MIDI note is driving the delay, tau scales with delay
+		// length: long delays (bass) keep the base tau; short delays
+		// (treble) use a much shorter tau so the envelope recovers in
+		// time for the faster repetitions.  Without MIDI the base tau
+		// is used unchanged.
+		constexpr float kAutoFbkTauMax  = 0.060f;  // seconds — bass / long delays / no MIDI
+		constexpr float kAutoFbkTauMin  = 0.005f;  // seconds — treble / very short delays
+		constexpr float kAutoFbkRefMs   = 500.0f;   // delay (ms) at which tau = tauMax
+		constexpr float kAutoFbkTauExp  = 6.0f;     // high exp → only extreme treble is shortened
+
+		float tau = kAutoFbkTauMax;
+		if (midiNoteActive)
+		{
+			const float delayMs = (delaySamples / (float) currentSampleRate) * 1000.0f;
+			const float ratio   = juce::jlimit (0.0f, 1.0f, delayMs / kAutoFbkRefMs);
+			const float shaped  = std::pow (ratio, kAutoFbkTauExp);
+			tau = kAutoFbkTauMin + (kAutoFbkTauMax - kAutoFbkTauMin) * shaped;
+		}
+
+		const float envCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
 		for (int i = 0; i < numSamples; ++i)
 			autoFbkEnvelope = envCoeff * autoFbkEnvelope + (1.0f - envCoeff) * 1.0f;
 
