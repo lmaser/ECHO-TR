@@ -3,6 +3,26 @@
 
 namespace
 {
+	// ---- Hermite 4-point cubic interpolation ----
+	inline float hermite4pt (float ym1, float y0, float y1, float y2, float frac) noexcept
+	{
+		const float c0 = y0;
+		const float c1 = 0.5f * (y1 - ym1);
+		const float c2 = ym1 - 2.5f * y0 + 2.0f * y1 - 0.5f * y2;
+		const float c3 = 0.5f * (y2 - ym1) + 1.5f * (y0 - y1);
+		return ((c3 * frac + c2) * frac + c1) * frac + c0;
+	}
+
+	// ---- One-pole EMA coefficient from time constant ----
+	inline float smoothCoeffFromTau (double sampleRate, float tauSeconds) noexcept
+	{
+		return std::exp (-1.0f / (static_cast<float>(sampleRate) * tauSeconds));
+	}
+
+	// 80 ms tau  ->  ~400 ms to settle (5*tau)
+	// Enough inertia for smooth tape sweep, fast enough for musical response.
+	constexpr float kDelaySmoothTauSeconds = 0.08f;
+
 	inline float loadAtomicOrDefault (std::atomic<float>* p, float def) noexcept
 	{
 		return p != nullptr ? p->load (std::memory_order_relaxed) : def;
@@ -206,12 +226,10 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedMix = 0.5f;
 
 	// Reset reverse delay state
-	reverseCounterA = 0.0f;
-	reverseCounterB = 0.0f;
-	reverseAnchorA  = 0;
-	reverseAnchorB  = 0;
-	reverseSmoothedDelay = 0.0f;
-	reverseNeedsInit = true;
+	reverseAnchor     = 0;
+	reverseCounter    = 0.0f;
+	revSmoothedDelay  = 0.0f;
+	reverseNeedsInit  = true;
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -219,12 +237,10 @@ void ECHOTRAudioProcessor::releaseResources()
 	delayBuffer.setSize (0, 0);
 	delayBufferLength = 0;
 	delayBufferWritePos = 0;
-	reverseCounterA = 0.0f;
-	reverseCounterB = 0.0f;
-	reverseAnchorA  = 0;
-	reverseAnchorB  = 0;
-	reverseSmoothedDelay = 0.0f;
-	reverseNeedsInit = true;
+	reverseAnchor     = 0;
+	reverseCounter    = 0.0f;
+	revSmoothedDelay  = 0.0f;
+	reverseNeedsInit  = true;
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -280,26 +296,26 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
-		const int readPos0 = (int) readPosF;
-		const int readPos1 = (readPos0 + 1) & wrapMask;
-		const float frac = readPosF - (float) readPos0;
+		const int idx0 = ((int) readPosF) & wrapMask;
+		const int idxM1 = (idx0 - 1 + delayBufferLength) & wrapMask;
+		const int idx1  = (idx0 + 1) & wrapMask;
+		const int idx2  = (idx0 + 2) & wrapMask;
+		const float frac = readPosF - std::floor (readPosF);
 		
 		if (channelL != nullptr)
 		{
 			const float inputL = channelL[i];
-			const float delayedL = delayL[readPos0] + frac * (delayL[readPos1] - delayL[readPos0]);
-			const float clippedL = juce::jlimit (-2.0f, 2.0f, delayedL);
-			delayL[writePos] = inputL * smoothedInputGain + clippedL * feedback;
-			channelL[i] = (inputL * (1.0f - smoothedMix) + clippedL * smoothedMix) * smoothedOutputGain;
+			const float delayedL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
+			delayL[writePos] = inputL * smoothedInputGain + delayedL * feedback;
+			channelL[i] = (inputL * (1.0f - smoothedMix) + delayedL * smoothedMix) * smoothedOutputGain;
 		}
 		
 		if (channelR != nullptr)
 		{
 			const float inputR = channelR[i];
-			const float delayedR = delayR[readPos0] + frac * (delayR[readPos1] - delayR[readPos0]);
-			const float clippedR = juce::jlimit (-2.0f, 2.0f, delayedR);
-			delayR[writePos] = inputR * smoothedInputGain + clippedR * feedback;
-			channelR[i] = (inputR * (1.0f - smoothedMix) + clippedR * smoothedMix) * smoothedOutputGain;
+			const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
+			delayR[writePos] = inputR * smoothedInputGain + delayedR * feedback;
+			channelR[i] = (inputR * (1.0f - smoothedMix) + delayedR * smoothedMix) * smoothedOutputGain;
 		}
 		
 		writePos = (writePos + 1) & wrapMask;
@@ -335,24 +351,23 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
-		const int readPos0 = (int) readPosF;
-		const int readPos1 = (readPos0 + 1) & wrapMask;
-		const float frac = readPosF - (float) readPos0;
+		const int idx0  = ((int) readPosF) & wrapMask;
+		const int idxM1 = (idx0 - 1 + delayBufferLength) & wrapMask;
+		const int idx1  = (idx0 + 1) & wrapMask;
+		const int idx2  = (idx0 + 2) & wrapMask;
+		const float frac = readPosF - std::floor (readPosF);
 		
-		const float sample0 = delayL[readPos0];
-		const float sample1 = delayL[readPos1];
-		const float delayed = sample0 + frac * (sample1 - sample0);
-		const float clippedDelayed = juce::jlimit (-2.0f, 2.0f, delayed);
+		const float delayed = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
 		
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : inputL;
 		const float inputMid = (inputL + inputR) * 0.5f;
 		
-		const float toWrite = inputMid * smoothedInputGain + clippedDelayed * feedback;
+		const float toWrite = inputMid * smoothedInputGain + delayed * feedback;
 		delayL[writePos] = toWrite;
 		delayR[writePos] = toWrite;
 		
-		const float output = (inputMid * (1.0f - smoothedMix) + clippedDelayed * smoothedMix) * smoothedOutputGain;
+		const float output = (inputMid * (1.0f - smoothedMix) + delayed * smoothedMix) * smoothedOutputGain;
 		if (channelL != nullptr) channelL[i] = output;
 		if (channelR != nullptr) channelR[i] = output;
 		
@@ -389,30 +404,24 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
-		const int readPos0 = (int) readPosF;
-		const int readPos1 = (readPos0 + 1) & wrapMask;
-		const float frac = readPosF - (float) readPos0;
+		const int idx0  = ((int) readPosF) & wrapMask;
+		const int idxM1 = (idx0 - 1 + delayBufferLength) & wrapMask;
+		const int idx1  = (idx0 + 1) & wrapMask;
+		const int idx2  = (idx0 + 2) & wrapMask;
+		const float frac = readPosF - std::floor (readPosF);
 		
-		const float sampleL0 = delayL[readPos0];
-		const float sampleL1 = delayL[readPos1];
-		const float delayedL = sampleL0 + frac * (sampleL1 - sampleL0);
-		
-		const float sampleR0 = delayR[readPos0];
-		const float sampleR1 = delayR[readPos1];
-		const float delayedR = sampleR0 + frac * (sampleR1 - sampleR0);
-		
-		const float clippedDelayedL = juce::jlimit (-2.0f, 2.0f, delayedL);
-		const float clippedDelayedR = juce::jlimit (-2.0f, 2.0f, delayedR);
+		const float delayedL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
+		const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
 		
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 		const float inputMono = (inputL + inputR) * 0.5f;
 		
-		delayL[writePos] = inputMono * smoothedInputGain + clippedDelayedR * feedback;
-		delayR[writePos] = clippedDelayedL * feedback;
+		delayL[writePos] = inputMono * smoothedInputGain + delayedR * feedback;
+		delayR[writePos] = delayedL * feedback;
 		
-		if (channelL != nullptr) channelL[i] = (inputL * (1.0f - smoothedMix) + clippedDelayedL * smoothedMix) * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = (inputR * (1.0f - smoothedMix) + clippedDelayedR * smoothedMix) * smoothedOutputGain;
+		if (channelL != nullptr) channelL[i] = (inputL * (1.0f - smoothedMix) + delayedL * smoothedMix) * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = (inputR * (1.0f - smoothedMix) + delayedR * smoothedMix) * smoothedOutputGain;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -424,11 +433,11 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
                                                  float delaySamples, float feedback, float inputGain,
                                                  float outputGain, float mix, float delaySmoothCoeff)
 {
-	// Anchor-based reverse delay with Hann crossfade.
-	// Two independent read heads (A & B), staggered by half a chunk.
-	// Each head captures an anchor (= writePos) when its chunk restarts,
-	// then reads BACKWARDS from that fixed point: readPos = anchor - counter.
-	// This guarantees read speed = -1 sample/sample → true 1× reverse playback.
+	// Single-buffer reverse delay.
+	// ONE read head reads BACKWARDS through the main circular delay buffer.
+	// EMA-smoothed delay determines chunk length. When delay changes, chunks
+	// end sooner/later, producing tape-speed pitch shift (same as forward modes).
+	// Tukey cosine taper at chunk edges prevents clicks.
 
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -442,70 +451,64 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 	const float targetDelay = delaySamples;
 	const float gainSmoothCoeff = 0.9955f;
 
+	// Tukey taper: cosine fade over this many samples at chunk start/end
+	constexpr int kTaperSamples = 128;
+
 	for (int i = 0; i < numSamples; ++i)
 	{
-		reverseSmoothedDelay = reverseSmoothedDelay * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		revSmoothedDelay = revSmoothedDelay * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
 		smoothedInputGain  = smoothedInputGain  * gainSmoothCoeff + inputGain  * (1.0f - gainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * gainSmoothCoeff + outputGain * (1.0f - gainSmoothCoeff);
 		smoothedMix        = smoothedMix        * gainSmoothCoeff + mix        * (1.0f - gainSmoothCoeff);
 
-		const float chunkLen = juce::jmax (1.0f, reverseSmoothedDelay);
+		const float chunkLen = juce::jmax (1.0f, revSmoothedDelay);
 
-		// First-time init: seed both anchors and stagger head B by half a chunk
+		// First-time init
 		if (reverseNeedsInit)
 		{
-			reverseAnchorA  = writePos;
-			reverseAnchorB  = writePos;
-			reverseCounterA = 0.0f;
-			reverseCounterB = chunkLen * 0.5f;
+			reverseAnchor  = writePos;
+			reverseCounter = 0.0f;
 			reverseNeedsInit = false;
 		}
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 
-		// ---- Head A: read backwards from anchorA ----
-		const float normA = reverseCounterA / chunkLen;
-		float readPosA = (float) reverseAnchorA - reverseCounterA;
-		if (readPosA < 0.0f) readPosA += (float) delayBufferLength;
+		// Read backwards from anchor
+		float readPosF = (float) reverseAnchor - reverseCounter;
+		if (readPosF < 0.0f) readPosF += (float) delayBufferLength;
 
-		const int rA0 = ((int) readPosA) & wrapMask;
-		const int rA1 = (rA0 + 1) & wrapMask;
-		const float fracA = readPosA - std::floor (readPosA);
-		const float revLA = delayL[rA0] + fracA * (delayL[rA1] - delayL[rA0]);
-		const float revRA = delayR[rA0] + fracA * (delayR[rA1] - delayR[rA0]);
+		const int idx0  = ((int) readPosF) & wrapMask;
+		const int idxM1 = (idx0 - 1 + delayBufferLength) & wrapMask;
+		const int idx1  = (idx0 + 1) & wrapMask;
+		const int idx2  = (idx0 + 2) & wrapMask;
+		const float frac = readPosF - std::floor (readPosF);
 
-		// ---- Head B: read backwards from anchorB ----
-		const float normB = reverseCounterB / chunkLen;
-		float readPosB = (float) reverseAnchorB - reverseCounterB;
-		if (readPosB < 0.0f) readPosB += (float) delayBufferLength;
+		float revL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
+		float revR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
 
-		const int rB0 = ((int) readPosB) & wrapMask;
-		const int rB1 = (rB0 + 1) & wrapMask;
-		const float fracB = readPosB - std::floor (readPosB);
-		const float revLB = delayL[rB0] + fracB * (delayL[rB1] - delayL[rB0]);
-		const float revRB = delayR[rB0] + fracB * (delayR[rB1] - delayR[rB0]);
+		// Tukey cosine taper at chunk edges (max 25% of chunk per edge)
+		const int taperLen = juce::jmin (kTaperSamples, (int)(chunkLen * 0.25f));
+		if (taperLen > 0)
+		{
+			const float pos = reverseCounter;
+			const float remaining = chunkLen - pos;
+			const float taperF = (float) taperLen;
+			if (pos < taperF)
+			{
+				const float w = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * pos / taperF));
+				revL *= w;
+				revR *= w;
+			}
+			else if (remaining < taperF)
+			{
+				const float w = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * remaining / taperF));
+				revL *= w;
+				revR *= w;
+			}
+		}
 
-		// Hann crossfade: sin²(π·norm) per head, then normalise so weights
-		// always sum to exactly 1.0. Without normalisation, smoothing-induced
-		// phase drift between heads causes gainA+gainB > 1 → runaway energy.
-		const float pi = juce::MathConstants<float>::pi;
-		const float sinA = std::sin (pi * normA);
-		const float rawGainA = sinA * sinA;
-		const float sinB = std::sin (pi * normB);
-		const float rawGainB = sinB * sinB;
-		const float totalGain = juce::jmax (rawGainA + rawGainB, 0.001f);
-		const float gainA = rawGainA / totalGain;
-		const float gainB = rawGainB / totalGain;
-
-		float revL = revLA * gainA + revLB * gainB;
-		float revR = revRA * gainA + revRB * gainB;
-
-		revL = juce::jlimit (-2.0f, 2.0f, revL);
-		revR = juce::jlimit (-2.0f, 2.0f, revR);
-
-		// Write to delay buffer: input + reversed signal × feedback
-		// No extra compensation needed — normalised crossfade keeps energy parity with forward.
+		// Write to delay buffer: input + reversed signal x feedback
 		delayL[writePos] = inputL * smoothedInputGain + revL * feedback;
 		delayR[writePos] = inputR * smoothedInputGain + revR * feedback;
 
@@ -516,20 +519,12 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		// Advance write position
 		writePos = (writePos + 1) & wrapMask;
 
-		// Advance head A — reset anchor when chunk completes
-		reverseCounterA += 1.0f;
-		if (reverseCounterA >= chunkLen)
+		// Advance reverse counter; reset anchor when chunk completes
+		reverseCounter += 1.0f;
+		if (reverseCounter >= chunkLen)
 		{
-			reverseCounterA -= chunkLen;
-			reverseAnchorA = writePos;
-		}
-
-		// Advance head B — reset anchor when chunk completes
-		reverseCounterB += 1.0f;
-		if (reverseCounterB >= chunkLen)
-		{
-			reverseCounterB -= chunkLen;
-			reverseAnchorB = writePos;
+			reverseCounter = 0.0f;
+			reverseAnchor = writePos;
 		}
 	}
 
@@ -677,10 +672,9 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 	
 	// MIDI mode: glide speed depends on velocity (inverse proportional)
-	// vel 1 → max glide (~1s), vel 127 → min glide (~2ms)
-	// Coefficients computed as exp(-1 / (sampleRate * tau)), tau = settleTime / 5
-	// Manual/Sync: slow smoothing (~330ms) for smooth knob movement
-	float delaySmoothCoeff = 0.9997f;
+	// vel 1 -> max glide (~1s), vel 127 -> min glide (~2ms)
+	// Manual/Sync: tau-based smoothing (80ms) for smooth tape sweep
+	float delaySmoothCoeff = smoothCoeffFromTau (currentSampleRate, kDelaySmoothTauSeconds);
 	if (midiNoteActive)
 	{
 		const float vel = (float) lastMidiVelocity.load (std::memory_order_relaxed);

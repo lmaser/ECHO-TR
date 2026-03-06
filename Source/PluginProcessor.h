@@ -165,15 +165,16 @@ private:
 	float smoothedMix = 0.5f;
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
-	// Reverse delay state (anchor-based dual read with Hann crossfade)
-	// Two independent heads (A & B), offset by half a chunk. Each head reads
-	// backwards from an anchor point captured when its chunk restarted.
-	float reverseCounterA = 0.0f;      // sample counter within head A (0 → chunkLen)
-	float reverseCounterB = 0.0f;      // sample counter within head B (0 → chunkLen)
-	int   reverseAnchorA  = 0;         // writePos snapshot when head A's chunk started
-	int   reverseAnchorB  = 0;         // writePos snapshot when head B's chunk started
-	float reverseSmoothedDelay = 0.0f; // smoothed delay for reverse (independent of forward)
-	bool  reverseNeedsInit = true;     // first-call initialisation flag
+	// Single-buffer reverse delay state.
+	// One read head reads BACKWARDS through the main delay buffer.
+	// A Tukey cosine taper at chunk edges prevents clicks.
+	// EMA-smoothed delay determines chunk length → when delay changes,
+	// chunks end sooner/later → tape-speed pitch shift, same as forward.
+	int   reverseAnchor     = 0;      // writePos snapshot at chunk start
+	float reverseCounter    = 0.0f;   // position within chunk (0 → chunkLen)
+	float revSmoothedDelay  = 0.0f;   // EMA-smoothed delay for reverse (independent)
+	bool  reverseNeedsInit  = true;   // first-call initialisation flag
+
 
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
