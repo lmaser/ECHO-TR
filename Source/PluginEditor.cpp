@@ -1733,27 +1733,32 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     const auto scheme = activeScheme;
 
     // decide what suffix label should appear; we want *separate* text that
-    // is not part of the editable field. use the full nomenclature from the
-    // helpers (long form) rather than the previous abbreviations.
+    // is not part of the editable field. provide both long and short forms;
+    // the layout lambda will auto-switch to short when combined width overflows.
     juce::String suffix;
+    juce::String suffixShort;
     const bool isTimeSyncMode = (&s == &timeSlider && syncButton.getToggleState());
     if (&s == &timeSlider)
     {
         if (isTimeSyncMode)
         {
-            // No suffix in sync mode (divisions have no units)
             suffix = "";
+            suffixShort = "";
         }
         else
+        {
             suffix = " MS";
+            suffixShort = " MS";
+        }
     }
-    else if (&s == &feedbackSlider)  suffix = " % FEEDBACK";
-    else if (&s == &modeSlider)      suffix = " MODE";
-    else if (&s == &modSlider)       suffix = " X MOD";
-    else if (&s == &inputSlider)     suffix = " DB INPUT";
-    else if (&s == &outputSlider)    suffix = " DB OUTPUT";
-    else if (&s == &mixSlider)       suffix = " % MIX";
+    else if (&s == &feedbackSlider)  { suffix = " % FEEDBACK"; suffixShort = " % FBK"; }
+    else if (&s == &modeSlider)      { suffix = " MODE";       suffixShort = " MODE"; }
+    else if (&s == &modSlider)       { suffix = " X MOD";      suffixShort = " X"; }
+    else if (&s == &inputSlider)     { suffix = " DB INPUT";   suffixShort = " DB IN"; }
+    else if (&s == &outputSlider)    { suffix = " DB OUTPUT";  suffixShort = " DB OUT"; }
+    else if (&s == &mixSlider)       { suffix = " % MIX";      suffixShort = " % MIX"; }
     const juce::String suffixText = suffix.trimStart();
+    const juce::String suffixTextShort = suffixShort.trimStart();
     const bool isPercentPrompt = (&s == &feedbackSlider || &s == &mixSlider);
 
     // Sin texto de prompt: solo input + OK/Cancel
@@ -1897,14 +1902,55 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         suffixLabel->setFont (f);
         aw->addAndMakeVisible (suffixLabel);
 
-        layoutValueAndSuffix = [aw, te, suffixLabel, editorBaseBounds, isPercentPrompt]()
-        {
-            int labelW = stringWidth (suffixLabel->getFont(), suffixLabel->getText()) + 2;
-            auto er = te->getBounds();
+        // Compute the worst-case text width for this slider so the suffix
+        // full/short decision is STATIC (based on max possible input, not
+        // the current value).  Use a representative widest string per slider.
+        juce::String worstCaseText;
+        if (&s == &timeSlider)
+            worstCaseText = isTimeSyncMode ? "1/64T." : "10000.00";
+        else if (&s == &feedbackSlider)
+            worstCaseText = "200.00";
+        else if (&s == &modeSlider)
+            worstCaseText = "3";
+        else if (&s == &modSlider)
+            worstCaseText = "4.00";
+        else if (&s == &inputSlider)
+            worstCaseText = "-100.0";
+        else if (&s == &outputSlider)
+            worstCaseText = "-100.0";
+        else if (&s == &mixSlider)
+            worstCaseText = "100.00";
+        else
+            worstCaseText = "999.99";
 
+        const int maxInputTextW = juce::jmax (1, stringWidth (f, worstCaseText));
+
+        layoutValueAndSuffix = [aw, te, suffixLabel, editorBaseBounds, isPercentPrompt, suffixText, suffixTextShort, maxInputTextW]()
+        {
+            // Auto-switch to short suffix based on WORST-CASE input width
+            // (static decision — doesn't flicker as user types)
+            const int contentPad = kPromptInlineContentPadPx;
+            const int contentLeft = contentPad;
+            const int contentRight = (aw != nullptr ? aw->getWidth() - contentPad : editorBaseBounds.getRight());
+            const int availableW = contentRight - contentLeft;
+            const int contentCenter = (contentLeft + contentRight) / 2;
+
+            const int fullLabelW = stringWidth (suffixLabel->getFont(), suffixText) + 2;
+            const bool stickPercentFull = suffixText.containsChar ('%');
+            const int spaceWFull = stickPercentFull ? 0 : juce::jmax (2, stringWidth (suffixLabel->getFont(), " "));
+            const int worstCaseFullW = maxInputTextW + spaceWFull + fullLabelW;
+
+            const bool useShort = (worstCaseFullW > availableW) && suffixTextShort != suffixText;
+            const juce::String& activeSuffix = useShort ? suffixTextShort : suffixText;
+            suffixLabel->setText (activeSuffix, juce::dontSendNotification);
+
+            // Now lay out with current text width
             const auto txt = te->getText();
             const int textW = juce::jmax (1, stringWidth (te->getFont(), txt));
-            const bool stickPercentToValue = suffixLabel->getText().containsChar ('%');
+            int labelW = stringWidth (suffixLabel->getFont(), activeSuffix) + 2;
+            auto er = te->getBounds();
+
+            const bool stickPercentToValue = activeSuffix.containsChar ('%');
             const int spaceW = stickPercentToValue ? 0 : juce::jmax (2, stringWidth (te->getFont(), " "));
             const int minGapPx = juce::jmax (1, spaceW);
 
@@ -1916,11 +1962,6 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             er.setWidth (editorW);
 
             const int combinedW = textW + minGapPx + labelW;
-
-            const int contentPad = kPromptInlineContentPadPx;
-            const int contentLeft = contentPad;
-            const int contentRight = (aw != nullptr ? aw->getWidth() - contentPad : editorBaseBounds.getRight());
-            const int contentCenter = (contentLeft + contentRight) / 2;
 
             int blockLeft = contentCenter - (combinedW / 2);
             const int minBlockLeft = contentLeft;
@@ -2002,17 +2043,17 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         }
         else if (&s == &inputSlider)
         {
-            minVal = -96.0;
-            maxVal = 24.0;     // dB range
-            maxDecs = 2;
-            maxLen = 7; // "-96.00"
+            minVal = -100.0;
+            maxVal = 0.0;      // dB range: -inf to 0 dB
+            maxDecs = 1;
+            maxLen = 6; // "-100.0"
         }
         else if (&s == &outputSlider)
         {
-            minVal = -96.0;
-            maxVal = 24.0;     // dB range
-            maxDecs = 2;
-            maxLen = 7; // "-96.00"
+            minVal = -100.0;
+            maxVal = 24.0;     // dB range: -inf to +24 dB
+            maxDecs = 1;
+            maxLen = 6; // "-100.0"
         }
         else if (&s == &mixSlider)
         {
@@ -2957,6 +2998,8 @@ juce::String ECHOTRAudioProcessorEditor::getInputText() const
     const float db = (float) inputSlider.getValue();
     if (db <= kSilenceDb)
         return "-INF DB INPUT";
+    if (std::abs (db) < 0.05f)
+        return "0 DB INPUT";
     return juce::String (db, 1) + " DB INPUT";
 }
 
@@ -2965,6 +3008,8 @@ juce::String ECHOTRAudioProcessorEditor::getInputTextShort() const
     const float db = (float) inputSlider.getValue();
     if (db <= kSilenceDb)
         return "-INF IN";
+    if (std::abs (db) < 0.05f)
+        return "0 IN";
     return juce::String (db, 1) + " IN";
 }
 
@@ -2973,6 +3018,8 @@ juce::String ECHOTRAudioProcessorEditor::getOutputText() const
     const float db = (float) outputSlider.getValue();
     if (db <= kSilenceDb)
         return "-INF DB OUTPUT";
+    if (std::abs (db) < 0.05f)
+        return "0 DB OUTPUT";
     return juce::String (db, 1) + " DB OUTPUT";
 }
 
@@ -2981,6 +3028,8 @@ juce::String ECHOTRAudioProcessorEditor::getOutputTextShort() const
     const float db = (float) outputSlider.getValue();
     if (db <= kSilenceDb)
         return "-INF OUT";
+    if (std::abs (db) < 0.05f)
+        return "0 OUT";
     return juce::String (db, 1) + " OUT";
 }
 

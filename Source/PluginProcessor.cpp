@@ -733,6 +733,20 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float inputGain  = fastDecibelsToGain (inputGainDb);
 	const float outputGain = fastDecibelsToGain (outputGainDb);
 	targetFeedback = juce::jlimit (0.0f, kFeedbackMax, targetFeedback);
+
+	// Compress feedback coefficient above unity so the 100%–200% knob range
+	// maps to ~1.0–1.10 effective gain via a squared curve.  The square
+	// ensures slow, progressive growth near 100% (fine resolution for
+	// subtle sustain) accelerating towards 200% (warm self-oscillation).
+	// The tanh soft-clip in the delay loop adds warmth rather than hard clip.
+	//   effective = 1 + (raw - 1)² × kSelfOscDrive
+	// kSelfOscDrive = 0.10 → max effective coeff ≈ 1.10 at knob 200%.
+	if (targetFeedback > 1.0f)
+	{
+		constexpr float kSelfOscDrive = 0.10f;
+		const float excess = targetFeedback - 1.0f;  // 0..1 for 100%..200%
+		targetFeedback = 1.0f + (excess * excess) * kSelfOscDrive;
+	}
 	
 	// MOD frequency multiplier (pure arithmetic, no transcendentals)
 	float freqMultiplier;
@@ -978,7 +992,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamOutput, "Output",
-		juce::NormalisableRange<float> (kOutputMin, kOutputMax, 0.0f, 2.5f), kOutputDefault));
+		juce::NormalisableRange<float> (kOutputMin, kOutputMax, 0.0f, 3.23f), kOutputDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamMix, "Mix",

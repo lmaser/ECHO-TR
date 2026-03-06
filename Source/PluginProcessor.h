@@ -57,11 +57,11 @@ public:
 	static constexpr float kModDefault = 0.5f;
 
 	static constexpr float kInputMin = -100.0f;
-	static constexpr float kInputMax = 12.0f;
+	static constexpr float kInputMax = 0.0f;
 	static constexpr float kInputDefault = 0.0f;
 
 	static constexpr float kOutputMin = -100.0f;
-	static constexpr float kOutputMax = 12.0f;
+	static constexpr float kOutputMax = 24.0f;
 	static constexpr float kOutputDefault = 0.0f;
 
 	static constexpr float kMixMin = 0.0f;
