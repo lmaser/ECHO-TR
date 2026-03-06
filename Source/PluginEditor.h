@@ -315,6 +315,7 @@ private:
     bool refreshLegendTextCache();
     juce::Rectangle<int> getRowRepaintBounds (const juce::Slider& s) const;
     void applyActivePalette();
+    void applyCrtState (bool enabled);
 
     juce::Path cachedInfoGearPath;
     juce::Rectangle<float> cachedInfoGearHole;
@@ -363,7 +364,7 @@ private:
     int lastPersistedEditorH = -1;
     std::atomic<uint32_t> lastUserInteractionMs { 0 };
     static constexpr uint32_t kUserInteractionPersistWindowMs = 5000;
-    bool fxTailEnabled = false;
+    bool crtEnabled = false;
     bool useCustomPalette = false;
 
     // CRT post-process effect (Retro-Windows-Terminal shader on CPU)

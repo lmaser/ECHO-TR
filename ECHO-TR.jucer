@@ -12,6 +12,8 @@
       <FILE id="gRYiez" name="PluginEditor.cpp" compile="1" resource="0"
             file="Source/PluginEditor.cpp"/>
       <FILE id="wjx3Dw" name="PluginEditor.h" compile="0" resource="0" file="Source/PluginEditor.h"/>
+      <FILE id="crtFx01" name="CrtEffect.h" compile="0" resource="0" file="Source/CrtEffect.h"/>
+      <FILE id="prfTr01" name="PerfTrace.h" compile="0" resource="0" file="Source/PerfTrace.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

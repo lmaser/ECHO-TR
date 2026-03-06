@@ -23,6 +23,43 @@ namespace
 	// Enough inertia for smooth tape sweep, fast enough for musical response.
 	constexpr float kDelaySmoothTauSeconds = 0.08f;
 
+	// ---- Precomputed Tukey (raised-cosine) taper table for reverse mode ----
+	// Avoids per-sample std::cos() in the inner loop.
+	constexpr int kTaperTableSize = 129; // 128 samples + endpoint
+	struct TaperTable
+	{
+		float data[kTaperTableSize];
+		constexpr TaperTable() : data{}
+		{
+			// w(i) = 0.5 * (1 - cos(pi * i / 128))  for i in [0, 128]
+			for (int i = 0; i < kTaperTableSize; ++i)
+			{
+				const double t = 3.14159265358979323846 * static_cast<double>(i) / 128.0;
+				// Manual cosine via Taylor series (constexpr-safe, only need [0, pi])
+				// cos(t) = 1 - t^2/2! + t^4/4! - t^6/6! + t^8/8! - t^10/10!
+				const double t2 = t * t;
+				const double t4 = t2 * t2;
+				const double t6 = t4 * t2;
+				const double t8 = t6 * t2;
+				const double t10 = t8 * t2;
+				const double cosVal = 1.0 - t2/2.0 + t4/24.0 - t6/720.0 + t8/40320.0 - t10/3628800.0;
+				data[i] = static_cast<float>(0.5 * (1.0 - cosVal));
+			}
+		}
+	};
+	constexpr TaperTable kTaperTable {};
+
+	// Look up taper weight. pos = position within taper zone [0, taperLen].
+	// Uses linear interpolation between table entries.
+	inline float taperWeight (float pos, float taperLen) noexcept
+	{
+		const float norm = pos * (128.0f / taperLen); // map to [0, 128]
+		const int idx = static_cast<int>(norm);
+		if (idx >= 128) return 1.0f;
+		const float frac = norm - static_cast<float>(idx);
+		return kTaperTable.data[idx] + frac * (kTaperTable.data[idx + 1] - kTaperTable.data[idx]);
+	}
+
 	inline float loadAtomicOrDefault (std::atomic<float>* p, float def) noexcept
 	{
 		return p != nullptr ? p->load (std::memory_order_relaxed) : def;
@@ -47,6 +84,27 @@ namespace
 			const float norm = param->convertTo0to1 (plainValue);
 			param->setValueNotifyingHost (norm);
 		}
+	}
+
+	// ---- Fast dB-to-linear gain (avoids std::pow per block) ----
+	// Uses the identity: 10^(dB/20) = 2^(dB * log2(10)/20)
+	// log2(10)/20 = 0.16609640474
+	// std::exp2 is typically a single x87/SSE instruction.
+	inline float fastDecibelsToGain (float dB) noexcept
+	{
+		return (dB <= -100.0f) ? 0.0f : std::exp2 (dB * 0.16609640474f);
+	}
+
+	// ---- Soft-clip for feedback > 100% (self-oscillation range) ----
+	// Uses tanh saturation to keep the delay buffer bounded.
+	// When feedback <= 1.0 the signal stays in [-1,1] naturally so
+	// the branch avoids any cost in the normal range.
+	inline float feedbackSoftClip (float sample) noexcept
+	{
+		// Fast path: normal range, no saturation needed
+		if (sample >= -1.0f && sample <= 1.0f)
+			return sample;
+		return std::tanh (sample);
 	}
 }
 
@@ -81,7 +139,7 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
 	uiPaletteParam = apvts.getRawParameterValue (kParamUiPalette);
-	uiFxTailParam = apvts.getRawParameterValue (kParamUiFxTail);
+	uiCrtParam = apvts.getRawParameterValue (kParamUiCrt);
 	uiColorParams[0] = apvts.getRawParameterValue (kParamUiColor0);
 	uiColorParams[1] = apvts.getRawParameterValue (kParamUiColor1);
 
@@ -90,6 +148,9 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	const int h = loadIntParamOrDefault (uiHeightParam, 480);
 	uiEditorWidth.store (w, std::memory_order_relaxed);
 	uiEditorHeight.store (h, std::memory_order_relaxed);
+
+	// Performance tracing: auto-dump to Desktop on plugin unload
+	perfTrace.enableDesktopAutoDump();
 }
 
 ECHOTRAudioProcessor::~ECHOTRAudioProcessor()
@@ -164,8 +225,8 @@ double ECHOTRAudioProcessor::getTailLengthSeconds() const
 	if (feedback < 0.01f || delayMs < 0.5f)
 		return 0.5; // Minimum 0.5s tail for very low feedback
 	
-	if (feedback > 0.99f)
-		return 30.0; // Cap at 30 seconds for very high feedback (supports long sync delays)
+	if (feedback >= 1.0f)
+		return 30.0; // feedback >= 100% → infinite sustain / self-oscillation
 	
 	const double delaySeconds = delayMs / 1000.0;
 	const double numRepeatsTo60dB = std::log (0.001) / std::log (feedback);
@@ -206,6 +267,7 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 {
 	juce::ignoreUnused (samplesPerBlock);
 	currentSampleRate = sampleRate;
+	cachedDelaySmoothCoeff = smoothCoeffFromTau (sampleRate, kDelaySmoothTauSeconds);
 	
 	// Allocate delay buffer (power of 2 for bitwise wrap)
 	const int requestedSamples = (int) std::ceil (sampleRate * (kTimeMsMaxSync / 1000.0)) + 1024;
@@ -228,6 +290,7 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	// Reset reverse delay state
 	reverseAnchor     = 0;
 	reverseCounter    = 0.0f;
+	reverseChunkLen   = 0.0f;
 	revSmoothedDelay  = 0.0f;
 	reverseNeedsInit  = true;
 }
@@ -239,6 +302,7 @@ void ECHOTRAudioProcessor::releaseResources()
 	delayBufferWritePos = 0;
 	reverseAnchor     = 0;
 	reverseCounter    = 0.0f;
+	reverseChunkLen   = 0.0f;
 	revSmoothedDelay  = 0.0f;
 	reverseNeedsInit  = true;
 }
@@ -296,17 +360,17 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
-		const int idx0 = ((int) readPosF) & wrapMask;
-		const int idxM1 = (idx0 - 1 + delayBufferLength) & wrapMask;
+		const int idx0  = static_cast<int>(readPosF) & wrapMask;
+		const int idxM1 = (idx0 + wrapMask) & wrapMask;
 		const int idx1  = (idx0 + 1) & wrapMask;
 		const int idx2  = (idx0 + 2) & wrapMask;
-		const float frac = readPosF - std::floor (readPosF);
+		const float frac = readPosF - static_cast<float>(static_cast<int>(readPosF));
 		
 		if (channelL != nullptr)
 		{
 			const float inputL = channelL[i];
 			const float delayedL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
-			delayL[writePos] = inputL * smoothedInputGain + delayedL * feedback;
+			delayL[writePos] = feedbackSoftClip (inputL * smoothedInputGain + delayedL * feedback);
 			channelL[i] = (inputL * (1.0f - smoothedMix) + delayedL * smoothedMix) * smoothedOutputGain;
 		}
 		
@@ -314,7 +378,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 		{
 			const float inputR = channelR[i];
 			const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
-			delayR[writePos] = inputR * smoothedInputGain + delayedR * feedback;
+			delayR[writePos] = feedbackSoftClip (inputR * smoothedInputGain + delayedR * feedback);
 			channelR[i] = (inputR * (1.0f - smoothedMix) + delayedR * smoothedMix) * smoothedOutputGain;
 		}
 		
@@ -351,11 +415,11 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
-		const int idx0  = ((int) readPosF) & wrapMask;
-		const int idxM1 = (idx0 - 1 + delayBufferLength) & wrapMask;
+		const int idx0  = static_cast<int>(readPosF) & wrapMask;
+		const int idxM1 = (idx0 + wrapMask) & wrapMask;
 		const int idx1  = (idx0 + 1) & wrapMask;
 		const int idx2  = (idx0 + 2) & wrapMask;
-		const float frac = readPosF - std::floor (readPosF);
+		const float frac = readPosF - static_cast<float>(static_cast<int>(readPosF));
 		
 		const float delayed = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
 		
@@ -363,7 +427,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		const float inputR = channelR != nullptr ? channelR[i] : inputL;
 		const float inputMid = (inputL + inputR) * 0.5f;
 		
-		const float toWrite = inputMid * smoothedInputGain + delayed * feedback;
+		const float toWrite = feedbackSoftClip (inputMid * smoothedInputGain + delayed * feedback);
 		delayL[writePos] = toWrite;
 		delayR[writePos] = toWrite;
 		
@@ -404,11 +468,11 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
-		const int idx0  = ((int) readPosF) & wrapMask;
-		const int idxM1 = (idx0 - 1 + delayBufferLength) & wrapMask;
+		const int idx0  = static_cast<int>(readPosF) & wrapMask;
+		const int idxM1 = (idx0 + wrapMask) & wrapMask;
 		const int idx1  = (idx0 + 1) & wrapMask;
 		const int idx2  = (idx0 + 2) & wrapMask;
-		const float frac = readPosF - std::floor (readPosF);
+		const float frac = readPosF - static_cast<float>(static_cast<int>(readPosF));
 		
 		const float delayedL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
 		const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
@@ -417,8 +481,8 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 		const float inputMono = (inputL + inputR) * 0.5f;
 		
-		delayL[writePos] = inputMono * smoothedInputGain + delayedR * feedback;
-		delayR[writePos] = delayedL * feedback;
+		delayL[writePos] = feedbackSoftClip (inputMono * smoothedInputGain + delayedR * feedback);
+		delayR[writePos] = feedbackSoftClip (delayedL * feedback);
 		
 		if (channelL != nullptr) channelL[i] = (inputL * (1.0f - smoothedMix) + delayedL * smoothedMix) * smoothedOutputGain;
 		if (channelR != nullptr) channelR[i] = (inputR * (1.0f - smoothedMix) + delayedR * smoothedMix) * smoothedOutputGain;
@@ -435,9 +499,11 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 {
 	// Single-buffer reverse delay.
 	// ONE read head reads BACKWARDS through the main circular delay buffer.
-	// EMA-smoothed delay determines chunk length. When delay changes, chunks
-	// end sooner/later, producing tape-speed pitch shift (same as forward modes).
-	// Tukey cosine taper at chunk edges prevents clicks.
+	// Chunk length is LOCKED at chunk start from the EMA-smoothed delay.
+	// This prevents mid-chunk length changes that cause clicks when time
+	// drops quickly.  The EMA still runs every sample so the NEXT chunk
+	// picks up the new target smoothly.
+	// Tukey cosine taper at chunk edges prevents clicks at boundaries.
 
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -453,23 +519,29 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 	// Tukey taper: cosine fade over this many samples at chunk start/end
 	constexpr int kTaperSamples = 128;
+	// Minimum chunk length — must be small enough that reverse mode covers
+	// the same MIDI note range as forward mode.  4 samples ≈ 12 kHz @ 48 kHz
+	// (MIDI note ≈ 120), well above any practical musical pitch.
+	constexpr float kMinChunkLen = 4.0f;
 
 	for (int i = 0; i < numSamples; ++i)
 	{
+		// EMA runs every sample — always tracks target, even mid-chunk
 		revSmoothedDelay = revSmoothedDelay * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
 		smoothedInputGain  = smoothedInputGain  * gainSmoothCoeff + inputGain  * (1.0f - gainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * gainSmoothCoeff + outputGain * (1.0f - gainSmoothCoeff);
 		smoothedMix        = smoothedMix        * gainSmoothCoeff + mix        * (1.0f - gainSmoothCoeff);
 
-		const float chunkLen = juce::jmax (1.0f, revSmoothedDelay);
-
-		// First-time init
+		// ── Chunk init / boundary ──
 		if (reverseNeedsInit)
 		{
-			reverseAnchor  = writePos;
-			reverseCounter = 0.0f;
+			reverseAnchor    = writePos;
+			reverseCounter   = 0.0f;
+			reverseChunkLen  = juce::jmax (kMinChunkLen, revSmoothedDelay);
 			reverseNeedsInit = false;
 		}
+
+		const float chunkLen = reverseChunkLen;  // locked for this chunk
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
@@ -478,39 +550,41 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		float readPosF = (float) reverseAnchor - reverseCounter;
 		if (readPosF < 0.0f) readPosF += (float) delayBufferLength;
 
-		const int idx0  = ((int) readPosF) & wrapMask;
-		const int idxM1 = (idx0 - 1 + delayBufferLength) & wrapMask;
+		const int idx0  = static_cast<int>(readPosF) & wrapMask;
+		const int idxM1 = (idx0 + wrapMask) & wrapMask;
 		const int idx1  = (idx0 + 1) & wrapMask;
 		const int idx2  = (idx0 + 2) & wrapMask;
-		const float frac = readPosF - std::floor (readPosF);
+		const float frac = readPosF - static_cast<float>(static_cast<int>(readPosF));
 
 		float revL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
 		float revR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
 
-		// Tukey cosine taper at chunk edges (max 25% of chunk per edge)
-		const int taperLen = juce::jmin (kTaperSamples, (int)(chunkLen * 0.25f));
-		if (taperLen > 0)
+		// Tukey cosine taper at chunk edges
+		// Taper length adapts to chunk size: 25 % per edge, capped so both
+		// fade-in and fade-out fit inside the chunk (≤ 50 % total).
+		const int halfChunk = static_cast<int>(chunkLen * 0.5f);
+		const int taperLen = juce::jmin (halfChunk, juce::jmax (1, juce::jmin (kTaperSamples, static_cast<int>(chunkLen * 0.25f))));
 		{
 			const float pos = reverseCounter;
 			const float remaining = chunkLen - pos;
-			const float taperF = (float) taperLen;
+			const float taperF = static_cast<float>(taperLen);
 			if (pos < taperF)
 			{
-				const float w = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * pos / taperF));
+				const float w = taperWeight (pos, taperF);
 				revL *= w;
 				revR *= w;
 			}
 			else if (remaining < taperF)
 			{
-				const float w = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * remaining / taperF));
+				const float w = taperWeight (remaining, taperF);
 				revL *= w;
 				revR *= w;
 			}
 		}
 
-		// Write to delay buffer: input + reversed signal x feedback
-		delayL[writePos] = inputL * smoothedInputGain + revL * feedback;
-		delayR[writePos] = inputR * smoothedInputGain + revR * feedback;
+		// Write to delay buffer: input + reversed signal × feedback
+		delayL[writePos] = feedbackSoftClip (inputL * smoothedInputGain + revL * feedback);
+		delayR[writePos] = feedbackSoftClip (inputR * smoothedInputGain + revR * feedback);
 
 		// Output: dry/wet mix
 		if (channelL != nullptr) channelL[i] = (inputL * (1.0f - smoothedMix) + revL * smoothedMix) * smoothedOutputGain;
@@ -519,12 +593,26 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		// Advance write position
 		writePos = (writePos + 1) & wrapMask;
 
-		// Advance reverse counter; reset anchor when chunk completes
+		// Advance reverse counter; start new chunk when done.
+		// When MIDI glide is active the smoothed delay can diverge
+		// significantly from the locked chunk length.  To make the
+		// pitch glide feel as continuous as in forward mode, force an
+		// early chunk boundary once the EMA has moved far enough from
+		// the current chunk length (> 20 % ratio change).  The taper
+		// fade-out at chunk end ensures this stays click-free.
 		reverseCounter += 1.0f;
-		if (reverseCounter >= chunkLen)
+		const float smoothedNow = juce::jmax (kMinChunkLen, revSmoothedDelay);
+		const float ratio = (smoothedNow > chunkLen)
+		                   ? (smoothedNow / chunkLen)
+		                   : (chunkLen / smoothedNow);
+		const bool chunkDone   = reverseCounter >= chunkLen;
+		const bool glideCutoff = (ratio > 1.08f) && (reverseCounter >= kMinChunkLen);
+		if (chunkDone || glideCutoff)
 		{
-			reverseCounter = 0.0f;
-			reverseAnchor = writePos;
+			reverseCounter  = 0.0f;
+			reverseAnchor   = writePos;
+			// Lock NEW chunk length from current smoothed delay
+			reverseChunkLen = smoothedNow;
 		}
 	}
 
@@ -534,21 +622,21 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
+	PERF_BLOCK_BEGIN();
 
 	const int numChannels = juce::jmin (buffer.getNumChannels(), 2);
 	const int numSamples = buffer.getNumSamples();
 	
-	// Process MIDI messages for note tracking
+	// ── MIDI note tracking (skip iteration entirely when MIDI disabled) ──
 	const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
-	const int selectedMidiChannel = midiChannel.load (std::memory_order_relaxed);
 	
-	if (midiEnabled)
+	if (midiEnabled && ! midiMessages.isEmpty())
 	{
+		const int selectedMidiChannel = midiChannel.load (std::memory_order_relaxed);
 		for (const auto metadata : midiMessages)
 		{
 			const auto msg = metadata.getMessage();
 			
-			// Filter by MIDI channel (0 = omni, 1-16 = specific channel)
 			if (selectedMidiChannel > 0 && msg.getChannel() != selectedMidiChannel)
 				continue;
 			
@@ -557,7 +645,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				const int noteNumber = msg.getNoteNumber();
 				lastMidiNote.store (noteNumber, std::memory_order_relaxed);
 				lastMidiVelocity.store (msg.getVelocity(), std::memory_order_relaxed);
-				const float frequency = 440.0f * std::pow (2.0f, (noteNumber - 69) / 12.0f);
+				// MIDI note → frequency via std::exp2 (avoids std::pow per noteOn)
+				const float frequency = 440.0f * std::exp2 ((noteNumber - 69) * (1.0f / 12.0f));
 				currentMidiFrequency.store (frequency, std::memory_order_relaxed);
 			}
 			else if (msg.isNoteOff())
@@ -567,8 +656,6 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					lastMidiNote.store (-1, std::memory_order_relaxed);
 					currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
 					
-					// Snap delay smoothing to current target to prevent read-head
-					// sweep through stale buffer data after MIDI note release
 					const float fallbackMs = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
 					const float fallbackSamples = (float) currentSampleRate * (fallbackMs / 1000.0f);
 					smoothedDelaySamples = juce::jlimit (0.0f, (float) (delayBufferLength - 2), fallbackSamples);
@@ -576,24 +663,32 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			}
 		}
 	}
-	else
+	else if (! midiEnabled)
 	{
-		lastMidiNote.store (-1, std::memory_order_relaxed);
-		currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+		// Only reset if MIDI was just disabled (avoids 2 atomic stores per block)
+		if (lastMidiNote.load (std::memory_order_relaxed) >= 0)
+		{
+			lastMidiNote.store (-1, std::memory_order_relaxed);
+			currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+		}
 	}
 
 	for (int i = numChannels; i < buffer.getNumChannels(); ++i)
 		buffer.clear (i, 0, numSamples);
 
 	if (delayBufferLength == 0 || currentSampleRate <= 0.0)
+	{
+		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 		return;
+	}
 
+	// ── Read parameters (grouped loads) ──
 	const bool reverseEnabled = loadBoolParamOrDefault (reverseParam, false);
-	const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
-	const bool midiNoteActive = midiEnabled && (lastMidiNote.load (std::memory_order_relaxed) >= 0);
-	const float timeMsValue = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
-	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
-	const int mode = loadIntParamOrDefault (modeParam, 1);
+	const bool syncEnabled    = loadBoolParamOrDefault (syncParam, false);
+	const int  midiNote       = lastMidiNote.load (std::memory_order_relaxed);
+	const bool midiNoteActive = midiEnabled && (midiNote >= 0);
+	const float timeMsValue   = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
+	const int   mode          = loadIntParamOrDefault (modeParam, 1);
 	
 	float targetDelayMs = timeMsValue;
 	
@@ -606,8 +701,10 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 	else if (syncEnabled)
 	{
-		auto posInfo = getPlayHead();
+		// getPlayHead() only called when sync is actually enabled
+		const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
 		double bpm = 120.0;
+		auto posInfo = getPlayHead();
 		if (posInfo != nullptr)
 		{
 			auto pos = posInfo->getPosition();
@@ -617,33 +714,32 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		targetDelayMs = tempoSyncToMs (timeSyncValue, bpm);
 	}
 	
-	// Clamp delay time to valid range (different limits for manual vs sync mode)
 	const float maxAllowedDelayMs = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
 	targetDelayMs = juce::jlimit (0.0f, maxAllowedDelayMs, targetDelayMs);
 	
-	float targetFeedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
-	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);
+	float targetFeedback    = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
 	const float inputGainDb = loadAtomicOrDefault (inputParam, kInputDefault);
-	const float outputGainDb = loadAtomicOrDefault (outputParam, kOutputDefault);
-	const float mixValue = loadAtomicOrDefault (mixParam, kMixDefault);
-	const float modValue = loadAtomicOrDefault (modParam, kModDefault);
+	const float outputGainDb= loadAtomicOrDefault (outputParam, kOutputDefault);
+	const float mixValue    = loadAtomicOrDefault (mixParam, kMixDefault);
+	const float modValue    = loadAtomicOrDefault (modParam, kModDefault);
 	
-	const float inputGain = juce::Decibels::decibelsToGain (inputGainDb);
-	const float outputGain = juce::Decibels::decibelsToGain (outputGainDb);
-	targetFeedback = juce::jlimit (0.0f, 0.99f, targetFeedback);
+	// Fast dB→linear (std::exp2 instead of std::pow via Decibels::decibelsToGain)
+	const float inputGain  = fastDecibelsToGain (inputGainDb);
+	const float outputGain = fastDecibelsToGain (outputGainDb);
+	targetFeedback = juce::jlimit (0.0f, kFeedbackMax, targetFeedback);
 	
-	// Auto feedback: quadratic curve (x^2) + octave-based multiplier (base 1.25)
-	if (autoFbkEnabled && targetFeedback > 0.001f && targetDelayMs > 1.0f)
+	// Auto feedback: only compute when feedback < 100% (self-oscillation range is manual)
+	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);
+	if (autoFbkEnabled && targetFeedback > 0.001f && targetFeedback < 1.0f && targetDelayMs > 1.0f)
 	{
-		const float exponentialFeedback = std::pow (targetFeedback, 2.0f);
+		const float exponentialFeedback = targetFeedback * targetFeedback;
 		const float referenceDelay = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
 		const float octavesFromMax = std::log2 (referenceDelay / targetDelayMs);
-		const float autoFbkMultiplier = std::pow (1.25f, octavesFromMax);
+		const float autoFbkMultiplier = std::exp2 (octavesFromMax * 0.32192809489f);
 		targetFeedback = juce::jmin (0.99f, exponentialFeedback * autoFbkMultiplier);
 	}
 	
-	// Calculate frequency multiplier from MOD (pitch bend effect)
-	// MOD: frequency multiplier (0=÷4, 0.5=×1, 1.0=×4)
+	// MOD frequency multiplier (pure arithmetic, no transcendentals)
 	float freqMultiplier;
 	if (modValue < 0.5f)
 		freqMultiplier = 0.25f + (modValue * 1.5f);
@@ -668,27 +764,40 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			}
 		}
 		smoothedDelaySamples = 0.0f;
+		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 		return;
 	}
 	
-	// MIDI mode: glide speed depends on velocity (inverse proportional)
-	// vel 1 -> max glide (~1s), vel 127 -> min glide (~2ms)
-	// Manual/Sync: tau-based smoothing (80ms) for smooth tape sweep
-	float delaySmoothCoeff = smoothCoeffFromTau (currentSampleRate, kDelaySmoothTauSeconds);
+	// Delay smoothing coefficient (cached; only recompute for MIDI glide)
+	float delaySmoothCoeff = cachedDelaySmoothCoeff;
 	if (midiNoteActive)
 	{
 		const float vel = (float) lastMidiVelocity.load (std::memory_order_relaxed);
-		const float t = juce::jlimit (0.0f, 1.0f, (vel - 1.0f) / 126.0f); // 0=vel1, 1=vel127
-		// tau for vel1 = 1.0/5 = 0.2s, tau for vel127 = 0.002/5 = 0.0004s
-		const float tau = 0.2f - t * (0.2f - 0.0004f);
+		const float tLin = juce::jlimit (0.0f, 1.0f, (vel - 1.0f) / 126.0f);
+		// Fifth-root curve: compresses the fast zone aggressively so the vast
+		// majority of the velocity range (≈60-127) feels nearly instant, while
+		// only very low velocities produce audible portamento.
+		//   tau_max = 300 ms (vel 1)  → 95 % reached in ~900 ms
+		//   tau_min = 0.4 ms (vel 127) → essentially instant
+		constexpr float kTauMax = 0.30f;   // 300 ms — long portamento at low vel
+		constexpr float kTauMin = 0.0004f; // 0.4 ms
+		const float t = std::pow (tLin, 0.2f);  // fifth root
+		const float tau = kTauMax - t * (kTauMax - kTauMin);
 		delaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
 	}
+	
+	// Snap gain/mix smoothers to target when close enough (avoids useless EMA in steady state)
+	constexpr float kSnapEpsilon = 1e-5f;
+	if (std::abs (smoothedInputGain  - inputGain)  < kSnapEpsilon) smoothedInputGain  = inputGain;
+	if (std::abs (smoothedOutputGain - outputGain) < kSnapEpsilon) smoothedOutputGain = outputGain;
+	if (std::abs (smoothedMix        - mixValue)   < kSnapEpsilon) smoothedMix        = mixValue;
 	
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
 	if (reverseEnabled)
 	{
 		processReverseDelay (buffer, numSamples, numChannels, delaySamples,
 		                     targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 		return;
 	}
 
@@ -707,6 +816,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		processStereoDelay (buffer, numSamples, numChannels, delaySamples,
 		                    targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
+
+	PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 }
 
 //==============================================================================
@@ -850,7 +961,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiHeight, "UI Height", 240, 1200, 480));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiPalette, "UI Palette", false));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiFxTail, "UI FX Tail", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiCrt, "UI CRT", false));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor0, "UI Color 0", 0, 0xFFFFFF, 0xFFFFFF));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor1, "UI Color 1", 0, 0xFFFFFF, 0x000000));
 	// Legacy params kept for backward compatibility with saved presets
@@ -913,22 +1024,22 @@ bool ECHOTRAudioProcessor::getUiUseCustomPalette() const noexcept
 	return uiUseCustomPalette.load (std::memory_order_relaxed) != 0;
 }
 
-void ECHOTRAudioProcessor::setUiFxTailEnabled (bool shouldEnableFxTail)
+void ECHOTRAudioProcessor::setUiCrtEnabled (bool enabled)
 {
-	uiFxTailEnabled.store (shouldEnableFxTail ? 1 : 0, std::memory_order_relaxed);
-	apvts.state.setProperty (UiStateKeys::fxTailEnabled, shouldEnableFxTail, nullptr);
-	setParameterPlainValue (apvts, kParamUiFxTail, shouldEnableFxTail ? 1.0f : 0.0f);
+	uiCrtEnabled.store (enabled ? 1 : 0, std::memory_order_relaxed);
+	apvts.state.setProperty (UiStateKeys::crtEnabled, enabled, nullptr);
+	setParameterPlainValue (apvts, kParamUiCrt, enabled ? 1.0f : 0.0f);
 	updateHostDisplay();
 }
 
-bool ECHOTRAudioProcessor::getUiFxTailEnabled() const noexcept
+bool ECHOTRAudioProcessor::getUiCrtEnabled() const noexcept
 {
-	const auto fromState = apvts.state.getProperty (UiStateKeys::fxTailEnabled);
+	const auto fromState = apvts.state.getProperty (UiStateKeys::crtEnabled);
 	if (! fromState.isVoid())
 		return (bool) fromState;
-	if (uiFxTailParam != nullptr)
-		return uiFxTailParam->load (std::memory_order_relaxed) > 0.5f;
-	return uiFxTailEnabled.load (std::memory_order_relaxed) != 0;
+	if (uiCrtParam != nullptr)
+		return uiCrtParam->load (std::memory_order_relaxed) > 0.5f;
+	return uiCrtEnabled.load (std::memory_order_relaxed) != 0;
 }
 
 void ECHOTRAudioProcessor::setMidiChannel (int channel)

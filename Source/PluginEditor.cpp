@@ -111,12 +111,54 @@ namespace UiStateKeys
     constexpr const char* editorWidth = "uiEditorWidth";
     constexpr const char* editorHeight = "uiEditorHeight";
     constexpr const char* useCustomPalette = "uiUseCustomPalette";
-    constexpr const char* fxTailEnabled = "uiFxTailEnabled";
+    constexpr const char* crtEnabled = "uiFxTailEnabled";  // string kept for preset compat
     constexpr std::array<const char*, 2> customPalette {
         "uiCustomPalette0",
         "uiCustomPalette1"
     };
 }
+
+// ── Timer & display constants ──
+static constexpr int   kCrtTimerHz   = 10;
+static constexpr int   kIdleTimerHz  = 4;
+static constexpr float kSilenceDb    = -80.0f;
+static constexpr float kMultEpsilon  = 0.01f;
+
+// ── Mod slider ↔ multiplier conversion ──
+static constexpr double kModCenter  = 0.5;
+static constexpr double kModScale   = 3.0;
+static constexpr double kModMaxMult = 4.0;
+static constexpr double kModMinMult = 0.25;
+
+static double modSliderToMultiplier (double v)
+{
+    if (v < kModCenter)
+        return 1.0 / (kModMaxMult - kModScale * (v / kModCenter));
+    return 1.0 + kModScale * ((v - kModCenter) / kModCenter);
+}
+
+static double multiplierToModSlider (double mult)
+{
+    mult = juce::jlimit (kModMinMult, kModMaxMult, mult);
+    if (mult < 1.0)
+        return (kModMaxMult - 1.0 / mult) * kModCenter / kModScale;
+    return kModCenter + (mult - 1.0) * kModCenter / kModScale;
+}
+
+// ── MIDI channel tooltip ──
+static juce::String formatMidiChannelTooltip (int ch)
+{
+    return "CHANNEL " + juce::String (ch);
+}
+
+// ── Parameter listener IDs (shared by ctor + dtor) ──
+static constexpr std::array<const char*, 5> kUiMirrorParamIds {
+    ECHOTRAudioProcessor::kParamSync,
+    ECHOTRAudioProcessor::kParamUiPalette,
+    ECHOTRAudioProcessor::kParamUiCrt,
+    ECHOTRAudioProcessor::kParamUiColor0,
+    ECHOTRAudioProcessor::kParamUiColor1
+};
 
 static void dismissEditorOwnedModalPrompts (juce::LookAndFeel& editorLookAndFeel)
 {
@@ -564,7 +606,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     const std::array<BarSlider*, 7> barSliders { &timeSlider, &feedbackSlider, &modeSlider, &modSlider, &inputSlider, &outputSlider, &mixSlider };
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
-    fxTailEnabled = audioProcessor.getUiFxTailEnabled();
+    crtEnabled = audioProcessor.getUiCrtEnabled();
 
     for (int i = 0; i < 2; ++i)
         customPalette[(size_t) i] = audioProcessor.getUiCustomPaletteColour (i);
@@ -589,8 +631,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 
     resizerCorner = std::make_unique<juce::ResizableCornerComponent> (this, &resizeConstrainer);
     addAndMakeVisible (*resizerCorner);
-    if (resizerCorner != nullptr)
-        resizerCorner->addMouseListener (this, true);
+    resizerCorner->addMouseListener (this, true);
 
     addAndMakeVisible (promptOverlay);
     promptOverlay.setInterceptsMouseClicks (true, true);
@@ -631,17 +672,17 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     addAndMakeVisible (midiButton);
     addAndMakeVisible (reverseButton);
 
-    // Initialize MIDI channel display
+    // MIDI channel tooltip overlay — invisible label positioned over the MIDI legend.
+    // Provides tooltip on hover; clicks forwarded to editor via addMouseListener.
     const int savedChannel = audioProcessor.getMidiChannel();
-    midiChannelDisplay.setText (juce::String (savedChannel), juce::dontSendNotification);
-    midiChannelDisplay.setJustificationType (juce::Justification::centred);
+    midiChannelDisplay.setText ("", juce::dontSendNotification);
     midiChannelDisplay.setInterceptsMouseClicks (true, false);
     midiChannelDisplay.addMouseListener (this, false);
-    midiChannelDisplay.setTooltip (savedChannel == 0 ? juce::String ("CH 0 (Omni)") : juce::String ("CH " + juce::String (savedChannel)));
-    midiChannelDisplay.setBorderSize (juce::BorderSize<int> (0));
+    midiChannelDisplay.setTooltip (formatMidiChannelTooltip (savedChannel));
     midiChannelDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
     midiChannelDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
-    addChildComponent (midiChannelDisplay);
+    midiChannelDisplay.setOpaque (false);
+    addAndMakeVisible (midiChannelDisplay);
 
     auto bindSlider = [&] (std::unique_ptr<SliderAttachment>& attachment,
                            const char* paramId,
@@ -671,9 +712,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindSlider (outputAttachment, ECHOTRAudioProcessor::kParamOutput, outputSlider, kDefaultOutput);
     bindSlider (mixAttachment, ECHOTRAudioProcessor::kParamMix, mixSlider, kDefaultMix);
 
-    // Disable numeric popup for MODE and MOD (slider-only operation)
+    // Disable numeric popup for MODE (slider-only operation)
     modeSlider.setAllowNumericPopup (false);
-    modSlider.setAllowNumericPopup (false);
 
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
                            const char* paramId,
@@ -687,13 +727,6 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindButton (midiAttachment, ECHOTRAudioProcessor::kParamMidi, midiButton);
     bindButton (reverseAttachment, ECHOTRAudioProcessor::kParamReverse, reverseButton);
 
-    static constexpr std::array<const char*, 5> kUiMirrorParamIds {
-        ECHOTRAudioProcessor::kParamSync,        // Listen for sync mode changes
-        ECHOTRAudioProcessor::kParamUiPalette,
-        ECHOTRAudioProcessor::kParamUiFxTail,
-        ECHOTRAudioProcessor::kParamUiColor0,
-        ECHOTRAudioProcessor::kParamUiColor1
-    };
     for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.addParameterListener (paramId, this);
 
@@ -721,11 +754,10 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         safeThis->applyPersistedUiStateFromProcessor (true, true);
     });
 
-    startTimerHz (10);
-
-    // CRT post-process effect (Retro-Windows-Terminal shader on CPU)
-    crtEffect.setEnabled (fxTailEnabled);
-    setComponentEffect (&crtEffect);
+    // CRT post-process effect — only attach the ImageEffectFilter when
+    // actually enabled.  When disabled, skipping setComponentEffect avoids a
+    // redundant full-image blit (drawImageAt) on every repaint.
+    applyCrtState (crtEnabled);
 
     refreshLegendTextCache();
     resized();  // Ensure correct initial layout (MIDI port visibility, etc.)
@@ -736,18 +768,11 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     setComponentEffect (nullptr);
     stopTimer();
 
-    static constexpr std::array<const char*, 5> kUiMirrorParamIds {
-        ECHOTRAudioProcessor::kParamSync,
-        ECHOTRAudioProcessor::kParamUiPalette,
-        ECHOTRAudioProcessor::kParamUiFxTail,
-        ECHOTRAudioProcessor::kParamUiColor0,
-        ECHOTRAudioProcessor::kParamUiColor1
-    };
     for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.removeParameterListener (paramId, this);
 
     audioProcessor.setUiUseCustomPalette (useCustomPalette);
-    audioProcessor.setUiFxTailEnabled (fxTailEnabled);
+    audioProcessor.setUiCrtEnabled (crtEnabled);
 
     dismissEditorOwnedModalPrompts (lnf);
     setPromptOverlayActive (false);
@@ -775,8 +800,16 @@ void ECHOTRAudioProcessorEditor::applyActivePalette()
     activeScheme = scheme;
     lnf.setScheme (activeScheme);
     
-    // Apply text color to MIDI channel display
-    midiChannelDisplay.setColour (juce::Label::textColourId, scheme.text);
+    // (midiChannelDisplay is now a transparent tooltip overlay — no text colour needed)
+}
+
+void ECHOTRAudioProcessorEditor::applyCrtState (bool enabled)
+{
+    crtEnabled = enabled;
+    crtEffect.setEnabled (crtEnabled);
+    setComponentEffect (crtEnabled ? &crtEffect : nullptr);
+    stopTimer();
+    startTimerHz (crtEnabled ? kCrtTimerHz : kIdleTimerHz);
 }
 
 void ECHOTRAudioProcessorEditor::applyLabelTextColour (juce::Label& label, juce::Colour colour)
@@ -890,7 +923,7 @@ void ECHOTRAudioProcessorEditor::parameterChanged (const juce::String& parameter
                          || parameterID == ECHOTRAudioProcessor::kParamUiHeight;
 
     const bool isUiVisualParam = parameterID == ECHOTRAudioProcessor::kParamUiPalette
-                             || parameterID == ECHOTRAudioProcessor::kParamUiFxTail
+                             || parameterID == ECHOTRAudioProcessor::kParamUiCrt
                              || parameterID == ECHOTRAudioProcessor::kParamUiColor0
                              || parameterID == ECHOTRAudioProcessor::kParamUiColor1;
 
@@ -922,7 +955,8 @@ void ECHOTRAudioProcessorEditor::timerCallback()
         cachedMidiDisplay = newMidiDisplay;
         cachedTimeSliderHeld = timeSliderHeld;
         refreshLegendTextCache();
-        repaint();
+        // Only repaint the time slider row, not the entire window
+        repaint (getRowRepaintBounds (timeSlider));
     }
 
     const int w = getWidth();
@@ -940,7 +974,7 @@ void ECHOTRAudioProcessorEditor::timerCallback()
     }
 
     // ── CRT animation (advance time for ImageEffectFilter shader) ──
-    if (fxTailEnabled && w > 0 && h > 0)
+    if (crtEnabled && w > 0 && h > 0)
     {
         crtTime += 0.1f;              // ~10 Hz tick
         crtEffect.setTime (crtTime);
@@ -977,19 +1011,16 @@ void ECHOTRAudioProcessorEditor::applyPersistedUiStateFromProcessor (bool applyS
         }
 
         const bool targetUseCustomPalette = audioProcessor.getUiUseCustomPalette();
-        const bool targetFxTailEnabled = audioProcessor.getUiFxTailEnabled();
+        const bool targetCrtEnabled = audioProcessor.getUiCrtEnabled();
 
         const bool paletteSwitchChanged = (useCustomPalette != targetUseCustomPalette);
-        const bool fxChanged = (fxTailEnabled != targetFxTailEnabled);
+        const bool fxChanged = (crtEnabled != targetCrtEnabled);
 
         if (paletteSwitchChanged)
             useCustomPalette = targetUseCustomPalette;
 
         if (fxChanged)
-        {
-            fxTailEnabled = targetFxTailEnabled;
-            crtEffect.setEnabled (fxTailEnabled);
-        }
+            applyCrtState (targetCrtEnabled);
 
         if (paletteChanged || paletteSwitchChanged)
             applyActivePalette();
@@ -1444,7 +1475,7 @@ static void preparePromptTextEditor (juce::AlertWindow& aw,
                                      juce::Colour accent,
                                      juce::Font baseFont,
                                      bool widenAndCenter,
-                                     int minTop = 6)
+                                     int minTop = kPromptEditorMinTopPx)
 {
     if (auto* te = aw.getTextEditor (editorId))
     {
@@ -1718,12 +1749,12 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     }
     else if (&s == &feedbackSlider)  suffix = " % FEEDBACK";
     else if (&s == &modeSlider)      suffix = " MODE";
-    else if (&s == &modSlider)       suffix = " % MOD";
+    else if (&s == &modSlider)       suffix = " X MOD";
     else if (&s == &inputSlider)     suffix = " DB INPUT";
     else if (&s == &outputSlider)    suffix = " DB OUTPUT";
     else if (&s == &mixSlider)       suffix = " % MIX";
     const juce::String suffixText = suffix.trimStart();
-    const bool isPercentPrompt = (&s == &feedbackSlider || &s == &modSlider || &s == &mixSlider);
+    const bool isPercentPrompt = (&s == &feedbackSlider || &s == &mixSlider);
 
     // Sin texto de prompt: solo input + OK/Cancel
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
@@ -1731,8 +1762,17 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     // enforce our custom look&feel; hosts often reset dialogs to their own LNF
     aw->setLookAndFeel (&lnf);
 
-    const auto current = s.getTextFromValue (s.getValue());
-    aw->addTextEditor ("val", current, juce::String()); // sin label
+    // For MOD, show the multiplier value instead of raw slider %
+    juce::String currentDisplay;
+    if (&s == &modSlider)
+    {
+        currentDisplay = juce::String (modSliderToMultiplier (s.getValue()), 2);
+    }
+    else
+    {
+        currentDisplay = s.getTextFromValue (s.getValue());
+    }
+    aw->addTextEditor ("val", currentDisplay, juce::String()); // sin label
 
     // we will create a label just to the right of the editor showing the suffix
     juce::Label* suffixLabel = nullptr;
@@ -1843,8 +1883,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
         // ensure the editor is tall enough to contain the larger text
         auto r = te->getBounds();
-        r.setHeight ((int) (f.getHeight() * 1.4f) + 6);
-        r.setY (juce::jmax (6, r.getY() - 8));
+        r.setHeight ((int) (f.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
+        r.setY (juce::jmax (kPromptEditorMinTopPx, r.getY() - kPromptEditorRaiseYPx));
         editorBaseBounds = r;
 
         // create & position the suffix label; it's non-editable and won't
@@ -1942,9 +1982,9 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         else if (&s == &feedbackSlider)
         {
             minVal = 0.0;
-            maxVal = 100.0;    // user types percent
+            maxVal = 200.0;    // user types percent (up to 200% for self-oscillation)
             maxDecs = 2;
-            maxLen = 6; // "100.00"
+            maxLen = 6; // "200.00"
         }
         else if (&s == &modeSlider)
         {
@@ -1956,9 +1996,9 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         else if (&s == &modSlider)
         {
             minVal = 0.0;
-            maxVal = 100.0;    // user types percent
+            maxVal = 4.0;      // user types multiplier (x0.25 to x4)
             maxDecs = 2;
-            maxLen = 6; // "100.00"
+            maxLen = 4; // "4.00"
         }
         else if (&s == &inputSlider)
         {
@@ -1982,7 +2022,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             maxLen = 6; // "100.00"
         }
 
-        bool isPercent = (&s == &feedbackSlider || &s == &modSlider || &s == &mixSlider);
+        bool isPercent = (&s == &feedbackSlider || &s == &mixSlider);
         
         // Use special filter for time slider in sync mode
         if (&s == &timeSlider && isTimeSyncMode)
@@ -2022,8 +2062,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
                              scheme.text,
                              scheme.fg,
                              kPromptFont,
-                             false,
-                             6);
+                             false);
 
     // Force initial suffix placement with final editor metrics so the first
     // frame does not show a vertical offset.
@@ -2060,8 +2099,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
                                      scheme.text,
                                      scheme.fg,
                                      kPromptFont,
-                                     false,
-                                     6);
+                                     false);
         });
 
         embedAlertWindowInOverlay (safeThis.getComponent(), aw);
@@ -2082,8 +2120,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
                                  scheme.text,
                                  scheme.fg,
                                  kPromptFont,
-                                 false,
-                                 6);
+                                 false);
         if (auto* suffixLbl = dynamic_cast<juce::Label*> (aw->findChildWithID (kPromptSuffixLabelId)))
         {
             if (auto* te = aw->getTextEditor ("val"))
@@ -2164,11 +2201,14 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
                 const juce::String numericToken = t.initialSectionContainingOnly ("0123456789.,-");
                 v = numericToken.getDoubleValue();
 
-                // user typed percent for feedback/mod/mix; convert to slider's [0,1] range
+                // user typed percent for feedback/mix; convert to slider's [0,1] range
                 if (safeThis != nullptr && (sliderPtr == &safeThis->feedbackSlider
-                                         || sliderPtr == &safeThis->modSlider
                                          || sliderPtr == &safeThis->mixSlider))
                     v *= 0.01;
+
+                // user typed multiplier for MOD; convert to slider's [0,1] range
+                if (safeThis != nullptr && sliderPtr == &safeThis->modSlider)
+                    v = multiplierToModSlider (v);
             }
 
             const auto range = sliderPtr->getRange();
@@ -2189,7 +2229,8 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
     lnf.setScheme (activeScheme);
     const auto scheme = activeScheme;
 
-    const juce::String suffixText = "CH";
+    const juce::String suffixText = "CHANNEL";
+    const bool legendFirst = true;  // legend appears before input field
     const int channel = audioProcessor.getMidiChannel();
     const juce::String currentValue = juce::String (channel);
     
@@ -2228,8 +2269,8 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
         te->applyFontToAllText (f);
         
         auto r = te->getBounds();
-        r.setHeight ((int) (f.getHeight() * 1.4f) + 6);
-        r.setY (juce::jmax (6, r.getY() - 8));
+        r.setHeight ((int) (f.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
+        r.setY (juce::jmax (kPromptEditorMinTopPx, r.getY() - kPromptEditorRaiseYPx));
         editorBaseBounds = r;
         
         suffixLabel = new juce::Label ("suffix", suffixText);
@@ -2240,7 +2281,7 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
         suffixLabel->setFont (f);
         aw->addAndMakeVisible (suffixLabel);
         
-        layoutValueAndSuffix = [aw, te, suffixLabel, editorBaseBounds]()
+        layoutValueAndSuffix = [aw, te, suffixLabel, editorBaseBounds, legendFirst]()
         {
             int labelW = stringWidth (suffixLabel->getFont(), suffixLabel->getText()) + 2;
             auto er = te->getBounds();
@@ -2257,7 +2298,7 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
                                               textW + (kEditorTextPadPx * 2));
             er.setWidth (editorW);
             
-            const int combinedW = textW + minGapPx + labelW;
+            const int combinedW = labelW + minGapPx + textW;
             
             const int contentPad = kPromptInlineContentPadPx;
             const int contentLeft = contentPad;
@@ -2269,23 +2310,45 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
             const int maxBlockLeft = juce::jmax (minBlockLeft, contentRight - combinedW);
             blockLeft = juce::jlimit (minBlockLeft, maxBlockLeft, blockLeft);
             
-            int teX = blockLeft - ((editorW - textW) / 2);
-            const int minTeX = contentLeft;
-            const int maxTeX = juce::jmax (minTeX, contentRight - editorW);
-            teX = juce::jlimit (minTeX, maxTeX, teX);
-            
-            er.setX (teX);
-            te->setBounds (er);
-            
-            const int textLeftActual = er.getX() + (er.getWidth() - textW) / 2;
-            int labelX = textLeftActual + textW + minGapPx;
-            const int minLabelX = contentLeft;
-            const int maxLabelX = juce::jmax (minLabelX, contentRight - labelW);
-            labelX = juce::jlimit (minLabelX, maxLabelX, labelX);
-            
-            const int labelY = er.getY();
-            const int labelH = juce::jmax (1, er.getHeight());
-            suffixLabel->setBounds (labelX, labelY, labelW, labelH);
+            if (legendFirst)
+            {
+                // Label BEFORE input: [CHANNEL] [input]
+                int labelX = blockLeft;
+                const int minLabelX = contentLeft;
+                const int maxLabelX = juce::jmax (minLabelX, contentRight - combinedW);
+                labelX = juce::jlimit (minLabelX, maxLabelX, labelX);
+                
+                const int labelY = er.getY();
+                const int labelH = juce::jmax (1, er.getHeight());
+                suffixLabel->setBounds (labelX, labelY, labelW, labelH);
+                
+                int teX = labelX + labelW + minGapPx - ((editorW - textW) / 2);
+                const int minTeX = contentLeft;
+                const int maxTeX = juce::jmax (minTeX, contentRight - editorW);
+                teX = juce::jlimit (minTeX, maxTeX, teX);
+                er.setX (teX);
+                te->setBounds (er);
+            }
+            else
+            {
+                // Input BEFORE label: [input] [SUFFIX]
+                int teX = blockLeft - ((editorW - textW) / 2);
+                const int minTeX = contentLeft;
+                const int maxTeX = juce::jmax (minTeX, contentRight - editorW);
+                teX = juce::jlimit (minTeX, maxTeX, teX);
+                er.setX (teX);
+                te->setBounds (er);
+                
+                const int textLeftActual = er.getX() + (er.getWidth() - textW) / 2;
+                int labelX = textLeftActual + textW + minGapPx;
+                const int minLabelX = contentLeft;
+                const int maxLabelX = juce::jmax (minLabelX, contentRight - labelW);
+                labelX = juce::jlimit (minLabelX, maxLabelX, labelX);
+                
+                const int labelY = er.getY();
+                const int labelH = juce::jmax (1, er.getHeight());
+                suffixLabel->setBounds (labelX, labelY, labelW, labelH);
+            }
         };
         
         te->setBounds (editorBaseBounds);
@@ -2316,8 +2379,7 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
                              scheme.text,
                              scheme.fg,
                              kMidiPromptFont,
-                             false,
-                             6);
+                             false);
     
     if (suffixLabel != nullptr && ! editorBaseBounds.isEmpty())
     {
@@ -2356,8 +2418,7 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
                                  scheme.text,
                                  scheme.fg,
                                  kMidiPromptFont,
-                                 false,
-                                 6);
+                                 false);
         if (auto* suffixLbl = dynamic_cast<juce::Label*> (aw->findChildWithID (kPromptSuffixLabelId)))
         {
             if (auto* te = aw->getTextEditor ("val"))
@@ -2389,22 +2450,9 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
                 return;
             
             const auto txt = aw->getTextEditorContents ("val").trim();
-            
-            if (txt == "0" || txt.isEmpty())
-            {
-                safeThis->audioProcessor.setMidiChannel (0);
-                safeThis->midiChannelDisplay.setText ("0", juce::dontSendNotification);
-                safeThis->midiChannelDisplay.setTooltip ("CH 0 (Omni)");
-                return;
-            }
-            
-            int ch = txt.getIntValue();
-            if (ch >= 1 && ch <= 16)
-            {
-                safeThis->audioProcessor.setMidiChannel (ch);
-                safeThis->midiChannelDisplay.setText (juce::String (ch), juce::dontSendNotification);
-                safeThis->midiChannelDisplay.setTooltip ("CH " + juce::String (ch));
-            }
+            const int ch = juce::jlimit (0, 16, txt.isEmpty() ? 0 : txt.getIntValue());
+            safeThis->audioProcessor.setMidiChannel (ch);
+            safeThis->midiChannelDisplay.setTooltip (formatMidiChannelTooltip (ch));
         }),
         false);
 }
@@ -2501,8 +2549,8 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
     lnf.setScheme (activeScheme);
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
-    fxTailEnabled = audioProcessor.getUiFxTailEnabled();
-    crtEffect.setEnabled (fxTailEnabled);
+    crtEnabled = audioProcessor.getUiCrtEnabled();
+    crtEffect.setEnabled (crtEnabled);
     applyActivePalette();
 
     setPromptOverlayActive (true);
@@ -2563,15 +2611,14 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
 
     auto* fxToggle = new juce::ToggleButton ("");
     fxToggle->setComponentID ("fxToggle");
-    fxToggle->setToggleState (fxTailEnabled, juce::dontSendNotification);
+    fxToggle->setToggleState (crtEnabled, juce::dontSendNotification);
     fxToggle->onClick = [safeThis, fxToggle]()
     {
         if (safeThis == nullptr || fxToggle == nullptr)
             return;
 
-        safeThis->fxTailEnabled = fxToggle->getToggleState();
-        safeThis->crtEffect.setEnabled (safeThis->fxTailEnabled);
-        safeThis->audioProcessor.setUiFxTailEnabled (safeThis->fxTailEnabled);
+        safeThis->applyCrtState (fxToggle->getToggleState());
+        safeThis->audioProcessor.setUiCrtEnabled (safeThis->crtEnabled);
         safeThis->repaint();
     };
     aw->addAndMakeVisible (fxToggle);
@@ -2894,50 +2941,21 @@ juce::String ECHOTRAudioProcessorEditor::getModeTextShort() const
 
 juce::String ECHOTRAudioProcessorEditor::getModText() const
 {
-    const float val = (float) modSlider.getValue();
-    
-    if (val < 0.5f)
-    {
-        // 0.0 = /4, 0.5 = x1
-        float divisor = 4.0f - 3.0f * (val / 0.5f);
-        if (std::abs(divisor - 1.0f) < 0.01f)
-            return "X1 MOD";
-        return "/" + juce::String(divisor, 2) + " MOD";
-    }
-    else
-    {
-        // 0.5 = x1, 1.0 = x4
-        float multiplier = 1.0f + 3.0f * ((val - 0.5f) / 0.5f);
-        if (std::abs(multiplier - 1.0f) < 0.01f)
-            return "X1 MOD";
-        return "X" + juce::String(multiplier, 2) + " MOD";
-    }
+    const float mult = (float) modSliderToMultiplier (modSlider.getValue());
+    if (std::abs (mult - 1.0f) < kMultEpsilon)
+        return "X1 MOD";
+    return "X" + juce::String (mult, 2) + " MOD";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getModTextShort() const
 {
-    const float val = (float) modSlider.getValue();
-    
-    if (val < 0.5f)
-    {
-        float divisor = 4.0f - 3.0f * (val / 0.5f);
-        if (std::abs(divisor - 1.0f) < 0.01f)
-            return "X1 MOD";
-        return "/" + juce::String(divisor, 1) + " MOD";
-    }
-    else
-    {
-        float multiplier = 1.0f + 3.0f * ((val - 0.5f) / 0.5f);
-        if (std::abs(multiplier - 1.0f) < 0.01f)
-            return "X1 MOD";
-        return "X" + juce::String(multiplier, 1) + " MOD";
-    }
+    return getModText();
 }
 
 juce::String ECHOTRAudioProcessorEditor::getInputText() const
 {
     const float db = (float) inputSlider.getValue();
-    if (db <= -80.0f)
+    if (db <= kSilenceDb)
         return "-INF DB INPUT";
     return juce::String (db, 1) + " DB INPUT";
 }
@@ -2945,7 +2963,7 @@ juce::String ECHOTRAudioProcessorEditor::getInputText() const
 juce::String ECHOTRAudioProcessorEditor::getInputTextShort() const
 {
     const float db = (float) inputSlider.getValue();
-    if (db <= -80.0f)
+    if (db <= kSilenceDb)
         return "-INF IN";
     return juce::String (db, 1) + " IN";
 }
@@ -2953,7 +2971,7 @@ juce::String ECHOTRAudioProcessorEditor::getInputTextShort() const
 juce::String ECHOTRAudioProcessorEditor::getOutputText() const
 {
     const float db = (float) outputSlider.getValue();
-    if (db <= -80.0f)
+    if (db <= kSilenceDb)
         return "-INF DB OUTPUT";
     return juce::String (db, 1) + " DB OUTPUT";
 }
@@ -2961,7 +2979,7 @@ juce::String ECHOTRAudioProcessorEditor::getOutputText() const
 juce::String ECHOTRAudioProcessorEditor::getOutputTextShort() const
 {
     const float db = (float) outputSlider.getValue();
-    if (db <= -80.0f)
+    if (db <= kSilenceDb)
         return "-INF OUT";
     return juce::String (db, 1) + " OUT";
 }
@@ -3015,9 +3033,6 @@ namespace
     constexpr int kToggleBoxPx = 72;
     constexpr int kMinToggleBlocksGapPx = 10;
     constexpr int kMinSliderGapPx = 4;
-    constexpr int kMidiChannelSelectorWidthPx = 46;
-    constexpr int kMidiChannelGapPx = 4;
-    constexpr int kMidiChannelRightMargin = 6;
 }
 
 ECHOTRAudioProcessorEditor::HorizontalLayoutMetrics
@@ -3234,12 +3249,7 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getReverseLabelArea() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
 {
-    // Collision with channel box — no collision-pad subtraction here
-    // because kMidiChannelGapPx already provides the visual spacing.
-    const int cr = midiChannelDisplay.isVisible()
-        ? midiChannelDisplay.getX()
-        : getWidth() - kToggleLegendCollisionPadPx;
-    return makeToggleLabelArea (midiButton, cr, "MIDI", "MD");
+    return makeToggleLabelArea (midiButton, getWidth() - kToggleLegendCollisionPadPx, "MIDI", "MD");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getInfoIconArea() const
@@ -3260,12 +3270,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     lastUserInteractionMs.store (juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
     const auto p = e.getEventRelativeTo (this).getPosition();
 
-    // Check if click is on MIDI channel display (only if visible)
-    if (midiChannelDisplay.isVisible() && midiChannelDisplay.getBounds().contains (p))
-    {
-        openMidiChannelPrompt();
-        return;
-    }
+    // (MIDI channel prompt is now handled via right-click on the MIDI label area below)
 
     if (e.mods.isPopupMenu())
     {
@@ -3278,7 +3283,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
 
     {
         auto infoArea = getInfoIconArea();
-        if (fxTailEnabled)
+        if (crtEnabled)
             infoArea = infoArea.expanded (4, 0);  // small pad for CRT distortion
         if (infoArea.contains (p))
         {
@@ -3305,9 +3310,12 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (getMidiLabelArea().contains (p))
+    if (getMidiLabelArea().contains (p) || midiChannelDisplay.getBounds().contains (p))
     {
-        midiButton.setToggleState (! midiButton.getToggleState(), juce::sendNotificationSync);
+        if (e.mods.isPopupMenu())
+            openMidiChannelPrompt();
+        else
+            midiButton.setToggleState (! midiButton.getToggleState(), juce::sendNotificationSync);
         return;
     }
 }
@@ -3497,9 +3505,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const int syncCR  = autoFbkButton.getX() - kToggleLegendCollisionPadPx;
         const int autoCR  = W - kToggleLegendCollisionPadPx;
         const int revCR  = midiButton.getX() - kToggleLegendCollisionPadPx;
-        // No collision-pad for MIDI vs channel — kMidiChannelGapPx handles spacing
-        const int midiCR  = midiChannelDisplay.isVisible() ? midiChannelDisplay.getX()
-                                                        : W - kToggleLegendCollisionPadPx;
+        const int midiCR  = W - kToggleLegendCollisionPadPx;
 
         const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
         const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "AUTO FBK", "AUTO");
@@ -3531,19 +3537,6 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         drawToggleLegend (getMidiLabelArea(), midiLabel, midiCR);
     }
     
-    // Draw MIDI channel display border (matching checkbox style) - only if visible
-    if (midiChannelDisplay.isVisible())
-    {
-        auto chBounds = midiChannelDisplay.getBounds().toFloat();
-        
-        // Draw background (same as checkbox)
-        g.setColour (scheme.bg);
-        g.fillRect (chBounds);
-        
-        // Draw border with same width as checkbox
-        g.setColour (scheme.outline);
-        g.drawRect (chBounds, 4.0f);
-    }
     g.setColour (scheme.text);
 
     {
@@ -3646,18 +3639,14 @@ void ECHOTRAudioProcessorEditor::resized()
     // Button area: 2x2 grid — Row 1: SYNC + AUTO FBK, Row 2: LOOP + MIDI
     const int buttonAreaX = horizontalLayout.leftX;
 
-    const auto& labelFont = kBoldFont40();
-    const int labelGap = kToggleLabelGapPx;
-
     const int toggleVisualSide = juce::jlimit (14,
                                                juce::jmax (14, verticalLayout.box - 2),
                                                (int) std::lround ((double) verticalLayout.box * 0.65));
     const int toggleHitW = toggleVisualSide + 6;
-    const int midiChSide = toggleVisualSide;
 
     // Each row has 2 buttons: left-anchored + right-anchored
     // Row 1: SYNC (left) + AUTO FBK (right)
-    // Row 2: REV (left) + MIDI+channel (right)
+    // Row 2: REV (left) + MIDI (right)
     const int leftBlockX = buttonAreaX;
     const int rightBlockX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
 
@@ -3666,20 +3655,11 @@ void ECHOTRAudioProcessorEditor::resized()
     reverseButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     midiButton.setBounds    (rightBlockX, verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     
-    // Position MIDI channel display to the right of the actual MIDI label
-    const int midiVisualRight = getToggleVisualBoxLeftPx (midiButton) + getToggleVisualBoxSidePx (midiButton);
-    const int midiLabelX = midiVisualRight + labelGap;
-    const int midiLabelFullW = stringWidth (labelFont, "MIDI") + 2;
-    const int midiLabelShortW = stringWidth (labelFont, "MD") + 2;
-    const int midiMaxLabelSpace = juce::jmax (0, W - midiLabelX - midiChSide - kMidiChannelGapPx - kMidiChannelRightMargin);
-    const int midiActualLabelW = (midiLabelFullW <= midiMaxLabelSpace) ? midiLabelFullW : midiLabelShortW;
-    const int midiChX = midiLabelX + midiActualLabelW + kMidiChannelGapPx;
-    const int midiChY = verticalLayout.btnRow2Y + (verticalLayout.box - midiChSide) / 2;
-    midiChannelDisplay.setBounds (midiChX, midiChY, midiChSide, midiChSide);
-    
-    // Hide MIDI channel if it would overflow the right edge
-    const bool midiChFits = (midiChX + midiChSide + kMidiChannelRightMargin) <= W;
-    midiChannelDisplay.setVisible (midiChFits);
+    // Position invisible tooltip overlay on the MIDI label area
+    {
+        const auto midiLabelRect = getMidiLabelArea();
+        midiChannelDisplay.setBounds (midiLabelRect);
+    }
 
     if (resizerCorner != nullptr)
         resizerCorner->setBounds (W - kResizerCornerPx, H - kResizerCornerPx, kResizerCornerPx, kResizerCornerPx);

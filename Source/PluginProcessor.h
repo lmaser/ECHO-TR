@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <vector>
+#include "PerfTrace.h"
 
 class ECHOTRAudioProcessor : public juce::AudioProcessor
 {
@@ -29,7 +30,7 @@ public:
 	static constexpr const char* kParamUiWidth    = "ui_width";
 	static constexpr const char* kParamUiHeight   = "ui_height";
 	static constexpr const char* kParamUiPalette  = "ui_palette";
-	static constexpr const char* kParamUiFxTail   = "ui_fx_tail";
+	static constexpr const char* kParamUiCrt      = "ui_fx_tail";  // string kept for preset compat
 	static constexpr const char* kParamUiColor0   = "ui_color0";
 	static constexpr const char* kParamUiColor1   = "ui_color1";
 
@@ -44,8 +45,8 @@ public:
 	static constexpr int kTimeSyncDefault = 10;
 
 	static constexpr float kFeedbackMin = 0.0f;
-	static constexpr float kFeedbackMax = 1.0f;
-	static constexpr float kFeedbackDefault = 0.35f;
+	static constexpr float kFeedbackMax = 2.0f;
+	static constexpr float kFeedbackDefault = 1.0f;
 
 	static constexpr int kModeMin = 0;
 	static constexpr int kModeMax = 2; // 0=MONO, 1=STEREO, 2=PING-PONG
@@ -129,8 +130,8 @@ public:
 	void setUiUseCustomPalette (bool shouldUseCustomPalette);
 	bool getUiUseCustomPalette() const noexcept;
 
-	void setUiFxTailEnabled (bool shouldEnableFxTail);
-	bool getUiFxTailEnabled() const noexcept;
+	void setUiCrtEnabled (bool enabled);
+	bool getUiCrtEnabled() const noexcept;
 
 	void setMidiChannel (int channel);
 	int getMidiChannel() const noexcept;
@@ -141,13 +142,16 @@ public:
 	juce::AudioProcessorValueTreeState apvts;
 	static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
+	// Performance tracing (enable with ECHOTR_PERF_TRACE=1)
+	PerfTrace perfTrace;
+
 private:
 	struct UiStateKeys
 	{
 		static constexpr const char* editorWidth = "uiEditorWidth";
 		static constexpr const char* editorHeight = "uiEditorHeight";
 		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
-		static constexpr const char* fxTailEnabled = "uiFxTailEnabled";
+		static constexpr const char* crtEnabled = "uiFxTailEnabled";  // string kept for preset compat
 		static constexpr const char* midiPort = "midiPort";
 		static constexpr std::array<const char*, 2> customPalette {
 			"uiCustomPalette0", "uiCustomPalette1"
@@ -155,6 +159,7 @@ private:
 	};
 
 	double currentSampleRate = 44100.0;
+	float cachedDelaySmoothCoeff = 0.0f;   // precomputed EMA coeff at current SR
 	
 	juce::AudioBuffer<float> delayBuffer;
 	int delayBufferWritePos = 0;
@@ -172,6 +177,7 @@ private:
 	// chunks end sooner/later → tape-speed pitch shift, same as forward.
 	int   reverseAnchor     = 0;      // writePos snapshot at chunk start
 	float reverseCounter    = 0.0f;   // position within chunk (0 → chunkLen)
+	float reverseChunkLen   = 0.0f;   // locked chunk length (set at chunk start)
 	float revSmoothedDelay  = 0.0f;   // EMA-smoothed delay for reverse (independent)
 	bool  reverseNeedsInit  = true;   // first-call initialisation flag
 
@@ -197,14 +203,14 @@ private:
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;
 	std::atomic<float>* uiPaletteParam = nullptr;
-	std::atomic<float>* uiFxTailParam = nullptr;
+	std::atomic<float>* uiCrtParam = nullptr;
 	std::array<std::atomic<float>*, 2> uiColorParams { nullptr, nullptr };
 
 	// UI state atomics
 	std::atomic<int> uiEditorWidth { 360 };
 	std::atomic<int> uiEditorHeight { 480 };
 	std::atomic<int> uiUseCustomPalette { 0 };
-	std::atomic<int> uiFxTailEnabled { 0 };
+	std::atomic<int> uiCrtEnabled { 0 };
 	std::array<std::atomic<juce::uint32>, 2> uiCustomPalette {
 		std::atomic<juce::uint32> { juce::Colours::white.getARGB() },
 		std::atomic<juce::uint32> { juce::Colours::black.getARGB() }
