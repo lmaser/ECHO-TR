@@ -1,5 +1,6 @@
 // PluginEditor.cpp
 #include "PluginEditor.h"
+#include "InfoContent.h"
 #include <functional>
 #include <unordered_map>
 
@@ -3362,54 +3363,86 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
 
     applyPromptShellSize (*aw);
 
-    // ── Body content inside a scrollable viewport ──
+    // ── Body content: parsed from InfoContent.h XML ──
     auto* bodyContent = new juce::Component();
     bodyContent->setComponentID ("bodyContent");
 
     auto infoFont = lnf.getAlertWindowMessageFont();
     infoFont.setHeight (infoFont.getHeight() * 1.45f);
+
+    auto headingFont = infoFont;
+    headingFont.setBold (true);
+    headingFont.setHeight (infoFont.getHeight() * 1.25f);
+
     auto linkFont = infoFont;
     linkFont.setHeight (infoFont.getHeight() * 1.08f);
+
     auto poemFont = infoFont;
     poemFont.setItalic (true);
 
-    auto* infoLabel = new juce::Label ("infoText", "BY NEMESTER");
-    infoLabel->setComponentID ("infoText");
-    infoLabel->setJustificationType (juce::Justification::centred);
-    applyLabelTextColour (*infoLabel, activeScheme.text);
-    infoLabel->setFont (infoFont);
-    bodyContent->addAndMakeVisible (infoLabel);
+    // Parse the XML content from InfoContent.h
+    auto xmlDoc = juce::XmlDocument::parse (InfoContent::xml);
+    auto* contentNode = xmlDoc != nullptr ? xmlDoc->getChildByName ("content") : nullptr;
 
-    auto* infoLink = new juce::HyperlinkButton ("GitHub Repository",
-                                                juce::URL ("https://github.com/lmaser/ECHO-TR"));
-    infoLink->setComponentID ("infoLink");
-    infoLink->setJustificationType (juce::Justification::centred);
-    infoLink->setColour (juce::HyperlinkButton::textColourId, activeScheme.text);
-    infoLink->setFont (linkFont, false, juce::Justification::centred);
-    infoLink->setTooltip ("");
-    bodyContent->addAndMakeVisible (infoLink);
-
-    // Helper: create a single-line centered italic poem label
-    auto addPoemLine = [&] (const juce::String& id, const juce::String& text)
+    if (contentNode != nullptr)
     {
-        auto* l = new juce::Label (id, text);
-        l->setComponentID (id);
-        l->setJustificationType (juce::Justification::centred);
-        applyLabelTextColour (*l, activeScheme.text);
-        l->setFont (poemFont);
-        l->setBorderSize (juce::BorderSize<int> (0));
-        bodyContent->addAndMakeVisible (l);
-        return l;
-    };
+        int elemIdx = 0;
+        for (auto* node : contentNode->getChildIterator())
+        {
+            const auto tag  = node->getTagName();
+            const auto text = node->getAllSubText().trim();
+            const auto id   = tag + juce::String (elemIdx++);
 
-    // Each verse is its own single-line label — no word-wrap, no height measurement issues
-    addPoemLine ("poemSpacer",  "");
-    addPoemLine ("poemLine1",   "I hear a sound of voices:");
-    addPoemLine ("poemLine2",   "Not the voice which I gave forth.");
-    addPoemLine ("poemLine3",   "It is as if the mountains");
-    addPoemLine ("poemLine5",   "answered me with echo.");
-    addPoemLine ("poemSpacer2", "");
-    addPoemLine ("authorText",  "Percy Bysshe Shelley");
+            if (tag == "heading")
+            {
+                auto* l = new juce::Label (id, text);
+                l->setComponentID (id);
+                l->setJustificationType (juce::Justification::centred);
+                applyLabelTextColour (*l, activeScheme.text);
+                l->setFont (headingFont);
+                bodyContent->addAndMakeVisible (l);
+            }
+            else if (tag == "text" || tag == "separator")
+            {
+                auto* l = new juce::Label (id, text);
+                l->setComponentID (id);
+                l->setJustificationType (juce::Justification::centred);
+                applyLabelTextColour (*l, activeScheme.text);
+                l->setFont (infoFont);
+                l->setBorderSize (juce::BorderSize<int> (0));
+                bodyContent->addAndMakeVisible (l);
+            }
+            else if (tag == "link")
+            {
+                const auto url = node->getStringAttribute ("url");
+                auto* lnk = new juce::HyperlinkButton (text, juce::URL (url));
+                lnk->setComponentID (id);
+                lnk->setJustificationType (juce::Justification::centred);
+                lnk->setColour (juce::HyperlinkButton::textColourId, activeScheme.text);
+                lnk->setFont (linkFont, false, juce::Justification::centred);
+                lnk->setTooltip ("");
+                bodyContent->addAndMakeVisible (lnk);
+            }
+            else if (tag == "poem")
+            {
+                auto* l = new juce::Label (id, text);
+                l->setComponentID (id);
+                l->setJustificationType (juce::Justification::centred);
+                applyLabelTextColour (*l, activeScheme.text);
+                l->setFont (poemFont);
+                l->setBorderSize (juce::BorderSize<int> (0));
+                bodyContent->addAndMakeVisible (l);
+            }
+            else if (tag == "spacer")
+            {
+                auto* l = new juce::Label (id, "");
+                l->setComponentID (id);
+                l->setFont (infoFont);
+                l->setBorderSize (juce::BorderSize<int> (0));
+                bodyContent->addAndMakeVisible (l);
+            }
+        }
+    }
 
     auto* viewport = new juce::Viewport();
     viewport->setComponentID ("bodyViewport");
@@ -4405,8 +4438,9 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const int versionW = juce::jmax (0, versionRight - versionX);
 
         if (versionW > 0)
-            g.drawText ("v1.0a", versionX, versionY, versionW, versionH,
-                juce::Justification::bottomRight, false);
+            g.drawText (juce::String ("v") + InfoContent::version,
+                        versionX, versionY, versionW, versionH,
+                        juce::Justification::bottomRight, false);
 
         g.setFont (kBoldFont40());
     }
