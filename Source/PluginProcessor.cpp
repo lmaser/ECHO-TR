@@ -543,19 +543,19 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
                                                  float smoothMult)
 {
 	// ══════════════════════════════════════════════════════════════════
-	// SINGLE-VOICE REVERSE DELAY — forward feedback, short taper
+	// SINGLE-VOICE REVERSE DELAY — forward feedback, proportional taper
 	// ══════════════════════════════════════════════════════════════════
 	//
 	// FEEDBACK reads FORWARD (like direct mode) → buffer always coherent.
 	// Tails behave identically to direct mode.
 	//
 	// OUTPUT reads BACKWARD (single voice, chunk = EMA-smoothed delay).
-	// Short Tukey taper at chunk edges prevents clicks.
-	// SMOOTH controls taper length (artistic: choppy ↔ ambient).
+	// Taper is PROPORTIONAL to chunk length (1/16th, scaled by SMOOTH).
+	// This ensures high MIDI notes (short chunks) aren't killed by a
+	// fixed-length taper that would exceed the chunk size.
 	//
 	// No overlap-add (avoids phase interference on tonal MIDI content).
-	// No glide cutoff (EMA smoothing handles transitions naturally;
-	// each chunk plays to completion, next chunk adopts current delay).
+	// No glide cutoff (EMA smoothing handles transitions naturally).
 
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -569,11 +569,15 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 	const float targetDelay = delaySamples;
 	const float gainSmoothCoeff = 0.9955f;
 
-	// Output taper: base 32 samples, scaled by smoothMult (0.25× to 4×).
-	// Much shorter than before → preserves clean reversed audio;
-	// taper is only for click prevention at chunk seams.
-	const int kOutTaperBase = 32;
-	const int kOutTaperSamples = juce::jmax (4, static_cast<int> ((float) kOutTaperBase * smoothMult));
+	// Taper fraction: 1/16th of chunk (6.25%), scaled by smoothMult.
+	//   SMOOTH -2 (mult 0.25×): ~1.5% per side — very choppy
+	//   SMOOTH  0 (mult 1.0×):  ~6.25% per side — clean default
+	//   SMOOTH +2 (mult 4.0×):  ~25% per side — ambient/washy
+	// Always at least 1 sample, never more than half the chunk.
+	// Proportional scaling ensures high notes (short chunks like 23 smp
+	// at C7) get a 1-2 sample taper instead of being silenced by a
+	// fixed 32-sample taper.
+	const float kTaperFraction = (1.0f / 16.0f) * smoothMult;
 
 	constexpr float kMinChunkLen = 4.0f;
 
@@ -639,11 +643,12 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		const float rawRevL = hermite4pt (delayL[rIdxM1], delayL[rIdx0], delayL[rIdx1], delayL[rIdx2], rFrac);
 		const float rawRevR = hermite4pt (delayR[rIdxM1], delayR[rIdx0], delayR[rIdx1], delayR[rIdx2], rFrac);
 
-		// Short taper at chunk edges — just enough to prevent clicks
+		// Proportional taper at chunk edges — scales with chunk length
+		// so high notes (short chunks) don't get silenced.
 		const float pos = reverseCounter;
 		const float remaining = chunkLen - pos;
-		const int halfChunk = static_cast<int>(chunkLen * 0.5f);
-		const int outTaperLen = juce::jmin (halfChunk, juce::jmax (1, kOutTaperSamples));
+		const int outTaperLen = juce::jlimit (1, static_cast<int>(chunkLen * 0.5f),
+		                                      static_cast<int>(chunkLen * kTaperFraction));
 		float outTaper = 1.0f;
 		{
 			const float taperF = static_cast<float>(outTaperLen);
