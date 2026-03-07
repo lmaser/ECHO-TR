@@ -1122,7 +1122,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		juce::NormalisableRange<float> (kFeedbackMin, kFeedbackMax, 0.0f, 1.0f), kFeedbackDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamMode, "Mode",
+		kParamMode, "Style",
 		juce::NormalisableRange<float> ((float)kModeMin, (float)kModeMax, 1.0f, 1.0f), kModeDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (

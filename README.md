@@ -1,127 +1,163 @@
-# ECHO-TR v1.0b
+# ECHO-TR v1.0c
 
 <br/><br/>
 
 <img width="840" height="602" alt="image" src="https://github.com/user-attachments/assets/18c66779-09e8-4cac-995c-f174839efc2d" />
 
-
 <br/><br/>
 
+ECHO-TR is a creative delay effect built for texture generation, tonal manipulation, and pitch-shifted harmonics.  
+It combines forward and reverse delay with MIDI-controlled pitch, auto-feedback dynamics, and a minimal CRT-inspired interface.
 
-ECHO-TR is a creative tape-style delay effect designed for texture generation, tonal manipulation, and pitch-shifted harmonics.  
-Rather than conventional studio-grade delay for mixing, ECHO-TR focuses on experimental sound design—think Aphex Twin glitchy textures, Igorrr-style pitch madness, and evolving sonic landscapes.
+## Concept
 
-## What it does
+ECHO-TR treats delay not as a mixing utility but as an instrument. By feeding MIDI notes into the delay engine, the delay time maps directly to pitch — turning the feedback loop into a resonator that can play melodies, drones, and evolving textures.
 
-- Provides classic tape-delay behavior with variable delay time (1ms - 2000ms).
-- Features three processing modes: **Stereo**, **Mono**, and **Ping-Pong**.
-- Accepts **MIDI note input** to control delay time based on note frequency (delay time = 1/frequency period).
-- Uses **exponential smoothing** to enable smooth pitch-shifting effects during time changes (no decimating artifacts).
-- Supports **tempo sync** for rhythmic delay patterns aligned to DAW BPM.
-- Includes **modulation** and **auto-feedback** for evolving, self-oscillating textures.
+The reverse mode reads audio backward in chunks while keeping the feedback path forward and coherent. This means reverse tails behave identically to direct mode — only the output is reversed.
+
+Auto-feedback adds an envelope that resets on every note change, letting the feedback "swell" back in naturally. The result is a self-clearing delay that never muddies across pitch changes.
+
+## Interface
+
+ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visible at once — no pages, tabs, or hidden menus.
+
+- **Bar sliders**: Click and drag horizontally. Right-click for numeric entry (except STYLE, which is slider-only).
+- **Toggle buttons**: SYNC, MIDI, AUTO FBK, RVS (reverse). Click to enable/disable.
+- **Sub-labels**: Click the text next to MIDI, AUTO FBK, or RVS to open their configuration prompt.
+- **Gear icon** (top-right): Opens the info popup with version, credits, and a link to Graphics settings.
+- **Graphics popup**: Toggle CRT post-processing effect and switch between default/custom colour palettes.
+- **Resize**: Drag the bottom-right corner. Size persists across sessions.
+
+The value column to the right of each slider shows the current state in context:
+- TIME shows milliseconds (or MIDI note name when active, or sync division).
+- FEEDBACK shows percentage + "FBK".
+- STYLE shows MONO/STEREO/PING-PONG.
+- MOD shows the frequency multiplier.
+- INPUT/OUTPUT show dB values.
+- MIX shows percentage.
 
 ## Parameters
 
-### Core Delay
+### TIME (0–5000 ms)
 
-- **TIME (ms)**
-  - Manual delay time control (1ms - 2000ms).
-  - Overridden when MIDI or SYNC modes are active.
-  - Smoothed exponentially for glitch-free pitch shifting.
+Manual delay time. Overridden by MIDI or SYNC when active.  
+Smoothed per-sample via exponential moving average (80 ms time constant) for glitch-free pitch sweeps.
 
-- **FEEDBACK**
-  - Amount of delayed signal fed back into the delay line.
-  - Higher values create longer, more resonant tails.
-  - Can self-oscillate at extreme settings for drone/noise textures.
+When MIDI is active, TIME shows the note name instead of milliseconds. When the note releases, the delay glides back to the manual TIME knob value.
 
-- **MIX**
-  - Dry/wet balance.
-  - 0% = fully dry, 100% = fully wet.
+### FEEDBACK (0–100%)
 
-### Processing Modes
+Signal fed back into the delay line. 100% = infinite sustain / self-oscillation.  
+Only a DC blocker (5 Hz high-pass) sits in the feedback path — no filtering, no saturation. Maximally transparent.
 
-- **MODE**
-  - **Stereo**: Independent L/R delay lines.
-  - **Mono**: Single delay line summed to both channels.
-  - **Ping-Pong**: Alternating L/R feedback for stereo bouncing effect.
+### STYLE
 
-### MIDI Control
+Routing topology for the delay:
+- **MONO**: Single delay line, summed to both channels.
+- **STEREO**: Independent left/right delay lines.
+- **PING-PONG**: Cross-feedback between channels for stereo bouncing.
 
-- **MIDI**
-  - Enables MIDI note input to control delay time.
-  - When enabled, incoming MIDI notes set delay time to **1000ms / note_frequency**.
-  - Example: C2 (130.81 Hz) → 7.64ms delay → creates pitch-shifted tones.
-  - Priority: MIDI > SYNC > Manual TIME.
+All three modes share the same interpolation (4-point Hermite) and feedback processing.
 
-- **MIDI Port**
-  - Selects MIDI channel (1-16) or Omni mode (0 = all channels).
-  - State persists across sessions.
+### MOD (0–100%)
 
-### Tempo Sync
+Frequency multiplier applied to the delay time.  
+0% = ×0.25 (4× longer delay), 50% = ×1.0 (no change), 100% = ×4.0 (4× shorter delay).  
+Useful for octave shifting, harmonic tuning, and detuned textures.
 
-- **SYNC**
-  - Locks delay time to DAW tempo.
-  - Provides musical subdivisions (1/4, 1/8, 1/16, dotted, triplets, etc.).
-  - Active when MIDI is disabled.
+### INPUT (−100 to 0 dB)
 
-### Modulation & Dynamics
+Pre-delay gain. Controls how much signal enters the delay line.
 
-- **MOD**
-  - Modulation depth/rate (implementation-specific).
-  - Adds movement and variation to delay characteristics.
+### OUTPUT (−100 to +24 dB)
 
-- **AUTO FBK**
-  - Automatic feedback control.
-  - Dynamically adjusts feedback based on input/output levels.
+Post-delay gain. Applied to the wet signal only.
 
-### I/O Levels
+### MIX (0–100%)
 
-- **INPUT**
-  - Pre-delay gain staging.
-  
-- **OUTPUT**
-  - Post-processing output level.
+Dry/wet balance. 0% = fully dry, 100% = fully wet.
 
-## Creative Use Cases
+### SYNC
 
-### Pitch-Shifted Harmonics
-- Enable MIDI mode and play low notes (C1-C2) to generate audible delay times (15-30ms).
-- Feedback creates stacked pitch-shifted layers → harmonic drones.
-- Change notes in real-time for glitchy melodic textures.
+Locks delay time to DAW tempo. Provides 30 musical subdivisions:  
+1/64 through 8/1, each with triplet, normal, and dotted variants.  
+Disabled when MIDI is active (MIDI takes priority).
 
-### Comb Filtering
-- Use very short delay times (0.5-5ms) with feedback.
-- Creates metallic, resonant tones (comb filter effect).
-- MIDI control allows "playing" the comb filter like an instrument.
+### MIDI
 
-### Tape Emulation
-- Moderate delay times (50-500ms) with medium feedback.
-- Stereo or Ping-Pong modes for classic tape echo flavor.
-- Smoothing prevents tape-stop artifacts during time changes.
+Enables MIDI note control of delay time. Incoming notes set delay time to `1000 / frequency` ms.  
+Example: A4 (440 Hz) → 2.27 ms.
 
-### Extreme Textures
-- High feedback + modulation + auto-feedback.
-- Self-oscillating delay lines create evolving noise/drone beds.
-- Short MIDI-controlled times produce lo-fi bit-crushed chaos.
+**Velocity → Glide**: Note velocity controls the portamento speed between pitch changes.
+- vel 127 → instant transition (~0.2 ms).
+- vel 1 → full glide (~200 ms).
+- The curve is designed so most of the playable range (vel 40–127) feels instant, with glide only appearing at extreme pianissimo.
 
-## Notes
+Direct and reverse modes use independent velocity curves calibrated so the perceived glide is identical despite their different architectures.
 
-- **Exponential smoothing** (coefficient 0.9997, ~330ms time constant) is applied per-sample to prevent decimating/aliasing during delay time changes.
-- MIDI processing uses standard A440 tuning: `frequency = 440 * 2^((note-69)/12)`.
-- File-based logging to `Desktop/ECHO-TR_MIDI_DEBUG.txt` for MIDI debugging (500 line limit, auto-wraps).
-- UI state (width, height, palette, MIDI port) persists via APVTS state management.
-- Graphics options available from gear icon (`Info -> Graphics`): toggle `GRAPHIC FX` and `Custom Palette`.
+**MIDI Channel**: Click the channel display to select channel 1–16, or OMNI (all channels).
+
+### AUTO FBK
+
+Automatic feedback envelope. When enabled, feedback resets to zero on every note/time/MOD change, then ramps back to the user's feedback setting.
+
+This prevents muddy buildup between pitch changes while preserving self-oscillation during sustained notes.
+
+**TAU (0–100%)**: Recovery speed.  
+0% = fast recovery (30 ms), 100% = slow dramatic swell (3 s).  
+Automatic pitch-scaling: shorter delays recover faster (`√(delay/1000)`).
+
+**ATT (0–100%)**: Modulation depth.  
+0% = envelope bypassed (feedback always at full), 100% = maximum suppression on reset.  
+Cubic curve ensures gradual onset. UI 100% maps to internal 75% to keep the full range usable.
+
+### RVS (Reverse)
+
+Reverse delay mode. Reads audio backward in chunks, producing reversed playback.
+
+The feedback path reads **forward** (identical to direct mode), so the delay buffer always contains coherent audio. Only the output is reversed. This means:
+- Tails behave the same as direct mode.
+- Self-oscillation works naturally.
+- Switching between modes doesn't corrupt the buffer.
+
+Each chunk's length equals the current (smoothed) delay time. At chunk boundaries, the next chunk adopts the latest delay value, providing natural pitch tracking.
+
+**SMOOTH (−2 to +2)**: Controls the output taper at chunk edges.  
+Maps to a multiplier: 2^(value).  
+- −2 = ×0.25 (very short taper → choppy, granular).
+- 0 = ×1.0 (clean default).
+- +2 = ×4.0 (long taper → ambient, washy).
+
+The taper is **proportional** to chunk length (1/16th × multiplier) so high MIDI notes (short chunks) are never silenced by a fixed-length taper.
 
 ## Technical Details
 
-- Delay buffer allocation: power-of-2 sizing for efficient circular buffer indexing.
-- Read position calculation uses bitwise AND masking: `(writePos - delaySamples) & (bufferLength - 1)`.
-- MIDI channel filtering: `selectedPort=0` accepts all channels (omni), `1-16` filters to specific channel.
-- Processing priority: MIDI note > Tempo Sync > Manual Time parameter.
+### DSP Architecture
+- **Buffer**: Power-of-2 circular buffer with bitwise AND wrapping.
+- **Interpolation**: 4-point Hermite cubic on all delay reads.
+- **Smoothing**: One-pole EMA per sample for delay time, gain, and mix.
+- **Feedback path**: DC blocker only (one-pole HP at 5 Hz). No saturation, no filtering.
+- **Reverse taper**: Precomputed 129-point Tukey (raised-cosine) lookup table with linear interpolation. No per-sample trigonometry.
 
-## TODO
+### MIDI Implementation
+- Standard A440 tuning: `frequency = 440 × 2^((note − 69) / 12)`.
+- Monophonic last-note priority. Note-off falls back to manual TIME knob.
+- Channel filtering: OMNI (0) or specific channel (1–16).
+- Priority: MIDI > SYNC > Manual TIME.
 
-- [ ] Fine-tune smoothing coefficient and modulation parameters based on user testing.
-- [ ] Optimize CPU usage for real-time performance under heavy feedback conditions.
-- [ ] Consider adding visual feedback for MIDI note activity in GUI.
-- [ ] Evaluate additional delay modes (reverse, granular, etc.).
+### State Persistence
+- All parameters saved via JUCE AudioProcessorValueTreeState.
+- UI state (size, palette, CRT toggle, MIDI channel) persisted in the plugin state.
+- Parameter IDs are stable across versions for preset compatibility.
+
+### Performance
+- Zero-allocation audio thread. All buffers pre-allocated in `prepareToPlay`.
+- Lock-free atomic parameter reads (`std::memory_order_relaxed`).
+- Fast dB→linear conversion via `std::exp2` (single SSE instruction).
+- Gain/mix smoothing snaps to target when within ε to avoid useless EMA in steady state.
+- Performance tracing available via `ECHOTR_PERF_TRACE=1` compile flag (disabled by default).
+
+### Build
+- JUCE Framework, C++17, VST3 format.
+- Visual Studio 2022 (MSBuild, x64 Release).
+- Dependencies: JUCE modules only (no third-party libraries).

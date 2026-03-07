@@ -24,7 +24,7 @@
 #include <cstdio>
 
 #ifndef ECHOTR_PERF_TRACE
- #define ECHOTR_PERF_TRACE 1
+ #define ECHOTR_PERF_TRACE 0
 #endif
 
 #if ECHOTR_PERF_TRACE

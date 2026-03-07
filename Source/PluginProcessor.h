@@ -52,7 +52,7 @@ public:
 	static constexpr float kFeedbackDefault = 1.0f;
 
 	static constexpr int kModeMin = 0;
-	static constexpr int kModeMax = 2; // 0=MONO, 1=STEREO, 2=PING-PONG
+	static constexpr int kModeMax = 2; // 0=MONO, 1=STEREO, 2=PING-PONG ("Style" in UI)
 	static constexpr float kModeDefault = 1.0f;
 
 	static constexpr float kModMin = 0.0f;

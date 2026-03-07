@@ -161,7 +161,7 @@ static juce::String formatAutoFbkTooltip (float tauPct, float attPct)
 
 static juce::String formatReverseSmoothTooltip (float smoothExp)
 {
-    const float mult = std::pow (2.0f, smoothExp);
+    const float mult = std::exp2 (smoothExp);
     return "x" + juce::String (mult, 2);
 }
 
@@ -786,7 +786,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindSlider (outputAttachment, ECHOTRAudioProcessor::kParamOutput, outputSlider, kDefaultOutput);
     bindSlider (mixAttachment, ECHOTRAudioProcessor::kParamMix, mixSlider, kDefaultMix);
 
-    // Disable numeric popup for MODE (slider-only operation)
+    // Disable numeric popup for STYLE (slider-only operation)
     modeSlider.setAllowNumericPopup (false);
 
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
@@ -1469,6 +1469,30 @@ static void layoutInfoPopupContent (juce::AlertWindow& aw)
         }
 
         child->setBounds (0, y, innerW, itemH);
+
+        // ── Poem auto-fit: if text overflows with padding, shrink font ──
+        if (auto* label = dynamic_cast<juce::Label*> (child))
+        {
+            const auto& props = label->getProperties();
+            if (props.contains ("poemPadFraction"))
+            {
+                const float padFrac = (float) props["poemPadFraction"];
+                const int padPx = juce::jmax (4, (int) std::round (innerW * padFrac));
+                label->setBorderSize (juce::BorderSize<int> (0, padPx, 0, padPx));
+
+                // Check if text fits; if not, shrink font until it does (min 65% scale)
+                auto font = label->getFont();
+                const int textAreaW = innerW - 2 * padPx;
+                for (float scale = 1.0f; scale >= 0.65f; scale -= 0.025f)
+                {
+                    font.setHorizontalScale (scale);
+                    if (font.getStringWidth (label->getText()) <= textAreaW)
+                        break;
+                }
+                label->setFont (font);
+            }
+        }
+
         y += itemH + kItemGap;
     }
 
@@ -3430,7 +3454,10 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
                 l->setJustificationType (juce::Justification::centred);
                 applyLabelTextColour (*l, activeScheme.text);
                 l->setFont (poemFont);
-                l->setBorderSize (juce::BorderSize<int> (0));
+                // Horizontal padding: 12% of available width per side.
+                // Gives the poem visual breathing room without hardcoding pixels.
+                l->setBorderSize (juce::BorderSize<int> (0, 0, 0, 0));  // vertical=0; horizontal set in layout
+                l->getProperties().set ("poemPadFraction", 0.12f);
                 bodyContent->addAndMakeVisible (l);
             }
             else if (tag == "spacer")
@@ -3873,10 +3900,10 @@ juce::String ECHOTRAudioProcessorEditor::getModeText() const
     const int mode = (int) modeSlider.getValue();
     switch (mode)
     {
-        case 0: return "MONO MODE";
-        case 1: return "STEREO MODE";
-        case 2: return "PING-PONG MODE";
-        default: return "STEREO MODE";
+        case 0: return "MONO STYLE";
+        case 1: return "STEREO STYLE";
+        case 2: return "PING-PONG STYLE";
+        default: return "STEREO STYLE";
     }
 }
 
