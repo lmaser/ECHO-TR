@@ -29,6 +29,7 @@ private:
 
     void openNumericEntryPopupForSlider (juce::Slider& s);
     void openMidiChannelPrompt();
+    void openAutoFbkPrompt();
     void openInfoPopup();
     void openGraphicsPopup();
     void setPromptOverlayActive (bool shouldBeActive);
@@ -113,6 +114,7 @@ private:
     juce::ToggleButton reverseButton;
 
     juce::Label midiChannelDisplay;
+    juce::Label autoFbkDisplay;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;

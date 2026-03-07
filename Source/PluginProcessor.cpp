@@ -134,6 +134,8 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	syncParam = apvts.getRawParameterValue (kParamSync);
 	midiParam = apvts.getRawParameterValue (kParamMidi);
 	autoFbkParam = apvts.getRawParameterValue (kParamAutoFbk);
+	autoFbkTauParam = apvts.getRawParameterValue (kParamAutoFbkTau);
+	autoFbkAttParam = apvts.getRawParameterValue (kParamAutoFbkAtt);
 	reverseParam = apvts.getRawParameterValue (kParamReverse);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
@@ -778,23 +780,30 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		autoFbkLastDelaySamples = delaySamples;
 
 		// Ramp envelope towards 1.0 using EMA.
-		// When a MIDI note is driving the delay, tau scales with delay
-		// length: long delays (bass) keep the base tau; short delays
-		// (treble) use a much shorter tau so the envelope recovers in
-		// time for the faster repetitions.  Without MIDI the base tau
-		// is used unchanged.
-		constexpr float kAutoFbkTauMax  = 0.060f;  // seconds — bass / long delays / no MIDI
-		constexpr float kAutoFbkTauMin  = 0.005f;  // seconds — treble / very short delays
-		constexpr float kAutoFbkRefMs   = 500.0f;   // delay (ms) at which tau = tauMax
-		constexpr float kAutoFbkTauExp  = 6.0f;     // high exp → only extreme treble is shortened
+		// TAU param (0-100%) sets the base tau: 0% → tauFloor (near-instant
+		// recovery, minimal envelope effect); 100% → tauCeil (slowest).
+		// ATT param (0-100%) sets the pitch-dependent attenuation exponent:
+		// 0% → exp 0 → flat tau (no treble shortening);
+		// 100% → exp 8 → only extreme treble is shortened.
+		// When MIDI drives the delay, tau scales with delay length.
+		constexpr float kTauFloor  = 0.005f;  // seconds — absolute minimum tau
+		constexpr float kTauCeil   = 0.120f;  // seconds — absolute maximum tau
+		constexpr float kRefMs     = 500.0f;  // delay (ms) at which tau = tauMax
+		constexpr float kAttExpMax = 8.0f;    // max exponent
 
-		float tau = kAutoFbkTauMax;
-		if (midiNoteActive)
+		const float tauPct = loadAtomicOrDefault (autoFbkTauParam, kAutoFbkTauDefault) * 0.01f;
+		const float attPct = loadAtomicOrDefault (autoFbkAttParam, kAutoFbkAttDefault) * 0.01f;
+
+		const float tauMax = kTauFloor + (kTauCeil - kTauFloor) * tauPct;
+		const float attExp = kAttExpMax * attPct;
+
+		float tau = tauMax;
+		if (midiNoteActive && attExp > 0.001f)
 		{
 			const float delayMs = (delaySamples / (float) currentSampleRate) * 1000.0f;
-			const float ratio   = juce::jlimit (0.0f, 1.0f, delayMs / kAutoFbkRefMs);
-			const float shaped  = std::pow (ratio, kAutoFbkTauExp);
-			tau = kAutoFbkTauMin + (kAutoFbkTauMax - kAutoFbkTauMin) * shaped;
+			const float ratio   = juce::jlimit (0.0f, 1.0f, delayMs / kRefMs);
+			const float shaped  = std::pow (ratio, attExp);
+			tau = kTauFloor + (tauMax - kTauFloor) * shaped;
 		}
 
 		const float envCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
@@ -1017,6 +1026,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamSync, "Sync", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamMidi, "MIDI", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAutoFbk, "Auto Fbk", false));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamAutoFbkTau, "Auto Fbk Tau",
+		juce::NormalisableRange<float> (kAutoFbkTauMin, kAutoFbkTauMax, 0.01f, 1.0f), kAutoFbkTauDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamAutoFbkAtt, "Auto Fbk Att",
+		juce::NormalisableRange<float> (kAutoFbkAttMin, kAutoFbkAttMax, 0.01f, 1.0f), kAutoFbkAttDefault));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamReverse, "Reverse", false));
 
 	// UI state (hidden from automation)

@@ -151,6 +151,13 @@ static juce::String formatMidiChannelTooltip (int ch)
     return "CHANNEL " + juce::String (ch);
 }
 
+// ── Auto-feedback tooltip ──
+static juce::String formatAutoFbkTooltip (float tauPct, float attPct)
+{
+    return juce::String (juce::roundToInt (tauPct)) + "% | "
+         + juce::String (juce::roundToInt (attPct)) + "%";
+}
+
 // ── Parameter listener IDs (shared by ctor + dtor) ──
 static constexpr std::array<const char*, 5> kUiMirrorParamIds {
     ECHOTRAudioProcessor::kParamSync,
@@ -259,7 +266,7 @@ static void drawOverlayPanel (juce::Graphics& g,
     g.fillRect (bounds);
 
     g.setColour (outline);
-    g.drawRect (bounds, 1);
+    g.drawRect (bounds, 2);
 }
 
 static bool fits (juce::Graphics& g, const juce::String& s, int w)
@@ -315,9 +322,9 @@ static void drawValueNoEllipsis (juce::Graphics& g,
     if (area.getWidth() <= 2 || area.getHeight() <= 2)
         return;
 
-    const auto full = fullText.toUpperCase();
-    const auto noU  = noUnitText.toUpperCase();
-    const auto intl = intOnlyText.toUpperCase();
+    const auto& full = fullText;
+    const auto& noU  = noUnitText;
+    const auto& intl = intOnlyText;
 
     const float softShrinkFloor = minFontPx;
 
@@ -370,8 +377,8 @@ static bool drawValueWithRightAlignedSuffix (juce::Graphics& g,
     if (area.getWidth() <= 2 || area.getHeight() <= 2)
         return false;
 
-    const auto value = valueText.toUpperCase();
-    const auto suffix = suffixText.toUpperCase();
+    const auto& value = valueText;
+    const auto& suffix = suffixText;
 
     auto font = g.getCurrentFont();
     font.setHeight (baseFontPx);
@@ -714,6 +721,21 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     midiChannelDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
     midiChannelDisplay.setOpaque (false);
     addAndMakeVisible (midiChannelDisplay);
+
+    // Auto-feedback tooltip overlay — invisible label positioned over the AUTO FBK legend.
+    // Provides tooltip on hover; right-click forwarded to editor opens the config prompt.
+    {
+        const float savedTau = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamAutoFbkTau)->load();
+        const float savedAtt = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamAutoFbkAtt)->load();
+        autoFbkDisplay.setText ("", juce::dontSendNotification);
+        autoFbkDisplay.setInterceptsMouseClicks (true, false);
+        autoFbkDisplay.addMouseListener (this, false);
+        autoFbkDisplay.setTooltip (formatAutoFbkTooltip (savedTau, savedAtt));
+        autoFbkDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+        autoFbkDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+        autoFbkDisplay.setOpaque (false);
+        addAndMakeVisible (autoFbkDisplay);
+    }
 
     auto bindSlider = [&] (std::unique_ptr<SliderAttachment>& attachment,
                            const char* paramId,
@@ -2591,6 +2613,374 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
         false);
 }
 
+void ECHOTRAudioProcessorEditor::openAutoFbkPrompt()
+{
+    lnf.setScheme (activeScheme);
+    const auto scheme = activeScheme;
+
+    const float currentTau = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamAutoFbkTau)->load();
+    const float currentAtt = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamAutoFbkAtt)->load();
+
+    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    aw->setLookAndFeel (&lnf);
+
+    // Two text editors: tau and att
+    aw->addTextEditor ("tau", juce::String (juce::roundToInt (currentTau)), juce::String());
+    aw->addTextEditor ("att", juce::String (juce::roundToInt (currentAtt)), juce::String());
+
+    // Numeric input filter for 0-100
+    struct PctInputFilter : juce::TextEditor::InputFilter
+    {
+        juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
+        {
+            juce::ignoreUnused (editor);
+            juce::String result;
+            for (auto c : newText)
+            {
+                if (juce::CharacterFunctions::isDigit (c))
+                    result += c;
+                if (result.length() >= 3)
+                    break;
+            }
+            return result;
+        }
+    };
+
+    // ── Inline bar component ──
+    // Minimal horizontal bar: paints outline + bg + filled portion (same as main GUI).
+    // Draggable to change value; double-click resets to default.
+    // No numeric popup — we're already inside a prompt.
+    struct PromptBar : public juce::Component
+    {
+        ECHOScheme colours;
+        float value      = 0.5f;  // 0..1
+        float defaultVal = 0.5f;  // 0..1
+        std::function<void (float)> onValueChanged;
+
+        PromptBar (const ECHOScheme& s, float initial01, float default01)
+            : colours (s), value (initial01), defaultVal (default01) {}
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            g.setColour (colours.outline);
+            g.drawRect (r, 4.0f);
+
+            const float pad = 7.0f;
+            auto inner = r.reduced (pad);
+
+            g.setColour (colours.bg);
+            g.fillRect (inner);
+
+            const float fillW = juce::jlimit (0.0f, inner.getWidth(), inner.getWidth() * value);
+            g.setColour (colours.fg);
+            g.fillRect (inner.withWidth (fillW));
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            updateFromMouse (e);
+        }
+
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            updateFromMouse (e);
+        }
+
+        void mouseDoubleClick (const juce::MouseEvent&) override
+        {
+            setValue (defaultVal);
+        }
+
+        void setValue (float v01)
+        {
+            value = juce::jlimit (0.0f, 1.0f, v01);
+            repaint();
+            if (onValueChanged)
+                onValueChanged (value);
+        }
+
+    private:
+        void updateFromMouse (const juce::MouseEvent& e)
+        {
+            const float pad = 7.0f;
+            const float innerX = pad;
+            const float innerW = (float) getWidth() - pad * 2.0f;
+            const float v = (innerW > 0.0f) ? ((float) e.x - innerX) / innerW : 0.0f;
+            setValue (v);
+        }
+    };
+
+    // Clickable suffix label — double-click resets the paired bar to default.
+    struct ResetLabel : public juce::Label
+    {
+        PromptBar* pairedBar = nullptr;
+
+        void mouseDoubleClick (const juce::MouseEvent&) override
+        {
+            if (pairedBar != nullptr)
+                pairedBar->setValue (pairedBar->defaultVal);
+        }
+    };
+
+    const auto& f = kBoldFont40();
+
+    // Suffix labels (name) and unit labels (%)
+    ResetLabel* tauSuffix = nullptr;
+    ResetLabel* attSuffix = nullptr;
+    juce::Label* tauPctLabel = nullptr;
+    juce::Label* attPctLabel = nullptr;
+
+    auto setupField = [&] (const char* editorId, const juce::String& suffixText,
+                           ResetLabel*& suffixOut, juce::Label*& pctOut)
+    {
+        if (auto* te = aw->getTextEditor (editorId))
+        {
+            te->setFont (f);
+            te->applyFontToAllText (f);
+            te->setInputFilter (new PctInputFilter(), true);
+
+            auto r = te->getBounds();
+            r.setHeight ((int) (f.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
+            te->setBounds (r);
+
+            suffixOut = new ResetLabel();
+            suffixOut->setText (suffixText, juce::dontSendNotification);
+            suffixOut->setJustificationType (juce::Justification::centredLeft);
+            applyLabelTextColour (*suffixOut, scheme.text);
+            suffixOut->setBorderSize (juce::BorderSize<int> (0));
+            suffixOut->setFont (f);
+            aw->addAndMakeVisible (suffixOut);
+
+            pctOut = new juce::Label ("", "%");
+            pctOut->setJustificationType (juce::Justification::centredLeft);
+            applyLabelTextColour (*pctOut, scheme.text);
+            pctOut->setBorderSize (juce::BorderSize<int> (0));
+            pctOut->setFont (f);
+            aw->addAndMakeVisible (pctOut);
+        }
+    };
+
+    setupField ("tau", "TAU", tauSuffix, tauPctLabel);
+    setupField ("att", "ATT", attSuffix, attPctLabel);
+
+    // Create bars
+    auto* tauBar = new PromptBar (scheme, currentTau * 0.01f,
+                                  ECHOTRAudioProcessor::kAutoFbkTauDefault * 0.01f);
+    auto* attBar = new PromptBar (scheme, currentAtt * 0.01f,
+                                  ECHOTRAudioProcessor::kAutoFbkAttDefault * 0.01f);
+    aw->addAndMakeVisible (tauBar);
+    aw->addAndMakeVisible (attBar);
+
+    // Link suffix labels to bars for double-click reset
+    if (tauSuffix != nullptr) tauSuffix->pairedBar = tauBar;
+    if (attSuffix != nullptr) attSuffix->pairedBar = attBar;
+
+    // ── Bidirectional sync: bar ↔ textEditor ──
+    // Guard flag to avoid feedback loops during programmatic updates.
+    auto syncing = std::make_shared<bool> (false);
+
+    auto barToText = [aw, syncing] (const char* editorId, float v01)
+    {
+        if (*syncing) return;
+        *syncing = true;
+        if (auto* te = aw->getTextEditor (editorId))
+        {
+            te->setText (juce::String (juce::roundToInt (v01 * 100.0f)), juce::sendNotification);
+            te->selectAll();
+        }
+        *syncing = false;
+    };
+
+    tauBar->onValueChanged = [barToText] (float v) { barToText ("tau", v); };
+    attBar->onValueChanged = [barToText] (float v) { barToText ("att", v); };
+
+    // Layout: vertically center both rows (text + bar) in the space above buttons.
+    auto layoutRows = [aw, tauSuffix, attSuffix, tauPctLabel, attPctLabel, tauBar, attBar] ()
+    {
+        auto* tauTe = aw->getTextEditor ("tau");
+        auto* attTe = aw->getTextEditor ("att");
+        if (tauTe == nullptr || attTe == nullptr)
+            return;
+
+        const int buttonsTop = getAlertButtonsTop (*aw);
+        const int rowH = tauTe->getHeight();
+        const int barH = juce::jmax (10, rowH / 2);
+        const int barGap = juce::jmax (2, rowH / 6);
+        const int rowTotal = rowH + barGap + barH;          // text + gap + bar
+        const int gap = juce::jmax (4, rowH / 3);           // between row blocks
+        const int totalH = rowTotal * 2 + gap;
+        const int startY = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - totalH) / 2);
+
+        const int contentPad = kPromptInlineContentPadPx;
+        const int contentW = aw->getWidth() - contentPad * 2;
+        const auto& font = tauTe->getFont();
+        const int spaceW = juce::jmax (2, stringWidth (font, " "));
+        const int pctW = stringWidth (font, "%") + 2;
+
+        auto placeRow = [&] (juce::TextEditor* te, juce::Label* suffix, juce::Label* pctLabel, PromptBar* bar, int y)
+        {
+            if (te == nullptr || suffix == nullptr || bar == nullptr)
+                return;
+
+            const int labelW = stringWidth (suffix->getFont(), suffix->getText()) + 2;
+            const auto txt = te->getText();
+            const int textW = juce::jmax (1, stringWidth (font, txt));
+
+            constexpr int kEditorTextPadPx = 12;
+            constexpr int kMinEditorWidthPx = 24;
+            const int editorW = juce::jlimit (kMinEditorWidthPx, 80, textW + kEditorTextPadPx * 2);
+
+            // Centre using VISUAL widths: [LABEL] [text] [%]
+            const int visualW = labelW + spaceW + textW + pctW;
+            const int centerX = contentPad + contentW / 2;
+            int blockLeft = centerX - visualW / 2;
+            blockLeft = juce::jlimit (contentPad, juce::jmax (contentPad, contentPad + contentW - visualW), blockLeft);
+
+            // Label BEFORE input: [TAU] [input] [%]
+            suffix->setBounds (blockLeft, y, labelW, rowH);
+
+            // Editor offset so its visible text aligns with the centred block
+            int teX = blockLeft + labelW + spaceW - (editorW - textW) / 2;
+            teX = juce::jlimit (contentPad, juce::jmax (contentPad, contentPad + contentW - editorW), teX);
+            te->setBounds (teX, y, editorW, rowH);
+
+            // % label right after the visible text
+            if (pctLabel != nullptr)
+            {
+                const int textRightX = blockLeft + labelW + spaceW + textW;
+                pctLabel->setBounds (textRightX, y, pctW, rowH);
+            }
+
+            // Bar below the text row, aligned with the footer buttons
+            const int barX = kPromptInnerMargin;
+            const int barW = juce::jmax (60, aw->getWidth() - kPromptInnerMargin * 2);
+            bar->setBounds (barX, y + rowH + barGap, barW, barH);
+        };
+
+        placeRow (tauTe, tauSuffix, tauPctLabel, tauBar, startY);
+        placeRow (attTe, attSuffix, attPctLabel, attBar, startY + rowTotal + gap);
+    };
+
+    // Wire text-change → bar update + re-layout
+    auto textToBar = [syncing] (juce::TextEditor* te, PromptBar* bar)
+    {
+        if (*syncing || te == nullptr || bar == nullptr) return;
+        *syncing = true;
+        const float v = juce::jlimit (0.0f, 100.0f, (float) te->getText().getIntValue());
+        bar->value = v * 0.01f;
+        bar->repaint();
+        *syncing = false;
+    };
+
+    if (auto* tauTe = aw->getTextEditor ("tau"))
+        tauTe->onTextChange = [layoutRows, tauTe, tauBar, textToBar] () mutable
+        {
+            textToBar (tauTe, tauBar);
+            layoutRows();
+        };
+    if (auto* attTe = aw->getTextEditor ("att"))
+        attTe->onTextChange = [layoutRows, attTe, attBar, textToBar] () mutable
+        {
+            textToBar (attTe, attBar);
+            layoutRows();
+        };
+
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    applyPromptShellSize (*aw);
+    layoutAlertWindowButtons (*aw);
+    layoutRows();
+
+    const juce::Font& kAutoFbkFont = kBoldFont40();
+
+    preparePromptTextEditor (*aw, "tau", scheme.bg, scheme.text, scheme.fg, kAutoFbkFont, false);
+    preparePromptTextEditor (*aw, "att", scheme.bg, scheme.text, scheme.fg, kAutoFbkFont, false);
+
+    // Re-apply row layout after preparePromptTextEditor repositioned them
+    layoutRows();
+
+    styleAlertButtons (*aw, lnf);
+
+    juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
+
+    if (safeThis != nullptr)
+    {
+        fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+        {
+            juce::ignoreUnused (a);
+            layoutAlertWindowButtons (a);
+            layoutRows();
+        });
+
+        embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+    }
+    else
+    {
+        aw->centreAroundComponent (this, aw->getWidth(), aw->getHeight());
+        bringPromptWindowToFront (*aw);
+    }
+
+    // Final styling pass
+    {
+        preparePromptTextEditor (*aw, "tau", scheme.bg, scheme.text, scheme.fg, kAutoFbkFont, false);
+        preparePromptTextEditor (*aw, "att", scheme.bg, scheme.text, scheme.fg, kAutoFbkFont, false);
+        layoutRows();
+
+        if (tauSuffix != nullptr)
+        {
+            if (auto* te = aw->getTextEditor ("tau"))
+            {
+                tauSuffix->setFont (te->getFont());
+                if (tauPctLabel != nullptr) tauPctLabel->setFont (te->getFont());
+            }
+        }
+        if (attSuffix != nullptr)
+        {
+            if (auto* te = aw->getTextEditor ("att"))
+            {
+                attSuffix->setFont (te->getFont());
+                if (attPctLabel != nullptr) attPctLabel->setFont (te->getFont());
+            }
+        }
+
+        layoutRows();
+
+        juce::Component::SafePointer<juce::AlertWindow> safeAw (aw);
+        juce::MessageManager::callAsync ([safeAw]()
+        {
+            if (safeAw == nullptr)
+                return;
+            bringPromptWindowToFront (*safeAw);
+            safeAw->repaint();
+        });
+    }
+
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create ([safeThis, aw, tauBar, attBar] (int result) mutable
+        {
+            std::unique_ptr<juce::AlertWindow> killer (aw);
+
+            if (safeThis != nullptr)
+                safeThis->setPromptOverlayActive (false);
+
+            if (safeThis == nullptr || result != 1)
+                return;
+
+            // Read final values from bars (authoritative)
+            const float newTau = juce::jlimit (0.0f, 100.0f, tauBar->value * 100.0f);
+            const float newAtt = juce::jlimit (0.0f, 100.0f, attBar->value * 100.0f);
+
+            if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamAutoFbkTau))
+                p->setValueNotifyingHost (p->convertTo0to1 (newTau));
+            if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamAutoFbkAtt))
+                p->setValueNotifyingHost (p->convertTo0to1 (newAtt));
+
+            safeThis->autoFbkDisplay.setTooltip (formatAutoFbkTooltip (newTau, newAtt));
+        }),
+        false);
+}
+
 void ECHOTRAudioProcessorEditor::openInfoPopup()
 {
     lnf.setScheme (activeScheme);
@@ -3047,8 +3437,8 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
     
     const float ms = (float) timeSlider.getValue();
     if (ms >= 1000.0f)
-        return juce::String (ms / 1000.0f, 3) + " S TIME";
-    return juce::String ((int) std::lround (ms)) + " MS TIME";
+        return juce::String (ms / 1000.0f, 3) + " s TIME";
+    return juce::String ((int) std::lround (ms)) + " ms TIME";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
@@ -3065,8 +3455,8 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     
     const float ms = (float) timeSlider.getValue();
     if (ms >= 1000.0f)
-        return juce::String (ms / 1000.0f, 3) + " S";
-    return juce::String ((int) std::lround (ms)) + " MS";
+        return juce::String (ms / 1000.0f, 3) + "s";
+    return juce::String ((int) std::lround (ms)) + "ms";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getFeedbackText() const
@@ -3115,47 +3505,50 @@ juce::String ECHOTRAudioProcessorEditor::getModText() const
 
 juce::String ECHOTRAudioProcessorEditor::getModTextShort() const
 {
-    return getModText();
+    const float mult = (float) modSliderToMultiplier (modSlider.getValue());
+    if (std::abs (mult - 1.0f) < kMultEpsilon)
+        return "X1";
+    return "X" + juce::String (mult, 2);
 }
 
 juce::String ECHOTRAudioProcessorEditor::getInputText() const
 {
     const float db = (float) inputSlider.getValue();
     if (db <= kSilenceDb)
-        return "-INF DB INPUT";
+        return "-INF dB INPUT";
     if (std::abs (db) < 0.05f)
-        return "0 DB INPUT";
-    return juce::String (db, 1) + " DB INPUT";
+        return "0 dB INPUT";
+    return juce::String (db, 1) + " dB INPUT";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getInputTextShort() const
 {
     const float db = (float) inputSlider.getValue();
     if (db <= kSilenceDb)
-        return "-INF IN";
+        return "-INF dB IN";
     if (std::abs (db) < 0.05f)
-        return "0 IN";
-    return juce::String (db, 1) + " IN";
+        return "0 dB IN";
+    return juce::String (db, 1) + " dB IN";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getOutputText() const
 {
     const float db = (float) outputSlider.getValue();
     if (db <= kSilenceDb)
-        return "-INF DB OUTPUT";
+        return "-INF dB OUTPUT";
     if (std::abs (db) < 0.05f)
-        return "0 DB OUTPUT";
-    return juce::String (db, 1) + " DB OUTPUT";
+        return "0 dB OUTPUT";
+    return juce::String (db, 1) + " dB OUTPUT";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getOutputTextShort() const
 {
     const float db = (float) outputSlider.getValue();
     if (db <= kSilenceDb)
-        return "-INF OUT";
+        return "-INF dB OUT";
     if (std::abs (db) < 0.05f)
-        return "0 OUT";
-    return juce::String (db, 1) + " OUT";
+        return "0 dB OUT";
+    return juce::String (db, 1) + " dB OUT";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getMixText() const
@@ -3167,38 +3560,38 @@ juce::String ECHOTRAudioProcessorEditor::getMixText() const
 juce::String ECHOTRAudioProcessorEditor::getMixTextShort() const
 {
     const int pct = (int) std::lround (mixSlider.getValue() * 100.0);
-    return juce::String (pct) + "% MX";
+    return juce::String (pct) + "%";
 }
 
 namespace
 {
-    constexpr const char* kTimeLegendFull  = "5000 MS TIME";
-    constexpr const char* kTimeLegendShort = "5000 MS";  // Use MS format (wider than "5.000 S")
+    constexpr const char* kTimeLegendFull  = "5000 ms TIME";
+    constexpr const char* kTimeLegendShort = "5000ms";  // Glued value+unit (wider than "5.000s")
     constexpr const char* kTimeLegendInt   = "5000";
 
     constexpr const char* kFeedbackLegendFull  = "100% FEEDBACK";
     constexpr const char* kFeedbackLegendShort = "100% FBK";
-    constexpr const char* kFeedbackLegendInt   = "100";
+    constexpr const char* kFeedbackLegendInt   = "100%";
 
     constexpr const char* kModeLegendFull  = "STEREO MODE";
     constexpr const char* kModeLegendShort = "PING-PONG";  // Value-only (worst-case width)
     constexpr const char* kModeLegendInt   = "STR";
 
     constexpr const char* kModLegendFull  = "X4.00 MOD";
-    constexpr const char* kModLegendShort = "X4.0 MOD";
+    constexpr const char* kModLegendShort = "X4.00";
     constexpr const char* kModLegendInt   = "X4";
 
-    constexpr const char* kInputLegendFull  = "-100.0 DB INPUT";
-    constexpr const char* kInputLegendShort = "-100.0 IN";
-    constexpr const char* kInputLegendInt   = "-100";
+    constexpr const char* kInputLegendFull  = "-100.0 dB INPUT";
+    constexpr const char* kInputLegendShort = "-100.0 dB IN";
+    constexpr const char* kInputLegendInt   = "-100.0dB";
 
-    constexpr const char* kOutputLegendFull  = "-100.0 DB OUTPUT";
-    constexpr const char* kOutputLegendShort = "-100.0 OUT";
-    constexpr const char* kOutputLegendInt   = "-100";
+    constexpr const char* kOutputLegendFull  = "-100.0 dB OUTPUT";
+    constexpr const char* kOutputLegendShort = "-100.0 dB OUT";
+    constexpr const char* kOutputLegendInt   = "-100.0dB";
 
     constexpr const char* kMixLegendFull  = "100% MIX";
-    constexpr const char* kMixLegendShort = "100% MX";
-    constexpr const char* kMixLegendInt   = "100";
+    constexpr const char* kMixLegendShort = "100%";
+    constexpr const char* kMixLegendInt   = "100%";
 
     constexpr int kValueAreaHeightPx = 44;
     constexpr int kValueAreaRightMarginPx = 24;
@@ -3472,9 +3865,12 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (getAutoFbkLabelArea().contains (p))
+    if (getAutoFbkLabelArea().contains (p) || autoFbkDisplay.getBounds().contains (p))
     {
-        autoFbkButton.setToggleState (! autoFbkButton.getToggleState(), juce::sendNotificationSync);
+        if (e.mods.isPopupMenu())
+            openAutoFbkPrompt();
+        else
+            autoFbkButton.setToggleState (! autoFbkButton.getToggleState(), juce::sendNotificationSync);
         return;
     }
 
@@ -3541,7 +3937,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
                               const juce::String& text,
                               float shrinkFloor) -> bool
     {
-        auto t = text.toUpperCase().trim();
+        auto t = text.trim();
         if (t.isEmpty() || area.getWidth() <= 2 || area.getHeight() <= 2)
             return false;
 
@@ -3655,12 +4051,12 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
                                                &cachedModTextShort, &cachedInputTextShort, &cachedOutputTextShort, &cachedMixTextShort };
         const juce::String intTexts[7] = {
             juce::String ((int) timeSlider.getValue()),
-            juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)),
+            juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)) + "%",
             juce::String ((int) modeSlider.getValue()),
             juce::String ((int) modSlider.getValue()),
-            juce::String ((int) inputSlider.getValue()),
-            juce::String ((int) outputSlider.getValue()),
-            juce::String ((int) std::lround (mixSlider.getValue() * 100.0))
+            juce::String ((int) inputSlider.getValue()) + "dB",
+            juce::String ((int) outputSlider.getValue()) + "dB",
+            juce::String ((int) std::lround (mixSlider.getValue() * 100.0)) + "%"
         };
 
         for (int i = 0; i < 7; ++i)
@@ -3833,6 +4229,12 @@ void ECHOTRAudioProcessorEditor::resized()
     {
         const auto midiLabelRect = getMidiLabelArea();
         midiChannelDisplay.setBounds (midiLabelRect);
+    }
+
+    // Position invisible tooltip overlay on the AUTO FBK label area
+    {
+        const auto autoFbkLabelRect = getAutoFbkLabelArea();
+        autoFbkDisplay.setBounds (autoFbkLabelRect);
     }
 
     if (resizerCorner != nullptr)

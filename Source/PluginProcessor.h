@@ -24,6 +24,8 @@ public:
 	static constexpr const char* kParamSync       = "sync";
 	static constexpr const char* kParamMidi       = "midi";
 	static constexpr const char* kParamAutoFbk    = "auto_fbk";
+	static constexpr const char* kParamAutoFbkTau = "auto_fbk_tau";
+	static constexpr const char* kParamAutoFbkAtt = "auto_fbk_att";
 	static constexpr const char* kParamReverse    = "reverse";
 	
 	// UI state parameters (hidden from DAW automation)
@@ -67,6 +69,13 @@ public:
 	static constexpr float kMixMin = 0.0f;
 	static constexpr float kMixMax = 1.0f;
 	static constexpr float kMixDefault = 1.0f;
+
+	static constexpr float kAutoFbkTauMin     = 0.0f;
+	static constexpr float kAutoFbkTauMax     = 100.0f;
+	static constexpr float kAutoFbkTauDefault = 50.0f;
+	static constexpr float kAutoFbkAttMin     = 0.0f;
+	static constexpr float kAutoFbkAttMax     = 100.0f;
+	static constexpr float kAutoFbkAttDefault = 75.0f;
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -202,6 +211,8 @@ private:
 	std::atomic<float>* syncParam = nullptr;
 	std::atomic<float>* midiParam = nullptr;
 	std::atomic<float>* autoFbkParam = nullptr;
+	std::atomic<float>* autoFbkTauParam = nullptr;
+	std::atomic<float>* autoFbkAttParam = nullptr;
 	std::atomic<float>* reverseParam = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
