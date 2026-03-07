@@ -140,7 +140,7 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	autoFbkTauParam = apvts.getRawParameterValue (kParamAutoFbkTau);
 	autoFbkAttParam = apvts.getRawParameterValue (kParamAutoFbkAtt);
 	reverseParam = apvts.getRawParameterValue (kParamReverse);
-	reversePitchParam = apvts.getRawParameterValue (kParamReversePitch);
+	reverseSmoothParam = apvts.getRawParameterValue (kParamReverseSmooth);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
@@ -540,15 +540,22 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                  float delaySamples, float feedback, float inputGain,
                                                  float outputGain, float mix, float delaySmoothCoeff,
-                                                 float pitchRate)
+                                                 float smoothMult)
 {
-	// Single-buffer reverse delay.
-	// ONE read head reads BACKWARDS through the main circular delay buffer.
-	// Chunk length is LOCKED at chunk start from the EMA-smoothed delay.
-	// This prevents mid-chunk length changes that cause clicks when time
-	// drops quickly.  The EMA still runs every sample so the NEXT chunk
-	// picks up the new target smoothly.
-	// Tukey cosine taper at chunk edges prevents clicks at boundaries.
+	// ══════════════════════════════════════════════════════════════════
+	// SINGLE-VOICE REVERSE DELAY — forward feedback, short taper
+	// ══════════════════════════════════════════════════════════════════
+	//
+	// FEEDBACK reads FORWARD (like direct mode) → buffer always coherent.
+	// Tails behave identically to direct mode.
+	//
+	// OUTPUT reads BACKWARD (single voice, chunk = EMA-smoothed delay).
+	// Short Tukey taper at chunk edges prevents clicks.
+	// SMOOTH controls taper length (artistic: choppy ↔ ambient).
+	//
+	// No overlap-add (avoids phase interference on tonal MIDI content).
+	// No glide cutoff (EMA smoothing handles transitions naturally;
+	// each chunk plays to completion, next chunk adopts current delay).
 
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -562,17 +569,18 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 	const float targetDelay = delaySamples;
 	const float gainSmoothCoeff = 0.9955f;
 
-	// Tukey taper: cosine fade over this many samples at chunk start/end
-	constexpr int kTaperSamples = 128;
-	// Minimum chunk length — must be small enough that reverse mode covers
-	// the same MIDI note range as forward mode.  4 samples ≈ 12 kHz @ 48 kHz
-	// (MIDI note ≈ 120), well above any practical musical pitch.
+	// Output taper: base 32 samples, scaled by smoothMult (0.25× to 4×).
+	// Much shorter than before → preserves clean reversed audio;
+	// taper is only for click prevention at chunk seams.
+	const int kOutTaperBase = 32;
+	const int kOutTaperSamples = juce::jmax (4, static_cast<int> ((float) kOutTaperBase * smoothMult));
+
 	constexpr float kMinChunkLen = 4.0f;
 
 	for (int i = 0; i < numSamples; ++i)
 	{
-		// EMA runs every sample — always tracks target, even mid-chunk
-		revSmoothedDelay = revSmoothedDelay * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		// EMA smoothing (runs every sample, tracks target even mid-chunk)
+		revSmoothedDelay   = revSmoothedDelay * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
 		smoothedInputGain  = smoothedInputGain  * gainSmoothCoeff + inputGain  * (1.0f - gainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * gainSmoothCoeff + outputGain * (1.0f - gainSmoothCoeff);
 		smoothedMix        = smoothedMix        * gainSmoothCoeff + mix        * (1.0f - gainSmoothCoeff);
@@ -583,105 +591,88 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 			reverseAnchor    = writePos;
 			reverseCounter   = 0.0f;
 			float candidateLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
-
-			// Safety: with pitchRate < 1 the chunk takes chunkLen/pitchRate
-			// real-time samples to complete.  If that exceeds half the
-			// circular buffer the write head would overwrite data we're
-			// still reading.  Clamp to keep it safe.
-			if (pitchRate > 0.0f && pitchRate < 1.0f)
-			{
-				const float maxSafe = (float) (delayBufferLength / 2) * pitchRate;
-				candidateLen = juce::jmin (candidateLen, maxSafe);
-			}
-			reverseChunkLen  = candidateLen;
+			const float maxSafe = (float) (delayBufferLength / 2);
+			reverseChunkLen  = juce::jmin (candidateLen, maxSafe);
 			reverseNeedsInit = false;
 		}
 
-		const float chunkLen = reverseChunkLen;  // locked for this chunk
+		const float chunkLen = reverseChunkLen;
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 
-		// Read backwards from anchor
-		float readPosF = (float) reverseAnchor - reverseCounter;
-		if (readPosF < 0.0f) readPosF += (float) delayBufferLength;
+		// ════════════════════════════════════════════════════════════
+		// FEEDBACK PATH: forward read (identical to direct mode)
+		// ════════════════════════════════════════════════════════════
+		float fwdReadPosF = (float) writePos - revSmoothedDelay;
+		if (fwdReadPosF < 0.0f) fwdReadPosF += (float) delayBufferLength;
 
-		const int idx0  = static_cast<int>(readPosF) & wrapMask;
-		const int idxM1 = (idx0 + wrapMask) & wrapMask;
-		const int idx1  = (idx0 + 1) & wrapMask;
-		const int idx2  = (idx0 + 2) & wrapMask;
-		const float frac = readPosF - static_cast<float>(static_cast<int>(readPosF));
+		const int fIdx0  = static_cast<int>(fwdReadPosF) & wrapMask;
+		const int fIdxM1 = (fIdx0 + wrapMask) & wrapMask;
+		const int fIdx1  = (fIdx0 + 1) & wrapMask;
+		const int fIdx2  = (fIdx0 + 2) & wrapMask;
+		const float fFrac = fwdReadPosF - static_cast<float>(static_cast<int>(fwdReadPosF));
 
-		float revL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
-		float revR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
-
-		// Tukey cosine taper at chunk edges
-		// Taper length adapts to chunk size: 25 % per edge, capped so both
-		// fade-in and fade-out fit inside the chunk (≤ 50 % total).
-		const int halfChunk = static_cast<int>(chunkLen * 0.5f);
-		const int taperLen = juce::jmin (halfChunk, juce::jmax (1, juce::jmin (kTaperSamples, static_cast<int>(chunkLen * 0.25f))));
-		{
-			const float pos = reverseCounter;
-			const float remaining = chunkLen - pos;
-			const float taperF = static_cast<float>(taperLen);
-			if (pos < taperF)
-			{
-				const float w = taperWeight (pos, taperF);
-				revL *= w;
-				revR *= w;
-			}
-			else if (remaining < taperF)
-			{
-				const float w = taperWeight (remaining, taperF);
-				revL *= w;
-				revR *= w;
-			}
-		}
-
-		// Write to delay buffer: input + reversed signal × feedback
-		float fbkRevL = revL * feedback;
-		float fbkRevR = revR * feedback;
+		float fbkL = hermite4pt (delayL[fIdxM1], delayL[fIdx0], delayL[fIdx1], delayL[fIdx2], fFrac) * feedback;
+		float fbkR = hermite4pt (delayR[fIdxM1], delayR[fIdx0], delayR[fIdx1], delayR[fIdx2], fFrac) * feedback;
 
 		// DC blocker (transparent feedback path)
-		fbkRevL = dcBlockTick (fbkRevL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
-		fbkRevR = dcBlockTick (fbkRevR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+		fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+		fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
 
-		delayL[writePos] = inputL * smoothedInputGain + fbkRevL;
-		delayR[writePos] = inputR * smoothedInputGain + fbkRevR;
+		// Write to buffer: input + forward feedback (buffer stays coherent)
+		delayL[writePos] = inputL * smoothedInputGain + fbkL;
+		delayR[writePos] = inputR * smoothedInputGain + fbkR;
 
-		// Output: dry/wet mix
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + revL * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + revR * smoothedMix * smoothedOutputGain;
+		// ════════════════════════════════════════════════════════════
+		// OUTPUT PATH: backward read (single voice, short taper)
+		// ════════════════════════════════════════════════════════════
+		float revReadPosF = (float) reverseAnchor - reverseCounter;
+		if (revReadPosF < 0.0f) revReadPosF += (float) delayBufferLength;
+
+		const int rIdx0  = static_cast<int>(revReadPosF) & wrapMask;
+		const int rIdxM1 = (rIdx0 + wrapMask) & wrapMask;
+		const int rIdx1  = (rIdx0 + 1) & wrapMask;
+		const int rIdx2  = (rIdx0 + 2) & wrapMask;
+		const float rFrac = revReadPosF - static_cast<float>(static_cast<int>(revReadPosF));
+
+		const float rawRevL = hermite4pt (delayL[rIdxM1], delayL[rIdx0], delayL[rIdx1], delayL[rIdx2], rFrac);
+		const float rawRevR = hermite4pt (delayR[rIdxM1], delayR[rIdx0], delayR[rIdx1], delayR[rIdx2], rFrac);
+
+		// Short taper at chunk edges — just enough to prevent clicks
+		const float pos = reverseCounter;
+		const float remaining = chunkLen - pos;
+		const int halfChunk = static_cast<int>(chunkLen * 0.5f);
+		const int outTaperLen = juce::jmin (halfChunk, juce::jmax (1, kOutTaperSamples));
+		float outTaper = 1.0f;
+		{
+			const float taperF = static_cast<float>(outTaperLen);
+			if (pos < taperF)
+				outTaper = taperWeight (pos, taperF);
+			else if (remaining < taperF)
+				outTaper = taperWeight (remaining, taperF);
+		}
+
+		const float outRevL = rawRevL * outTaper;
+		const float outRevR = rawRevR * outTaper;
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + outRevL * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + outRevR * smoothedMix * smoothedOutputGain;
 
 		// Advance write position
 		writePos = (writePos + 1) & wrapMask;
 
 		// Advance reverse counter; start new chunk when done.
-		// When MIDI glide is active the smoothed delay can diverge
-		// significantly from the locked chunk length.  To make the
-		// pitch glide feel as continuous as in forward mode, force an
-		// early chunk boundary once the EMA has moved far enough from
-		// the current chunk length (> 20 % ratio change).  The taper
-		// fade-out at chunk end ensures this stays click-free.
-		reverseCounter += pitchRate;
-		const float smoothedNow = juce::jmax (kMinChunkLen, revSmoothedDelay);
-		const float ratio = (smoothedNow > chunkLen)
-		                   ? (smoothedNow / chunkLen)
-		                   : (chunkLen / smoothedNow);
-		const bool chunkDone   = reverseCounter >= chunkLen;
-		const bool glideCutoff = (ratio > 1.08f) && (reverseCounter >= kMinChunkLen);
-		if (chunkDone || glideCutoff)
+		// No glide cutoff — EMA smoothing handles frequency transitions
+		// naturally. Each chunk plays to completion, the next chunk
+		// adopts the current smoothed delay as its length.
+		reverseCounter += 1.0f;
+		if (reverseCounter >= chunkLen)
 		{
 			reverseCounter  = 0.0f;
 			reverseAnchor   = writePos;
-			// Lock NEW chunk length from current smoothed delay
-			float newLen = smoothedNow;
-			if (pitchRate > 0.0f && pitchRate < 1.0f)
-			{
-				const float maxSafe = (float) (delayBufferLength / 2) * pitchRate;
-				newLen = juce::jmin (newLen, maxSafe);
-			}
-			reverseChunkLen = newLen;
+			float newLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
+			const float maxSafe = (float) (delayBufferLength / 2);
+			reverseChunkLen = juce::jmin (newLen, maxSafe);
 		}
 	}
 
@@ -887,12 +878,13 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		autoFbkEnvelope = juce::jlimit (0.0f, 1.0f, autoFbkEnvelope);
 
 		// ATT = modulation depth only (cubic curve for gradual onset).
-		//   att 10 % → attCurved ≈ 0.001 (barely perceptible)
-		//   att 25 % → attCurved ≈ 0.016 (subtle)
-		//   att 50 % → attCurved ≈ 0.125 (clearly audible)
-		//   att 75 % → attCurved ≈ 0.422 (dramatic)
-		//   att 100 % → multiplier = envelope (full modulation)
-		const float attCurved = attPct * attPct * attPct;
+		// UI 100 % → internal 75 % to keep the full slider range useful.
+		//   att 25 % → scaled 18.75 % → attCurved ≈ 0.007 (subtle)
+		//   att 50 % → scaled 37.5 %  → attCurved ≈ 0.053 (moderate)
+		//   att 75 % → scaled 56.25 % → attCurved ≈ 0.178 (clear)
+		//   att 100 % → scaled 75 %   → attCurved ≈ 0.422 (dramatic max)
+		const float attScaled = attPct * 0.75f;
+		const float attCurved = attScaled * attScaled * attScaled;
 		const float envMix = 1.0f - attCurved * (1.0f - autoFbkEnvelope);
 		targetFeedback *= envMix;
 	}
@@ -929,14 +921,17 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		const float vel = (float) lastMidiVelocity.load (std::memory_order_relaxed);
 		const float tLin = juce::jlimit (0.0f, 1.0f, (vel - 1.0f) / 126.0f);
-		// Fifth-root curve: compresses the fast zone aggressively so the vast
-		// majority of the velocity range (≈60-127) feels nearly instant, while
-		// only very low velocities produce audible portamento.
-		//   tau_max = 300 ms (vel 1)  → 95 % reached in ~900 ms
-		//   tau_min = 0.4 ms (vel 127) → essentially instant
-		constexpr float kTauMax = 0.30f;   // 300 ms — long portamento at low vel
+		// Steep power curve (exponent 0.12): nearly all of the velocity range
+		// (≈40-127) feels instant.  Only extreme pianissimo (vel < 30) produces
+		// noticeable portamento.
+		//   vel 127 → tau ≈ 0.4 ms  (instant)
+		//   vel 100 → tau ≈ 3 ms    (instant)
+		//   vel  60 → tau ≈ 12 ms   (barely noticeable)
+		//   vel  30 → tau ≈ 40 ms   (gentle glide)
+		//   vel   1 → tau ≈ 200 ms  (full portamento)
+		constexpr float kTauMax = 0.200f;  // 200 ms — expressive portamento at low vel
 		constexpr float kTauMin = 0.0004f; // 0.4 ms
-		const float t = std::pow (tLin, 0.2f);  // fifth root
+		const float t = std::pow (tLin, 0.12f);  // very steep curve
 		const float tau = kTauMax - t * (kTauMax - kTauMin);
 		delaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
 	}
@@ -957,11 +952,11 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
 	if (reverseEnabled)
 	{
-		const float revPitchSt = loadAtomicOrDefault (reversePitchParam, kReversePitchDefault);
-		const float pitchRate  = std::pow (2.0f, revPitchSt / 12.0f);
+		const float smoothVal  = loadAtomicOrDefault (reverseSmoothParam, kReverseSmoothDefault);
+		const float smoothMult = std::pow (2.0f, smoothVal);
 		processReverseDelay (buffer, numSamples, numChannels, delaySamples,
 		                     targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff,
-		                     pitchRate);
+		                     smoothMult);
 		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 		return;
 	}
@@ -1128,8 +1123,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		juce::NormalisableRange<float> (kAutoFbkAttMin, kAutoFbkAttMax, 0.01f, 1.0f), kAutoFbkAttDefault));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamReverse, "Reverse", false));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamReversePitch, "Reverse Pitch",
-		juce::NormalisableRange<float> (kReversePitchMin, kReversePitchMax, 0.01f, 1.0f), kReversePitchDefault));
+		kParamReverseSmooth, "Reverse Smooth",
+		juce::NormalisableRange<float> (kReverseSmoothMin, kReverseSmoothMax, 0.01f, 1.0f), kReverseSmoothDefault));
 
 	// UI state (hidden from automation)
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));

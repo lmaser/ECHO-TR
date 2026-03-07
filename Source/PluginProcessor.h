@@ -27,7 +27,7 @@ public:
 	static constexpr const char* kParamAutoFbkTau = "auto_fbk_tau";
 	static constexpr const char* kParamAutoFbkAtt = "auto_fbk_att";
 	static constexpr const char* kParamReverse      = "reverse";
-	static constexpr const char* kParamReversePitch = "reverse_pitch";
+	static constexpr const char* kParamReverseSmooth = "reverse_smooth";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -78,9 +78,9 @@ public:
 	static constexpr float kAutoFbkAttMax     = 100.0f;
 	static constexpr float kAutoFbkAttDefault = 75.0f;
 
-	static constexpr float kReversePitchMin     = -12.0f;
-	static constexpr float kReversePitchMax     =  12.0f;
-	static constexpr float kReversePitchDefault =   0.0f;
+	static constexpr float kReverseSmoothMin     = -2.0f;
+	static constexpr float kReverseSmoothMax     =  2.0f;
+	static constexpr float kReverseSmoothDefault =  0.0f;
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -110,11 +110,11 @@ public:
 	                            float delaySamples, float feedback, float inputGain,
 	                            float outputGain, float mix, float delaySmoothCoeff);
 
-	// Reverse delay processing (chunk-based dual read with crossfade)
+	// Reverse delay processing (chunk-based backward playback with smooth taper control)
 	void processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                          float delaySamples, float feedback, float inputGain,
 	                          float outputGain, float mix, float delaySmoothCoeff,
-	                          float pitchRate);
+	                          float smoothMult);
 
 	juce::AudioProcessorEditor* createEditor() override;
 	bool hasEditor() const override;
@@ -185,11 +185,10 @@ private:
 	float smoothedMix = 0.5f;
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
-	// Single-buffer reverse delay state.
+	// Single-voice reverse delay state.
 	// One read head reads BACKWARDS through the main delay buffer.
-	// A Tukey cosine taper at chunk edges prevents clicks.
-	// EMA-smoothed delay determines chunk length → when delay changes,
-	// chunks end sooner/later → tape-speed pitch shift, same as forward.
+	// Short Tukey taper at chunk edges prevents clicks.
+	// Feedback reads FORWARD (like direct mode) for coherent tails.
 	int   reverseAnchor     = 0;      // writePos snapshot at chunk start
 	float reverseCounter    = 0.0f;   // position within chunk (0 → chunkLen)
 	float reverseChunkLen   = 0.0f;   // locked chunk length (set at chunk start)
@@ -231,7 +230,7 @@ private:
 	std::atomic<float>* autoFbkTauParam = nullptr;
 	std::atomic<float>* autoFbkAttParam = nullptr;
 	std::atomic<float>* reverseParam = nullptr;
-	std::atomic<float>* reversePitchParam = nullptr;
+	std::atomic<float>* reverseSmoothParam = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;

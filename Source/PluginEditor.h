@@ -30,7 +30,7 @@ private:
     void openNumericEntryPopupForSlider (juce::Slider& s);
     void openMidiChannelPrompt();
     void openAutoFbkPrompt();
-    void openReversePitchPrompt();
+    void openReverseSmoothPrompt();
     void openInfoPopup();
     void openGraphicsPopup();
     void setPromptOverlayActive (bool shouldBeActive);
