@@ -187,7 +187,7 @@ private:
 
 	// Single-voice reverse delay state.
 	// One read head reads BACKWARDS through the main delay buffer.
-	// Short Tukey taper at chunk edges prevents clicks.
+	// Proportional Tukey taper at chunk edges prevents clicks.
 	// Feedback reads FORWARD (like direct mode) for coherent tails.
 	int   reverseAnchor     = 0;      // writePos snapshot at chunk start
 	float reverseCounter    = 0.0f;   // position within chunk (0 → chunkLen)

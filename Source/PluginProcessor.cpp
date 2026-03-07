@@ -23,6 +23,10 @@ namespace
 	// Enough inertia for smooth tape sweep, fast enough for musical response.
 	constexpr float kDelaySmoothTauSeconds = 0.08f;
 
+	// Gain / mix EMA coefficient: one-pole ~5 ms time constant at 44.1 kHz.
+	// Shared by all delay modes (Stereo, Mono, PingPong, Reverse, bypass).
+	constexpr float kGainSmoothCoeff = 0.9955f;
+
 	// ---- Precomputed Tukey (raised-cosine) taper table for reverse mode ----
 	// Avoids per-sample std::cos() in the inner loop.
 	constexpr int kTaperTableSize = 129; // 128 samples + endpoint
@@ -365,14 +369,13 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 	
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
-	const float gainSmoothCoeff = 0.9955f; // ~5ms time constant
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
-		smoothedInputGain  = smoothedInputGain  * gainSmoothCoeff + inputGain  * (1.0f - gainSmoothCoeff);
-		smoothedOutputGain = smoothedOutputGain * gainSmoothCoeff + outputGain * (1.0f - gainSmoothCoeff);
-		smoothedMix        = smoothedMix        * gainSmoothCoeff + mix        * (1.0f - gainSmoothCoeff);
+		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
+		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
+		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
 		
 		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
@@ -436,14 +439,13 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 	
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
-	const float gainSmoothCoeff = 0.9955f;
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
-		smoothedInputGain  = smoothedInputGain  * gainSmoothCoeff + inputGain  * (1.0f - gainSmoothCoeff);
-		smoothedOutputGain = smoothedOutputGain * gainSmoothCoeff + outputGain * (1.0f - gainSmoothCoeff);
-		smoothedMix        = smoothedMix        * gainSmoothCoeff + mix        * (1.0f - gainSmoothCoeff);
+		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
+		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
+		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
 		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
@@ -493,14 +495,13 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
-	const float gainSmoothCoeff = 0.9955f;
 	
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
-		smoothedInputGain  = smoothedInputGain  * gainSmoothCoeff + inputGain  * (1.0f - gainSmoothCoeff);
-		smoothedOutputGain = smoothedOutputGain * gainSmoothCoeff + outputGain * (1.0f - gainSmoothCoeff);
-		smoothedMix        = smoothedMix        * gainSmoothCoeff + mix        * (1.0f - gainSmoothCoeff);
+		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
+		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
+		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
 		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
@@ -567,7 +568,6 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
-	const float gainSmoothCoeff = 0.9955f;
 
 	// Taper fraction: 1/16th of chunk (6.25%), scaled by smoothMult.
 	//   SMOOTH -2 (mult 0.25×): ~1.5% per side — very choppy
@@ -580,22 +580,22 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 	const float kTaperFraction = (1.0f / 16.0f) * smoothMult;
 
 	constexpr float kMinChunkLen = 4.0f;
+	const float maxSafe = static_cast<float>(delayBufferLength >> 1); // half buffer
 
 	for (int i = 0; i < numSamples; ++i)
 	{
 		// EMA smoothing (runs every sample, tracks target even mid-chunk)
 		revSmoothedDelay   = revSmoothedDelay * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
-		smoothedInputGain  = smoothedInputGain  * gainSmoothCoeff + inputGain  * (1.0f - gainSmoothCoeff);
-		smoothedOutputGain = smoothedOutputGain * gainSmoothCoeff + outputGain * (1.0f - gainSmoothCoeff);
-		smoothedMix        = smoothedMix        * gainSmoothCoeff + mix        * (1.0f - gainSmoothCoeff);
+		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
+		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
+		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
 
 		// ── Chunk init / boundary ──
 		if (reverseNeedsInit)
 		{
 			reverseAnchor    = writePos;
 			reverseCounter   = 0.0f;
-			float candidateLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
-			const float maxSafe = (float) (delayBufferLength / 2);
+			const float candidateLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
 			reverseChunkLen  = juce::jmin (candidateLen, maxSafe);
 			reverseNeedsInit = false;
 		}
@@ -629,7 +629,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		delayR[writePos] = inputR * smoothedInputGain + fbkR;
 
 		// ════════════════════════════════════════════════════════════
-		// OUTPUT PATH: backward read (single voice, short taper)
+		// OUTPUT PATH: backward read (single voice, proportional taper)
 		// ════════════════════════════════════════════════════════════
 		float revReadPosF = (float) reverseAnchor - reverseCounter;
 		if (revReadPosF < 0.0f) revReadPosF += (float) delayBufferLength;
@@ -675,8 +675,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		{
 			reverseCounter  = 0.0f;
 			reverseAnchor   = writePos;
-			float newLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
-			const float maxSafe = (float) (delayBufferLength / 2);
+			const float newLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
 			reverseChunkLen = juce::jmin (newLen, maxSafe);
 		}
 	}
@@ -905,13 +904,12 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Bypass if delay < 1 sample
 	if (delaySamples < 1.0f)
 	{
-		const float gainSmoothCoeff = 0.9955f;
 		for (int ch = 0; ch < numChannels; ++ch)
 		{
 			auto* channelData = buffer.getWritePointer (ch);
 			for (int i = 0; i < numSamples; ++i)
 			{
-				smoothedOutputGain = smoothedOutputGain * gainSmoothCoeff + outputGain * (1.0f - gainSmoothCoeff);
+				smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 				channelData[i] *= smoothedOutputGain;
 			}
 		}
@@ -920,25 +918,51 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		return;
 	}
 	
-	// Delay smoothing coefficient (cached; only recompute for MIDI glide)
-	float delaySmoothCoeff = cachedDelaySmoothCoeff;
+	// Delay smoothing coefficients (cached; only recompute for MIDI glide).
+	// Direct and reverse use DIFFERENT velocity→tau curves because their
+	// architectures make glide perceptible in very different ways:
+	//   • Direct: continuous per-sample EMA → glide is very audible.
+	//   • Reverse: chunk-quantised → glide only manifests at chunk edges.
+	// Both share kTauMax/kTauMin and velocity mapping, but exponents differ
+	// so the PERCEIVED glide is identical across modes.
+	float delaySmoothCoeff    = cachedDelaySmoothCoeff;
+	float revDelaySmoothCoeff = cachedDelaySmoothCoeff;
 	if (midiNoteActive)
 	{
-		const float vel = (float) lastMidiVelocity.load (std::memory_order_relaxed);
+		const float vel  = (float) lastMidiVelocity.load (std::memory_order_relaxed);
 		const float tLin = juce::jlimit (0.0f, 1.0f, (vel - 1.0f) / 126.0f);
-		// Steep power curve (exponent 0.12): nearly all of the velocity range
-		// (≈40-127) feels instant.  Only extreme pianissimo (vel < 30) produces
-		// noticeable portamento.
-		//   vel 127 → tau ≈ 0.4 ms  (instant)
-		//   vel 100 → tau ≈ 3 ms    (instant)
-		//   vel  60 → tau ≈ 12 ms   (barely noticeable)
+
+		constexpr float kTauMax = 0.200f;   // 200 ms — full portamento at pianissimo
+		constexpr float kTauMin = 0.0002f;  // 0.2 ms — imperceptible at max velocity
+
+		// ── Direct mode: very steep curve (exponent 0.05) ──
+		// Continuous EMA makes glide highly perceptible, so the curve must
+		// compress most of the velocity range into nearly-instant territory.
+		//   vel 127 → tau ≈ 0.2 ms  (instant)
+		//   vel 100 → tau ≈ 2.6 ms  (instant)
+		//   vel  60 → tau ≈ 7.5 ms  (subtle)
+		//   vel  30 → tau ≈ 14 ms   (gentle glide)
+		//   vel   1 → tau ≈ 200 ms  (full portamento)
+		{
+			const float t   = std::pow (tLin, 0.05f);
+			const float tau = kTauMax - t * (kTauMax - kTauMin);
+			delaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
+		}
+
+		// ── Reverse mode: gentler curve (exponent 0.12) ──
+		// Chunk-based playback naturally quantises glide to chunk boundaries,
+		// reducing perceived pitch-slide.  A wider tau range compensates so
+		// the musical result feels identical to direct mode.
+		//   vel 127 → tau ≈ 0.2 ms  (instant)
+		//   vel 100 → tau ≈ 6 ms    (barely noticeable — hidden by chunks)
+		//   vel  60 → tau ≈ 18 ms   (subtle)
 		//   vel  30 → tau ≈ 40 ms   (gentle glide)
 		//   vel   1 → tau ≈ 200 ms  (full portamento)
-		constexpr float kTauMax = 0.200f;  // 200 ms — expressive portamento at low vel
-		constexpr float kTauMin = 0.0004f; // 0.4 ms
-		const float t = std::pow (tLin, 0.12f);  // very steep curve
-		const float tau = kTauMax - t * (kTauMax - kTauMin);
-		delaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
+		{
+			const float t   = std::pow (tLin, 0.12f);
+			const float tau = kTauMax - t * (kTauMax - kTauMin);
+			revDelaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
+		}
 	}
 	
 	// Snap gain/mix smoothers to target when close enough (avoids useless EMA in steady state)
@@ -958,9 +982,9 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (reverseEnabled)
 	{
 		const float smoothVal  = loadAtomicOrDefault (reverseSmoothParam, kReverseSmoothDefault);
-		const float smoothMult = std::pow (2.0f, smoothVal);
+		const float smoothMult = std::exp2 (smoothVal);
 		processReverseDelay (buffer, numSamples, numChannels, delaySamples,
-		                     targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff,
+		                     targetFeedback, inputGain, outputGain, mixValue, revDelaySmoothCoeff,
 		                     smoothMult);
 		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 		return;
