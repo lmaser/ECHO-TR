@@ -15,6 +15,7 @@
       <FILE id="crtFx01" name="CrtEffect.h" compile="0" resource="0" file="Source/CrtEffect.h"/>
       <FILE id="prfTr01" name="PerfTrace.h" compile="0" resource="0" file="Source/PerfTrace.h"/>
       <FILE id="infCnt01" name="InfoContent.h" compile="0" resource="0" file="Source/InfoContent.h"/>
+      <FILE id="trShUI01" name="TRSharedUI.h" compile="0" resource="0" file="Source/TRSharedUI.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

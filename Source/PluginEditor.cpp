@@ -2,110 +2,12 @@
 #include "PluginEditor.h"
 #include "InfoContent.h"
 #include <functional>
-#include <unordered_map>
+
+using namespace TR;
 
 #if JUCE_WINDOWS
  #include <windows.h>
 #endif
-
-//========================== Overflow helpers ==========================
-// Helpers para medir texto y aplicar truncados según prioridad de formatos.
-
-static std::unordered_map<std::size_t, int>& getStringWidthCache()
-{
-    static thread_local std::unordered_map<std::size_t, int> widthCache;
-    return widthCache;
-}
-
-static int stringWidth (const juce::Font& font, const juce::String& s)
-{
-    if (s.isEmpty())
-        return 0;
-
-    auto& widthCache = getStringWidthCache();
-
-    if (widthCache.size() > 8192)
-        widthCache.clear();
-
-    // FNV-1a 64-bit hash — avoids string allocation for cache key
-    std::size_t h = 14695981039346656037ull;
-    auto mix = [&] (std::size_t v) { h ^= v; h *= 1099511628211ull; };
-
-    mix (static_cast<std::size_t> ((int) (font.getHeight() * 100.0f)));
-    mix (static_cast<std::size_t> ((int) (font.getHorizontalScale() * 100.0f)));
-    mix (static_cast<std::size_t> (font.isBold()   ? 1u : 0u));
-    mix (static_cast<std::size_t> (font.isItalic()  ? 1u : 0u));
-
-    const auto& typefaceName = font.getTypefaceName();
-    for (int i = 0; i < typefaceName.length(); ++i)
-        mix (static_cast<std::size_t> (typefaceName[i]));
-
-    for (int i = 0; i < s.length(); ++i)
-        mix (static_cast<std::size_t> (s[i]));
-
-    if (const auto it = widthCache.find (h); it != widthCache.end())
-        return it->second;
-
-    juce::GlyphArrangement ga;
-    ga.addLineOfText (font, s, 0.0f, 0.0f);
-    const int width = (int) std::ceil (ga.getBoundingBox (0, -1, true).getWidth());
-    widthCache.emplace (h, width);
-    return width;
-}
-
-struct GraphicsPromptLayout
-{
-    static constexpr int toggleBox = 34;
-    static constexpr int toggleGap = 10;
-    static constexpr int swatchSize = 40;
-    static constexpr int swatchGap = 8;
-    static constexpr int columnGap = 28;
-    static constexpr int titleHeight = 24;
-    static constexpr int titleToModeGap = 14;
-    static constexpr int modeToSwatchesGap = 14;
-};
-
-// ── Shared constants & helpers ──
-static const juce::Font& kBoldFont40()
-{
-    static const juce::Font f (juce::FontOptions (40.0f).withStyle ("Bold"));
-    return f;
-}
-
-static void styleAlertButtons (juce::AlertWindow& aw, juce::LookAndFeel& lnf)
-{
-    for (int i = 0; i < aw.getNumButtons(); ++i)
-    {
-        if (auto* btn = dynamic_cast<juce::TextButton*> (aw.getButton (i)))
-        {
-            btn->setColour (juce::TextButton::buttonColourId,   lnf.findColour (juce::TextButton::buttonColourId));
-            btn->setColour (juce::TextButton::buttonOnColourId, lnf.findColour (juce::TextButton::buttonOnColourId));
-            btn->setColour (juce::TextButton::textColourOffId,  lnf.findColour (juce::TextButton::textColourOffId));
-            btn->setColour (juce::TextButton::textColourOnId,   lnf.findColour (juce::TextButton::textColourOnId));
-        }
-    }
-}
-
-namespace UiMetrics
-{
-    constexpr float tickBoxOuterScale = 2.0f;
-    constexpr float tickBoxHorizontalBiasRatio = 0.1171875f;
-    constexpr float tickBoxInnerInsetRatio = 0.25f;
-
-    constexpr int tooltipMinWidth = 120;
-    constexpr int tooltipMinHeight = 38;
-    constexpr float tooltipHeightScale = 1.5f;
-    constexpr float tooltipAnchorXRatio = 0.42f;
-    constexpr float tooltipAnchorYRatio = 0.58f;
-    constexpr float tooltipParentMarginRatio = 0.11f;
-    constexpr float tooltipWidthPadFontRatio = 0.8f;
-    constexpr float tooltipTextInsetXRatio = 0.21f;
-    constexpr float tooltipTextInsetYRatio = 0.05f;
-
-    constexpr float versionFontRatio = 0.42f;
-    constexpr float versionHeightRatio = 0.62f;
-    constexpr float versionDesiredWidthRatio = 1.9f;
-}
 
 namespace UiStateKeys
 {
@@ -173,256 +75,6 @@ static constexpr std::array<const char*, 5> kUiMirrorParamIds {
     ECHOTRAudioProcessor::kParamUiColor0,
     ECHOTRAudioProcessor::kParamUiColor1
 };
-
-static void dismissEditorOwnedModalPrompts (juce::LookAndFeel& editorLookAndFeel)
-{
-    for (int i = juce::Component::getNumCurrentlyModalComponents() - 1; i >= 0; --i)
-    {
-        auto* modal = juce::Component::getCurrentlyModalComponent (i);
-        auto* alertWindow = dynamic_cast<juce::AlertWindow*> (modal);
-
-        if (alertWindow == nullptr)
-            continue;
-
-        if (&alertWindow->getLookAndFeel() != &editorLookAndFeel)
-            continue;
-
-        alertWindow->exitModalState (0);
-    }
-}
-
-static void bringPromptWindowToFront (juce::AlertWindow& aw)
-{
-    aw.setAlwaysOnTop (true);
-    aw.toFront (true);
-}
-
-// Helper: embed an AlertWindow in the editor overlay and center it.
-// Preserves previous behaviour; refactor to avoid duplication.
-void embedAlertWindowInOverlay (ECHOTRAudioProcessorEditor* editor,
-                                juce::AlertWindow* aw,
-                                bool bringTooltip = false)
-{
-    if (editor == nullptr || aw == nullptr)
-        return;
-
-    editor->setPromptOverlayActive (true);
-    aw->setInterceptsMouseClicks (false, true);  // prevent drag on background, children still clickable
-
-    // Position BEFORE making visible to avoid a one-frame flash at (0,0)
-    const int bx = juce::jmax (0, (editor->getWidth() - aw->getWidth()) / 2);
-    const int by = juce::jmax (0, (editor->getHeight() - aw->getHeight()) / 2);
-    aw->setBounds (bx, by, aw->getWidth(), aw->getHeight());
-    editor->promptOverlay.addChildComponent (*aw);
-    aw->setVisible (true);
-    aw->toFront (false);
-    if (bringTooltip && editor->tooltipWindow)
-        editor->tooltipWindow->toFront (true);
-    aw->repaint();
-}
-
-// Ensure an AlertWindow fits the editor width when embedded and optionally
-// run a layout callback to reposition inner controls after a resize.
-static void fitAlertWindowToEditor (juce::AlertWindow& aw,
-                                    ECHOTRAudioProcessorEditor* editor,
-                                    std::function<void(juce::AlertWindow&)> layoutCb = {})
-{
-    if (editor == nullptr)
-        return;
-
-    const int overlayPad = 12;
-    const int availW = juce::jmax (120, editor->getWidth() - (overlayPad * 2));
-    if (aw.getWidth() > availW)
-    {
-        aw.setSize (availW, juce::jmin (aw.getHeight(), editor->getHeight() - (overlayPad * 2)));
-        if (layoutCb)
-            layoutCb (aw);
-    }
-}
-
-static void anchorEditorOwnedPromptWindows (ECHOTRAudioProcessorEditor& editor,
-                                            juce::LookAndFeel& editorLookAndFeel)
-{
-    for (int i = juce::Component::getNumCurrentlyModalComponents() - 1; i >= 0; --i)
-    {
-        auto* modal = juce::Component::getCurrentlyModalComponent (i);
-        auto* alertWindow = dynamic_cast<juce::AlertWindow*> (modal);
-
-        if (alertWindow == nullptr)
-            continue;
-
-        if (&alertWindow->getLookAndFeel() != &editorLookAndFeel)
-            continue;
-
-        alertWindow->centreAroundComponent (&editor, alertWindow->getWidth(), alertWindow->getHeight());
-        bringPromptWindowToFront (*alertWindow);
-    }
-}
-
-static juce::Font makeOverlayDisplayFont()
-{
-    return juce::Font (juce::FontOptions (28.0f).withStyle ("Bold"));
-}
-
-static void drawOverlayPanel (juce::Graphics& g,
-                              juce::Rectangle<int> bounds,
-                              juce::Colour background,
-                              juce::Colour outline)
-{
-    g.setColour (background);
-    g.fillRect (bounds);
-
-    g.setColour (outline);
-    g.drawRect (bounds, 2);
-}
-
-static bool fits (juce::Graphics& g, const juce::String& s, int w)
-{
-    if (w <= 0) return false;
-    return stringWidth (g.getCurrentFont(), s) <= w;
-}
-
-
-static bool drawIfFitsWithOptionalShrink (juce::Graphics& g,
-                                         const juce::Rectangle<int>& area,
-                                         const juce::String& text,
-                                         float baseFontPx,
-                                         float shrinkFloorPx)
-{
-    auto font = g.getCurrentFont();
-    font.setHeight (baseFontPx);
-    font.setHorizontalScale (1.0f);
-    g.setFont (font);
-
-    if (fits (g, text, area.getWidth()))
-    {
-        g.drawText (text, area, juce::Justification::left, false);
-        return true;
-    }
-
-    // Compress horizontally instead of shrinking font height so that
-    // vertical size stays constant during horizontal resize.
-    const float minScale = juce::jlimit (0.4f, 1.0f, shrinkFloorPx / baseFontPx);
-    for (float s = 1.0f - 0.025f; s >= minScale; s -= 0.025f)
-    {
-        font.setHorizontalScale (s);
-        g.setFont (font);
-        if (fits (g, text, area.getWidth()))
-        {
-            g.drawText (text, area, juce::Justification::left, false);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
-static void drawValueNoEllipsis (juce::Graphics& g,
-                                 const juce::Rectangle<int>& area,
-                                 const juce::String& fullText,
-                                 const juce::String& noUnitText,
-                                 const juce::String& intOnlyText,
-                                 float baseFontPx,
-                                 float minFontPx)
-{
-    if (area.getWidth() <= 2 || area.getHeight() <= 2)
-        return;
-
-    const auto& full = fullText;
-    const auto& noU  = noUnitText;
-    const auto& intl = intOnlyText;
-
-    const float softShrinkFloor = minFontPx;
-
-    // FULL (con shrink suave)
-    if (drawIfFitsWithOptionalShrink (g, area, full, baseFontPx, softShrinkFloor))
-        return;
-
-    // NO-UNIT (con shrink suave)
-    if (noU.isNotEmpty() && drawIfFitsWithOptionalShrink (g, area, noU, baseFontPx, softShrinkFloor))
-        return;
-
-    // INT (normal)
-    {
-        auto font = g.getCurrentFont();
-        font.setHeight (baseFontPx);
-        font.setHorizontalScale (1.0f);
-        g.setFont (font);
-
-        if (intl.isNotEmpty() && fits (g, intl, area.getWidth()))
-        {
-            g.drawText (intl, area, juce::Justification::left, false);
-            return;
-        }
-
-        // compress horizontally for the integer-only fallback
-        const float minScale = juce::jlimit (0.4f, 1.0f, minFontPx / baseFontPx);
-        for (float s = 1.0f - 0.025f; s >= minScale; s -= 0.025f)
-        {
-            font.setHorizontalScale (s);
-            g.setFont (font);
-            if (intl.isNotEmpty() && fits (g, intl, area.getWidth()))
-            {
-                g.drawText (intl, area, juce::Justification::left, false);
-                return;
-            }
-        }
-    }
-}
-
-static bool drawValueWithRightAlignedSuffix (juce::Graphics& g,
-                                             const juce::Rectangle<int>& area,
-                                             const juce::String& valueText,
-                                             const juce::String& suffixText,
-                                             bool enableAutoMargin,
-                                             float baseFontPx,
-                                             float minFontPx)
-{
-    constexpr int kAutoMarginThresholdPx = 24;
-
-    if (area.getWidth() <= 2 || area.getHeight() <= 2)
-        return false;
-
-    const auto& value = valueText;
-    const auto& suffix = suffixText;
-
-    auto font = g.getCurrentFont();
-    font.setHeight (baseFontPx);
-
-    const float minScale = juce::jlimit (0.4f, 1.0f, minFontPx / baseFontPx);
-    for (float s = 1.0f; s >= minScale; s -= 0.025f)
-    {
-        font.setHorizontalScale (s);
-        g.setFont (font);
-
-        const int suffixW = stringWidth (font, suffix);
-        const int valueW = stringWidth (font, value);
-        const int gapW = juce::jmax (2, stringWidth (font, " "));
-
-        const int totalW = valueW + (suffix.isNotEmpty() ? gapW : 0) + suffixW;
-        if (totalW > area.getWidth())
-            continue;
-
-        const int suffixX = area.getRight() - suffixW;
-        const int valueRight = suffixX - (suffix.isNotEmpty() ? gapW : 0);
-        const int fullValueAreaW = juce::jmax (1, valueRight - area.getX());
-        const int freeSpace = juce::jmax (0, fullValueAreaW - valueW);
-
-        int valueX = area.getX();
-        if (enableAutoMargin && freeSpace > kAutoMarginThresholdPx)
-            valueX += freeSpace / 2;
-
-        const int valueAreaW = juce::jmax (1, valueRight - valueX);
-
-        g.drawText (value, valueX, area.getY(), valueAreaW, area.getHeight(), juce::Justification::left, false);
-        g.drawText (suffix, suffixX, area.getY(), suffixW, area.getHeight(), juce::Justification::left, false);
-
-        return true;
-    }
-
-    return false;
-}
 
 //========================== LookAndFeel ==========================
 
@@ -1052,7 +704,20 @@ void ECHOTRAudioProcessorEditor::timerCallback()
     {
         crtTime += 0.1f;              // ~10 Hz tick
         crtEffect.setTime (crtTime);
-        repaint();
+
+        // Skip the timer-driven repaint while a slider is actively
+        // dragged — sliderValueChanged already triggers a repaint that
+        // will pick up the updated crtTime.  Avoids an expensive
+        // duplicate full-image CRT pass per timer tick during drag.
+        const bool anySliderDragging = timeSlider.isMouseButtonDown()
+                                    || feedbackSlider.isMouseButtonDown()
+                                    || modeSlider.isMouseButtonDown()
+                                    || modSlider.isMouseButtonDown()
+                                    || inputSlider.isMouseButtonDown()
+                                    || outputSlider.isMouseButtonDown()
+                                    || mixSlider.isMouseButtonDown();
+        if (! anySliderDragging)
+            repaint();
     }
 }
 
@@ -1247,50 +912,10 @@ void ECHOTRAudioProcessorEditor::setupBar (juce::Slider& s)
 
 namespace
 {
-    static double roundToDecimals (double value, int decimals)
-    {
-        const int safeDecimals = juce::jlimit (0, 9, decimals);
-        const double scale = std::pow (10.0, (double) safeDecimals);
-        return std::round (value * scale) / scale;
-    }
-
-    constexpr int kPromptWidth = 460;
-    constexpr int kPromptHeight = 336;
-    constexpr int kPromptInnerMargin = 24;
-    constexpr int kPromptFooterBottomPad = 24;
-    constexpr int kPromptFooterGap = 12;
-    constexpr int kPromptBodyTopPad = 24;
-    constexpr int kPromptBodyBottomPad = 18;
-    constexpr const char* kPromptSuffixLabelId = "promptSuffixLabel";
-
-    constexpr float kPromptEditorHeightScale = 1.4f;
-    constexpr int kPromptEditorHeightPadPx = 6;
-    constexpr int kPromptEditorRaiseYPx = 8;
-    constexpr int kPromptEditorMinTopPx = 6;
-    constexpr int kPromptEditorMinWidthPx = 180;
-    constexpr int kPromptEditorMaxWidthPx = 240;
-    constexpr int kPromptEditorHostPadPx = 80;
-
-    constexpr int kPromptInlineContentPadPx = 8;
-
     constexpr int kTitleAreaExtraHeightPx = 4;
     constexpr int kTitleRightGapToInfoPx = 8;
     constexpr int kVersionGapPx = 8;
     constexpr int kToggleLegendCollisionPadPx = 6;
-
-    void applyPromptShellSize (juce::AlertWindow& aw)
-    {
-        aw.setSize (kPromptWidth, kPromptHeight);
-    }
-
-    int getAlertButtonsTop (const juce::AlertWindow& aw)
-    {
-        int buttonsTop = aw.getHeight() - (kPromptFooterBottomPad + 36);
-        for (int i = 0; i < aw.getNumButtons(); ++i)
-            if (auto* btn = aw.getButton (i))
-                buttonsTop = juce::jmin (buttonsTop, btn->getY());
-        return buttonsTop;
-    }
 
     struct PopupSwatchButton final : public juce::TextButton
     {
@@ -1361,48 +986,6 @@ namespace
         }
     };
 
-}
-
-static void layoutAlertWindowButtons (juce::AlertWindow& aw)
-{
-    const int btnCount = aw.getNumButtons();
-    if (btnCount <= 0)
-        return;
-
-    const int footerY = aw.getHeight() - kPromptFooterBottomPad;
-    const int sideMargin = kPromptInnerMargin;
-    const int buttonGap = kPromptFooterGap;
-
-    if (btnCount == 1)
-    {
-        if (auto* btn = aw.getButton (0))
-        {
-            auto r = btn->getBounds();
-            r.setWidth (juce::jmax (80, r.getWidth()));
-            r.setX ((aw.getWidth() - r.getWidth()) / 2);
-            r.setY (footerY - r.getHeight());
-            btn->setBounds (r);
-        }
-        return;
-    }
-
-    const int totalW = aw.getWidth();
-    const int totalGap = (btnCount - 1) * buttonGap;
-    const int btnWidth = juce::jmax (20, (totalW - (2 * sideMargin) - totalGap) / btnCount);
-
-    int x = sideMargin;
-    for (int i = 0; i < btnCount; ++i)
-    {
-        if (auto* btn = aw.getButton (i))
-        {
-            auto r = btn->getBounds();
-            r.setWidth (btnWidth);
-            r.setY (footerY - r.getHeight());
-            r.setX (x);
-            btn->setBounds (r);
-        }
-        x += btnWidth + buttonGap;
-    }
 }
 
 static void layoutInfoPopupContent (juce::AlertWindow& aw)
@@ -1486,7 +1069,9 @@ static void layoutInfoPopupContent (juce::AlertWindow& aw)
                 for (float scale = 1.0f; scale >= 0.65f; scale -= 0.025f)
                 {
                     font.setHorizontalScale (scale);
-                    if (font.getStringWidth (label->getText()) <= textAreaW)
+                    juce::GlyphArrangement glyphs;
+                    glyphs.addLineOfText (font, label->getText(), 0.0f, 0.0f);
+                    if (static_cast<int> (std::ceil (glyphs.getBoundingBox (0, -1, false).getWidth())) <= textAreaW)
                         break;
                 }
                 label->setFont (font);
@@ -1501,154 +1086,6 @@ static void layoutInfoPopupContent (juce::AlertWindow& aw)
         y -= kItemGap;
 
     content->setSize (innerW, juce::jmax (contentH, y));
-}
-
-static juce::String colourToHexRgb (juce::Colour c)
-{
-    auto h2 = [] (juce::uint8 v)
-    {
-        return juce::String::toHexString ((int) v).paddedLeft ('0', 2).toUpperCase();
-    };
-
-    return "#" + h2 (c.getRed()) + h2 (c.getGreen()) + h2 (c.getBlue());
-}
-
-static bool tryParseHexColour (juce::String text, juce::Colour& out)
-{
-    auto isHexDigitAscii = [] (juce::juce_wchar ch)
-    {
-        return (ch >= '0' && ch <= '9')
-            || (ch >= 'A' && ch <= 'F')
-            || (ch >= 'a' && ch <= 'f');
-    };
-
-    text = text.trim();
-    if (text.startsWithChar ('#'))
-        text = text.substring (1);
-
-    if (text.length() != 6 && text.length() != 8)
-        return false;
-
-    for (int i = 0; i < text.length(); ++i)
-        if (! isHexDigitAscii (text[i]))
-            return false;
-
-    if (text.length() == 6)
-    {
-        const auto r = (juce::uint8) text.substring (0, 2).getHexValue32();
-        const auto g = (juce::uint8) text.substring (2, 4).getHexValue32();
-        const auto b = (juce::uint8) text.substring (4, 6).getHexValue32();
-        out = juce::Colour (r, g, b);
-        return true;
-    }
-
-    const auto a = (juce::uint8) text.substring (0, 2).getHexValue32();
-    const auto r = (juce::uint8) text.substring (2, 4).getHexValue32();
-    const auto g = (juce::uint8) text.substring (4, 6).getHexValue32();
-    const auto b = (juce::uint8) text.substring (6, 8).getHexValue32();
-    out = juce::Colour (r, g, b).withAlpha ((float) a / 255.0f);
-    return true;
-}
-
-static void setPaletteSwatchColour (juce::TextButton& b, juce::Colour colour)
-{
-    b.setButtonText ("");
-    b.setColour (juce::TextButton::buttonColourId, colour);
-    b.setColour (juce::TextButton::buttonOnColourId, colour);
-}
-
-static void stylePromptTextEditor (juce::TextEditor& te,
-                                   juce::Colour bg,
-                                   juce::Colour text,
-                                   juce::Colour accent,
-                                   const juce::Font& baseFont,
-                                   int hostWidth,
-                                   bool widenAndCenter)
-{
-    te.setFont (baseFont);
-    te.applyFontToAllText (baseFont);
-    te.setJustification (juce::Justification::centred);
-    te.setIndents (0, 0);
-
-    te.setColour (juce::TextEditor::backgroundColourId,      bg);
-    te.setColour (juce::TextEditor::textColourId,            text);
-    te.setColour (juce::TextEditor::outlineColourId,         bg);
-    te.setColour (juce::TextEditor::focusedOutlineColourId,  bg);
-    te.setColour (juce::TextEditor::highlightColourId,       accent.withAlpha (0.35f));
-    te.setColour (juce::TextEditor::highlightedTextColourId, text);
-
-    auto r = te.getBounds();
-    r.setHeight ((int) (baseFont.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
-    r.setY (juce::jmax (kPromptEditorMinTopPx, r.getY() - kPromptEditorRaiseYPx));
-
-    if (widenAndCenter)
-    {
-        const int editorW = juce::jlimit (kPromptEditorMinWidthPx,
-                                          kPromptEditorMaxWidthPx,
-                                          hostWidth - kPromptEditorHostPadPx);
-        r.setWidth (editorW);
-        r.setX ((hostWidth - r.getWidth()) / 2);
-    }
-
-    te.setBounds (r);
-    te.selectAll();
-}
-
-static void centrePromptTextEditorVertically (juce::AlertWindow& aw,
-                                              juce::TextEditor& te,
-                                              int minTop = kPromptEditorMinTopPx)
-{
-    int buttonsTop = aw.getHeight();
-    for (int i = 0; i < aw.getNumButtons(); ++i)
-        if (auto* btn = aw.getButton (i))
-            buttonsTop = juce::jmin (buttonsTop, btn->getY());
-
-    auto r = te.getBounds();
-    const int centeredY = (buttonsTop - r.getHeight()) / 2;
-    r.setY (juce::jmax (minTop, centeredY));
-    te.setBounds (r);
-}
-
-static void focusAndSelectPromptTextEditor (juce::AlertWindow& aw, const juce::String& editorId)
-{
-    juce::Component::SafePointer<juce::AlertWindow> safeAw (&aw);
-    juce::MessageManager::callAsync ([safeAw, editorId]()
-    {
-        if (safeAw == nullptr)
-            return;
-
-        auto* te = safeAw->getTextEditor (editorId);
-        if (te == nullptr)
-            return;
-
-        if (te->isShowing() && te->isEnabled() && te->getPeer() != nullptr)
-            te->grabKeyboardFocus();
-
-        te->selectAll();
-    });
-}
-
-static void preparePromptTextEditor (juce::AlertWindow& aw,
-                                     const juce::String& editorId,
-                                     juce::Colour bg,
-                                     juce::Colour text,
-                                     juce::Colour accent,
-                                     juce::Font baseFont,
-                                     bool widenAndCenter,
-                                     int minTop = kPromptEditorMinTopPx)
-{
-    if (auto* te = aw.getTextEditor (editorId))
-    {
-        stylePromptTextEditor (*te,
-                               bg,
-                               text,
-                               accent,
-                               baseFont,
-                               aw.getWidth(),
-                               widenAndCenter);
-        centrePromptTextEditorVertically (aw, *te, minTop);
-        focusAndSelectPromptTextEditor (aw, editorId);
-    }
 }
 
 static void syncGraphicsPopupState (juce::AlertWindow& aw,
@@ -1942,71 +1379,6 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     // we will create a label just to the right of the editor showing the suffix
     juce::Label* suffixLabel = nullptr;
 
-    // increase the font size for legibility rather than resizing the field
-    // we already have a helper up near the top of this file that uses
-    // GlyphArrangement to measure text. reuse that instead of TextLayout.
-    // (stringWidth(font, text))
-
-    // adaptable filter for numeric input: clamps length, number of decimals and
-    // optionally a value range. the returned string is the permitted version of
-    // whatever the user typed.
-    struct NumericInputFilter  : juce::TextEditor::InputFilter
-    {
-        double minVal, maxVal;
-        int maxLen, maxDecimals;
-        bool isShape = false;
-
-                NumericInputFilter (double minV, double maxV,
-                                                        int maxLength, int maxDecs, bool isShapeValue = false)
-            : minVal (minV), maxVal (maxV),
-                            maxLen (maxLength), maxDecimals (maxDecs), isShape (isShapeValue) {}
-
-        juce::String filterNewText (juce::TextEditor& editor,
-                                    const juce::String& newText) override
-        {
-            bool seenDot = false;
-            int decimals = 0;
-            juce::String result;
-
-            for (auto c : newText)
-            {
-                if (c == '.')
-                {
-                    if (seenDot || maxDecimals == 0)
-                        continue;
-                    seenDot = true;
-                    result += c;
-                }
-                else if (juce::CharacterFunctions::isDigit (c))
-                {
-                    if (seenDot) ++decimals;
-                    if (decimals > maxDecimals)
-                        break;
-                    result += c;
-                }
-                else if ((c == '+' || c == '-') && result.isEmpty())
-                {
-                    result += c;
-                }
-
-                if (maxLen > 0 && result.length() >= maxLen)
-                    break;
-            }
-
-            // now check the numeric value if the new text were inserted
-            juce::String proposed = editor.getText();
-            int insertPos = editor.getCaretPosition();
-            proposed = proposed.substring (0, insertPos) + result
-                     + proposed.substring (insertPos + editor.getHighlightedText().length());
-
-            double val = proposed.replaceCharacter(',', '.').getDoubleValue();
-            if (val > maxVal)
-                return juce::String(); // reject insertion that exceeds limit
-
-            return result;
-        }
-    };
-    
     // Special filter for sync mode: allows division names (e.g., "1/8T") or numeric indices
     struct SyncDivisionInputFilter : juce::TextEditor::InputFilter
     {
@@ -2223,13 +1595,11 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             maxLen = 6; // "100.00"
         }
 
-        bool isPercent = (&s == &feedbackSlider || &s == &mixSlider);
-        
         // Use special filter for time slider in sync mode
         if (&s == &timeSlider && isTimeSyncMode)
             te->setInputFilter (new SyncDivisionInputFilter (maxLen), true);
         else
-            te->setInputFilter (new NumericInputFilter (minVal, maxVal, maxLen, maxDecs, isPercent), true);
+            te->setInputFilter (new NumericInputFilter (minVal, maxVal, maxLen, maxDecs), true);
 
         // limit text to appropriate decimals and move the suffix when text changes
         te->onTextChange = [te, layoutValueAndSuffix, maxDecs]() mutable
@@ -2446,8 +1816,6 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
     {
         juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
         {
-            juce::ignoreUnused (editor); // Suppress unused parameter warning
-            // Allow digits 0-16
             juce::String result;
             for (auto c : newText)
             {
@@ -2456,6 +1824,19 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
                 if (result.length() >= 2)
                     break;
             }
+
+            // Reject if the proposed full value exceeds 16 or total length > 2
+            juce::String proposed = editor.getText();
+            int insertPos = editor.getCaretPosition();
+            proposed = proposed.substring (0, insertPos) + result
+                     + proposed.substring (insertPos + editor.getHighlightedText().length());
+            if (proposed.length() > 2 || proposed.getIntValue() > 16)
+                return juce::String();
+
+            // Reject leading zeros ("01" etc. — "0" alone is valid for OMNI)
+            if (proposed.length() > 1 && proposed[0] == '0')
+                return juce::String();
+
             return result;
         }
     };
@@ -2672,24 +2053,6 @@ void ECHOTRAudioProcessorEditor::openAutoFbkPrompt()
     // Two text editors: tau and att
     aw->addTextEditor ("tau", juce::String (juce::roundToInt (currentTau)), juce::String());
     aw->addTextEditor ("att", juce::String (juce::roundToInt (currentAtt)), juce::String());
-
-    // Numeric input filter for 0-100
-    struct PctInputFilter : juce::TextEditor::InputFilter
-    {
-        juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
-        {
-            juce::ignoreUnused (editor);
-            juce::String result;
-            for (auto c : newText)
-            {
-                if (juce::CharacterFunctions::isDigit (c))
-                    result += c;
-                if (result.length() >= 3)
-                    break;
-            }
-            return result;
-        }
-    };
 
     // ── Inline bar component ──
     // Minimal horizontal bar: paints outline + bg + filled portion (same as main GUI).
@@ -3068,15 +2431,43 @@ void ECHOTRAudioProcessorEditor::openReverseSmoothPrompt()
     {
         juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
         {
-            juce::ignoreUnused (editor);
+            const bool existingHasDot = editor.getText().containsChar ('.');
+            bool seenDot = false;
             juce::String result;
+
             for (auto c : newText)
             {
-                if (juce::CharacterFunctions::isDigit (c) || c == '.')
+                if (c == '.')
+                {
+                    if (seenDot || existingHasDot)
+                        continue;
+                    seenDot = true;
                     result += c;
+                }
+                else if (juce::CharacterFunctions::isDigit (c))
+                {
+                    result += c;
+                }
+
                 if (result.length() >= 4)
                     break;
             }
+
+            // Reject if the proposed multiplier exceeds 4.0 or total > 4 chars
+            juce::String proposed = editor.getText();
+            int insertPos = editor.getCaretPosition();
+            proposed = proposed.substring (0, insertPos) + result
+                     + proposed.substring (insertPos + editor.getHighlightedText().length());
+            if (proposed.length() > 4 || proposed.getDoubleValue() > 4.0)
+                return juce::String();
+
+            // Reject leading zeros ("04" etc. — "0" or "0.x" are valid)
+            juce::String stripped = proposed;
+            if (stripped.length() > 1
+                && stripped[0] == '0'
+                && stripped[1] != '.')
+                return juce::String();
+
             return result;
         }
     };
@@ -3699,6 +3090,10 @@ void ECHOTRAudioProcessorEditor::openGraphicsPopup()
                 auto* colorAw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
                 colorAw->setLookAndFeel (&safeThis->lnf);
                 colorAw->addTextEditor ("hex", colourToHexRgb (safeThis->customPalette[(size_t) i]), juce::String());
+
+                if (auto* te = colorAw->getTextEditor ("hex"))
+                    te->setInputFilter (new HexInputFilter(), true);
+
                 colorAw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
                 colorAw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 

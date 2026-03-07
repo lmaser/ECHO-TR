@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 //======================================================================
 //  CrtEffect — full-screen CRT post-process via juce::ImageEffectFilter
@@ -44,12 +45,29 @@ public:
         }
 
         // Reuse output buffer to avoid per-frame allocation.
-        if (outputBuf.getWidth() != w || outputBuf.getHeight() != h)
+        const bool sizeChanged = (outputBuf.getWidth() != w || outputBuf.getHeight() != h);
+        if (sizeChanged)
+        {
             outputBuf = juce::Image (juce::Image::ARGB, w, h, false);
+            prevSrc   = juce::Image (juce::Image::ARGB, w, h, true);   // zero-filled
+            lastProcessedTime = -1.0f;
+        }
+
+        // When crtTime hasn't advanced (i.e. between timer ticks), only
+        // block-rows whose source pixels actually changed need the heavy
+        // CRT math — the rest can reuse the cached outputBuf from the
+        // previous frame.  This dramatically reduces CPU during slider
+        // drag (typically < 5 % of rows change per frame).
+        const bool timeChanged = (crtTime != lastProcessedTime);
+        const bool canSkipUnchanged = ! timeChanged
+                                    && prevSrc.isValid()
+                                    && prevSrc.getWidth() == w
+                                    && prevSrc.getHeight() == h;
 
         {
-            juce::Image::BitmapData srcData (src,       juce::Image::BitmapData::readOnly);
-            juce::Image::BitmapData dstData (outputBuf, juce::Image::BitmapData::writeOnly);
+            juce::Image::BitmapData srcData  (src,       juce::Image::BitmapData::readOnly);
+            juce::Image::BitmapData dstData  (outputBuf, juce::Image::BitmapData::readWrite);
+            juce::Image::BitmapData prevData (prevSrc,   juce::Image::BitmapData::readWrite);
 
             const float invW = 1.0f / static_cast<float> (w);
             const float invH = 1.0f / static_cast<float> (h);
@@ -63,12 +81,17 @@ public:
             const float flickMult = 1.0f - kFlicker * hash01 (crtTime * 3.7f, 0.0f);
 
             // Cache raw pointer bases + strides for direct access.
-            const int srcLineStride = srcData.lineStride;
-            const int srcPixStride  = srcData.pixelStride;
-            const int dstLineStride = dstData.lineStride;
-            const int dstPixStride  = dstData.pixelStride;
-            const juce::uint8* srcBase = srcData.getLinePointer (0);
-                  juce::uint8* dstBase = dstData.getLinePointer (0);
+            const int srcLineStride  = srcData.lineStride;
+            const int srcPixStride   = srcData.pixelStride;
+            const int dstLineStride  = dstData.lineStride;
+            const int dstPixStride   = dstData.pixelStride;
+            const int prevLineStride = prevData.lineStride;
+            const juce::uint8* srcBase  = srcData.getLinePointer (0);
+                  juce::uint8* dstBase  = dstData.getLinePointer (0);
+            const juce::uint8* prevBase = prevData.getLinePointer (0);
+                  juce::uint8* prevWBase = prevData.getLinePointer (0);
+
+            const int rowBytes = w * srcPixStride;
 
             // ── Process in 2×2 blocks ────────────────────────────────
             // This quarters the heavy per-pixel math (distortion,
@@ -79,6 +102,25 @@ public:
 
             for (int by = 0; by < h; by += 2)
             {
+                // ── Row-skip optimisation ──
+                // If CRT time unchanged and these source rows match the
+                // cached previous source, outputBuf already holds the
+                // correct CRT output → skip the heavy per-pixel math.
+                if (canSkipUnchanged)
+                {
+                    const juce::uint8* srcRow0  = srcBase  + by * srcLineStride;
+                    const juce::uint8* prevRow0 = prevBase + by * prevLineStride;
+                    bool match = (std::memcmp (srcRow0, prevRow0, static_cast<size_t> (rowBytes)) == 0);
+                    if (match && by + 1 < h)
+                    {
+                        const juce::uint8* srcRow1  = srcBase  + (by + 1) * srcLineStride;
+                        const juce::uint8* prevRow1 = prevBase + (by + 1) * prevLineStride;
+                        match = (std::memcmp (srcRow1, prevRow1, static_cast<size_t> (rowBytes)) == 0);
+                    }
+                    if (match)
+                        continue;   // cached CRT output is still valid
+                }
+
                 const float v = (static_cast<float> (by) + 1.0f) * invH;
 
                 // Precompute scanline multiplier for this block-row.
@@ -171,8 +213,23 @@ public:
                             writePxRaw (dstRow1 + (bx + 1) * dstPixStride, outR, outG, outB);
                     }
                 }
+
+                // ── Update source cache for processed rows ──
+                std::memcpy (prevWBase + by * prevLineStride,
+                             srcBase  + by * srcLineStride,
+                             static_cast<size_t> (rowBytes));
+                if (by + 1 < h)
+                    std::memcpy (prevWBase + (by + 1) * prevLineStride,
+                                 srcBase  + (by + 1) * srcLineStride,
+                                 static_cast<size_t> (rowBytes));
             }
+
+            // When time changed (full reprocess), every row was processed
+            // above, so prevSrc is already fully updated.  Nothing extra
+            // to do here.
         }
+
+        lastProcessedTime = crtTime;
 
         destCtx.setOpacity (alpha);
         destCtx.drawImageAt (outputBuf, 0, 0);
@@ -194,6 +251,8 @@ private:
     float resW          = 800.0f;
     float resH          = 600.0f;
     juce::Image outputBuf;
+    juce::Image prevSrc;              // cached source for row-dirty detection
+    float lastProcessedTime = -1.0f;  // last crtTime that triggered full processing
 
     //-- fast integer hash → [0, 1) ------------------------------------
     static float hash01 (float x, float y) noexcept

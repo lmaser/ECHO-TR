@@ -5,6 +5,7 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "CrtEffect.h"
+#include "TRSharedUI.h"
 
 class ECHOTRAudioProcessorEditor  : public juce::AudioProcessorEditor,
                                      private juce::Slider::Listener,
@@ -138,13 +139,7 @@ private:
     juce::ComponentBoundsConstrainer resizeConstrainer;
     std::unique_ptr<juce::ResizableCornerComponent> resizerCorner;
 
-    struct ECHOScheme
-    {
-        juce::Colour bg;
-        juce::Colour fg;
-        juce::Colour outline;
-        juce::Colour text;
-    };
+    using ECHOScheme = TR::TRScheme;
 
     ECHOScheme activeScheme;
 
@@ -186,31 +181,7 @@ private:
         void setScheme (const ECHOScheme& s)
         {
             scheme = s;
-
-            setColour (juce::TooltipWindow::backgroundColourId, scheme.bg);
-            setColour (juce::TooltipWindow::textColourId,       scheme.text);
-            setColour (juce::TooltipWindow::outlineColourId,    scheme.outline);
-
-            setColour (juce::BubbleComponent::backgroundColourId, scheme.bg);
-            setColour (juce::BubbleComponent::outlineColourId,    scheme.outline);
-
-            setColour (juce::AlertWindow::backgroundColourId, scheme.bg);
-            setColour (juce::AlertWindow::textColourId,       scheme.text);
-            setColour (juce::AlertWindow::outlineColourId,    scheme.outline);
-
-            setColour (juce::TextButton::buttonColourId,   scheme.bg);
-            setColour (juce::TextButton::buttonOnColourId, scheme.fg);
-            setColour (juce::TextButton::textColourOffId,  scheme.text);
-            setColour (juce::TextButton::textColourOnId,   scheme.bg);
-
-            setColour (juce::ComboBox::backgroundColourId, scheme.bg);
-            setColour (juce::ComboBox::textColourId, scheme.text);
-            setColour (juce::ComboBox::outlineColourId, scheme.outline);
-            
-            setColour (juce::PopupMenu::backgroundColourId, scheme.bg);
-            setColour (juce::PopupMenu::textColourId, scheme.text);
-            setColour (juce::PopupMenu::highlightedBackgroundColourId, scheme.fg);
-            setColour (juce::PopupMenu::highlightedTextColourId, scheme.bg);
+            TR::applySchemeToLookAndFeel (*this, scheme);
         }
 
         void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
@@ -265,14 +236,7 @@ private:
         };
     };
 
-    class PromptOverlay : public juce::Component
-    {
-    public:
-        void paint (juce::Graphics& g) override
-        {
-            g.fillAll (juce::Colours::black.withAlpha (0.5f));
-        }
-    };
+    using PromptOverlay = TR::PromptOverlay;
 
     MinimalLNF lnf;
     std::unique_ptr<juce::TooltipWindow> tooltipWindow;
@@ -312,9 +276,8 @@ private:
     
     void updateTimeSliderForSyncMode (bool syncEnabled);
 
-    friend void embedAlertWindowInOverlay (ECHOTRAudioProcessorEditor* editor,
-                                           juce::AlertWindow* aw,
-                                           bool bringTooltip);
+    template <typename T>
+    friend void TR::embedAlertWindowInOverlay (T*, juce::AlertWindow*, bool);
 
     juce::Rectangle<int> getValueAreaFor (const juce::Rectangle<int>& barBounds) const;
     juce::Slider* getSliderForValueAreaPoint (juce::Point<int> p);

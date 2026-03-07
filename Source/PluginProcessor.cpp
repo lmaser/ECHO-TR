@@ -207,7 +207,9 @@ double ECHOTRAudioProcessor::getTailLengthSeconds() const
 	const bool syncEnabled = loadBoolParamOrDefault (syncParam, false);
 	const float timeMsValue = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
 	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
-	const float feedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
+	float feedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
+	feedback = juce::jlimit (0.0f, kFeedbackMax, feedback);
+	feedback *= feedback;  // quadratic mapping (must match processBlock)
 	
 	// Get delay time
 	float delayMs = timeMsValue;
@@ -791,6 +793,10 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float inputGain  = fastDecibelsToGain (inputGainDb);
 	const float outputGain = fastDecibelsToGain (outputGainDb);
 	targetFeedback = juce::jlimit (0.0f, kFeedbackMax, targetFeedback);
+
+	// Quadratic mapping: more perceptual resolution in low-mid range
+	// (slider linear 0-100%, actual feedback = value²)
+	targetFeedback *= targetFeedback;
 
 	// MOD frequency multiplier (pure arithmetic, no transcendentals)
 	float freqMultiplier;

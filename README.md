@@ -48,6 +48,7 @@ When MIDI is active, TIME shows the note name instead of milliseconds. When the 
 ### FEEDBACK (0–100%)
 
 Signal fed back into the delay line. 100% = infinite sustain / self-oscillation.  
+Quadratic mapping: the slider is linear (50% centred), but the actual feedback gain is value² — giving more control resolution in the low-to-mid range where most musical use happens. 50% on the slider → 25% real feedback; 70% → 49%; 100% → 100%.  
 Only a DC blocker (5 Hz high-pass) sits in the feedback path — no filtering, no saturation. Maximally transparent.
 
 ### STYLE
