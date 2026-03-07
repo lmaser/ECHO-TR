@@ -95,16 +95,19 @@ namespace
 		return (dB <= -100.0f) ? 0.0f : std::exp2 (dB * 0.16609640474f);
 	}
 
-	// ---- Soft-clip for feedback > 100% (self-oscillation range) ----
-	// Uses tanh saturation to keep the delay buffer bounded.
-	// When feedback <= 1.0 the signal stays in [-1,1] naturally so
-	// the branch avoids any cost in the normal range.
-	inline float feedbackSoftClip (float sample) noexcept
+	// ---- Feedback loop processing chain ----
+	// Applied ONLY to the feedback component (never to input signal).
+	// DC blocker only — maximally transparent.
+	// DC blocker: one-pole HP at ~5 Hz prevents DC drift accumulation.
+
+	constexpr float kFbkDcBlockHz = 5.0f;
+
+	// DC blocker tick (one-pole HP)
+	inline float dcBlockTick (float in, float& inState, float& outState, float r) noexcept
 	{
-		// Fast path: normal range, no saturation needed
-		if (sample >= -1.0f && sample <= 1.0f)
-			return sample;
-		return std::tanh (sample);
+		outState = r * (outState + in - inState);
+		inState = in;
+		return outState;
 	}
 }
 
@@ -137,6 +140,7 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	autoFbkTauParam = apvts.getRawParameterValue (kParamAutoFbkTau);
 	autoFbkAttParam = apvts.getRawParameterValue (kParamAutoFbkAtt);
 	reverseParam = apvts.getRawParameterValue (kParamReverse);
+	reversePitchParam = apvts.getRawParameterValue (kParamReversePitch);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
@@ -299,6 +303,11 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	// Reset auto-feedback envelope
 	autoFbkEnvelope         = 1.0f;
 	autoFbkLastDelaySamples = -1.0f;
+	autoFbkCooldownLeft     = 0;
+
+	// Reset feedback loop processing state
+	fbkDcStateInL = fbkDcStateInR = 0.0f;
+	fbkDcStateOutL = fbkDcStateOutR = 0.0f;
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -313,6 +322,7 @@ void ECHOTRAudioProcessor::releaseResources()
 	reverseNeedsInit  = true;
 	autoFbkEnvelope         = 1.0f;
 	autoFbkLastDelaySamples = -1.0f;
+	autoFbkCooldownLeft     = 0;
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -378,16 +388,31 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 		{
 			const float inputL = channelL[i];
 			const float delayedL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
-			delayL[writePos] = feedbackSoftClip (inputL * smoothedInputGain + delayedL * feedback);
-			channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
-		}
-		
-		if (channelR != nullptr)
-		{
-			const float inputR = channelR[i];
-			const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
-			delayR[writePos] = feedbackSoftClip (inputR * smoothedInputGain + delayedR * feedback);
-			channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
+
+			if (channelR != nullptr)
+			{
+				const float inputR = channelR[i];
+				const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
+				float fbkL = delayedL * feedback;
+				float fbkR = delayedR * feedback;
+
+				// DC blocker (transparent feedback path)
+				fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+				fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+
+				delayL[writePos] = inputL * smoothedInputGain + fbkL;
+				delayR[writePos] = inputR * smoothedInputGain + fbkR;
+				channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
+				channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
+			}
+			else
+			{
+				float fbkL = delayedL * feedback;
+				// DC blocker (transparent feedback path)
+				fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+				delayL[writePos] = inputL * smoothedInputGain + fbkL;
+				channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
+			}
 		}
 		
 		writePos = (writePos + 1) & wrapMask;
@@ -435,7 +460,12 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		const float inputR = channelR != nullptr ? channelR[i] : inputL;
 		const float inputMid = (inputL + inputR) * 0.5f;
 		
-		const float toWrite = feedbackSoftClip (inputMid * smoothedInputGain + delayed * feedback);
+		float fbkMono = delayed * feedback;
+
+		// DC blocker (transparent feedback path)
+		fbkMono = dcBlockTick (fbkMono, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+
+		const float toWrite = inputMid * smoothedInputGain + fbkMono;
 		delayL[writePos] = toWrite;
 		delayR[writePos] = toWrite;
 		
@@ -488,8 +518,15 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 		const float inputMono = (inputL + inputR) * 0.5f;
 		
-		delayL[writePos] = feedbackSoftClip (inputMono * smoothedInputGain + delayedR * feedback);
-		delayR[writePos] = feedbackSoftClip (delayedL * feedback);
+		float fbkPpL = delayedR * feedback;
+		float fbkPpR = delayedL * feedback;
+
+		// DC blocker (transparent feedback path)
+		fbkPpL = dcBlockTick (fbkPpL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+		fbkPpR = dcBlockTick (fbkPpR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+
+		delayL[writePos] = inputMono * smoothedInputGain + fbkPpL;
+		delayR[writePos] = fbkPpR;
 		
 		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
 		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
@@ -502,7 +539,8 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 
 void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                  float delaySamples, float feedback, float inputGain,
-                                                 float outputGain, float mix, float delaySmoothCoeff)
+                                                 float outputGain, float mix, float delaySmoothCoeff,
+                                                 float pitchRate)
 {
 	// Single-buffer reverse delay.
 	// ONE read head reads BACKWARDS through the main circular delay buffer.
@@ -544,7 +582,18 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		{
 			reverseAnchor    = writePos;
 			reverseCounter   = 0.0f;
-			reverseChunkLen  = juce::jmax (kMinChunkLen, revSmoothedDelay);
+			float candidateLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
+
+			// Safety: with pitchRate < 1 the chunk takes chunkLen/pitchRate
+			// real-time samples to complete.  If that exceeds half the
+			// circular buffer the write head would overwrite data we're
+			// still reading.  Clamp to keep it safe.
+			if (pitchRate > 0.0f && pitchRate < 1.0f)
+			{
+				const float maxSafe = (float) (delayBufferLength / 2) * pitchRate;
+				candidateLen = juce::jmin (candidateLen, maxSafe);
+			}
+			reverseChunkLen  = candidateLen;
 			reverseNeedsInit = false;
 		}
 
@@ -590,8 +639,15 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		}
 
 		// Write to delay buffer: input + reversed signal × feedback
-		delayL[writePos] = feedbackSoftClip (inputL * smoothedInputGain + revL * feedback);
-		delayR[writePos] = feedbackSoftClip (inputR * smoothedInputGain + revR * feedback);
+		float fbkRevL = revL * feedback;
+		float fbkRevR = revR * feedback;
+
+		// DC blocker (transparent feedback path)
+		fbkRevL = dcBlockTick (fbkRevL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+		fbkRevR = dcBlockTick (fbkRevR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+
+		delayL[writePos] = inputL * smoothedInputGain + fbkRevL;
+		delayR[writePos] = inputR * smoothedInputGain + fbkRevR;
 
 		// Output: dry/wet mix
 		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + revL * smoothedMix * smoothedOutputGain;
@@ -607,7 +663,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		// early chunk boundary once the EMA has moved far enough from
 		// the current chunk length (> 20 % ratio change).  The taper
 		// fade-out at chunk end ensures this stays click-free.
-		reverseCounter += 1.0f;
+		reverseCounter += pitchRate;
 		const float smoothedNow = juce::jmax (kMinChunkLen, revSmoothedDelay);
 		const float ratio = (smoothedNow > chunkLen)
 		                   ? (smoothedNow / chunkLen)
@@ -619,7 +675,13 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 			reverseCounter  = 0.0f;
 			reverseAnchor   = writePos;
 			// Lock NEW chunk length from current smoothed delay
-			reverseChunkLen = smoothedNow;
+			float newLen = smoothedNow;
+			if (pitchRate > 0.0f && pitchRate < 1.0f)
+			{
+				const float maxSafe = (float) (delayBufferLength / 2) * pitchRate;
+				newLen = juce::jmin (newLen, maxSafe);
+			}
+			reverseChunkLen = newLen;
 		}
 	}
 
@@ -735,20 +797,6 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float outputGain = fastDecibelsToGain (outputGainDb);
 	targetFeedback = juce::jlimit (0.0f, kFeedbackMax, targetFeedback);
 
-	// Compress feedback coefficient above unity so the 100%–200% knob range
-	// maps to ~1.0–1.10 effective gain via a squared curve.  The square
-	// ensures slow, progressive growth near 100% (fine resolution for
-	// subtle sustain) accelerating towards 200% (warm self-oscillation).
-	// The tanh soft-clip in the delay loop adds warmth rather than hard clip.
-	//   effective = 1 + (raw - 1)² × kSelfOscDrive
-	// kSelfOscDrive = 0.10 → max effective coeff ≈ 1.10 at knob 200%.
-	if (targetFeedback > 1.0f)
-	{
-		constexpr float kSelfOscDrive = 0.10f;
-		const float excess = targetFeedback - 1.0f;  // 0..1 for 100%..200%
-		targetFeedback = 1.0f + (excess * excess) * kSelfOscDrive;
-	}
-	
 	// MOD frequency multiplier (pure arithmetic, no transcendentals)
 	float freqMultiplier;
 	if (modValue < 0.5f)
@@ -766,52 +814,87 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Detection runs on the FINAL delaySamples (post-MOD) so MOD tweaks also
 	// trigger the reset.
 	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);
+
+	// When ENABLING auto-feedback: launch the envelope (reset to 0) so
+	// it fades in — same effect as hitting a new MIDI note.  Do NOT
+	// clear the delay buffer so existing feedback tail is preserved.
+	// When DISABLING: do nothing (tail continues naturally).
+	if (autoFbkEnabled != prevAutoFbkEnabled)
+	{
+		prevAutoFbkEnabled = autoFbkEnabled;
+		if (autoFbkEnabled)
+		{
+			autoFbkEnvelope = 0.0f;
+			autoFbkLastDelaySamples = -1.0f;
+		}
+	}
+
 	if (autoFbkEnabled && targetFeedback > 0.001f)
 	{
-		// Detect change: >2 % relative deviation from the last delaySamples
+		// ── Detection: reset envelope when delay changes significantly ──
+		// Threshold 2 % — industry standard tolerance for pitch-change
+		// detection (cf. Melodyne/Auto-Tune use 1-5 %).  Prevents
+		// spurious triggers from EMA micro-fluctuations.
+		constexpr float kChangeThreshold = 0.02f;
+
+		// Cooldown: minimum samples between resets.  Prevents LFO
+		// automation from permanently suppressing feedback.  ~43 ms @ 48 kHz.
+		constexpr int kCooldownSamples = 2048;
+
 		const float delayDelta = std::abs (delaySamples - autoFbkLastDelaySamples);
 		const bool delayChanged = (autoFbkLastDelaySamples < 0.0f)
 		                        ? false  // first call after init → don't reset
-		                        : (delayDelta > autoFbkLastDelaySamples * 0.02f);
+		                        : (delayDelta > autoFbkLastDelaySamples * kChangeThreshold);
 
-		if (delayChanged)
-			autoFbkEnvelope = 0.0f;  // reset envelope → feedback drops to 0
+		autoFbkCooldownLeft = juce::jmax (0, autoFbkCooldownLeft - numSamples);
+
+		if (delayChanged && autoFbkCooldownLeft <= 0)
+		{
+			autoFbkEnvelope     = 0.0f;
+			autoFbkCooldownLeft = kCooldownSamples;
+		}
 
 		autoFbkLastDelaySamples = delaySamples;
 
-		// Ramp envelope towards 1.0 using EMA.
-		// TAU param (0-100%) sets the base tau: 0% → tauFloor (near-instant
-		// recovery, minimal envelope effect); 100% → tauCeil (slowest).
-		// ATT param (0-100%) sets the pitch-dependent attenuation exponent:
-		// 0% → exp 0 → flat tau (no treble shortening);
-		// 100% → exp 8 → only extreme treble is shortened.
-		// When MIDI drives the delay, tau scales with delay length.
-		constexpr float kTauFloor  = 0.005f;  // seconds — absolute minimum tau
-		constexpr float kTauCeil   = 0.120f;  // seconds — absolute maximum tau
-		constexpr float kRefMs     = 500.0f;  // delay (ms) at which tau = tauMax
-		constexpr float kAttExpMax = 8.0f;    // max exponent
+		// ── Envelope ramp 0 → 1 ──
+		// TAU (0-100 %): recovery speed.  0 % = fast (30 ms), 100 % = slow (3 s).
+		// ATT (0-100 %): modulation depth only.  0 % = bypass, 100 % = full.
+		//
+		// Pitch-scaling is automatic and fixed: shorter delays recover
+		// faster via sqrt(delayMs / kRefMs).  This is internal — the user
+		// doesn't control it and ATT only sets depth.
+		// Reference: FabFilter Timeless 3, Soundtoys EchoBoy Swell.
+		constexpr float kTauFloor = 0.030f;     // 30 ms — fast but audible
+		constexpr float kTauCeil  = 3.000f;     // 3 s  — dramatic swell
+		constexpr float kRefMs    = 1000.0f;    // delay at which pitch-scaling = 1.0
 
 		const float tauPct = loadAtomicOrDefault (autoFbkTauParam, kAutoFbkTauDefault) * 0.01f;
 		const float attPct = loadAtomicOrDefault (autoFbkAttParam, kAutoFbkAttDefault) * 0.01f;
 
-		const float tauMax = kTauFloor + (kTauCeil - kTauFloor) * tauPct;
-		const float attExp = kAttExpMax * attPct;
+		// Base tau from TAU slider (30 ms – 3 s)
+		const float tauBase = kTauFloor + (kTauCeil - kTauFloor) * tauPct;
 
-		float tau = tauMax;
-		if (midiNoteActive && attExp > 0.001f)
-		{
-			const float delayMs = (delaySamples / (float) currentSampleRate) * 1000.0f;
-			const float ratio   = juce::jlimit (0.0f, 1.0f, delayMs / kRefMs);
-			const float shaped  = std::pow (ratio, attExp);
-			tau = kTauFloor + (tauMax - kTauFloor) * shaped;
-		}
+		// Automatic pitch-scaling: sqrt(delay/ref).  Gentle and fixed.
+		//   1000 ms → ×1.00,  500 ms → ×0.71,  100 ms → ×0.32,  50 ms → ×0.22
+		const float delayMs = (delaySamples / (float) currentSampleRate) * 1000.0f;
+		const float pitchScale = std::sqrt (juce::jlimit (0.001f, 1.0f, delayMs / kRefMs));
+		const float tau = kTauFloor + (tauBase - kTauFloor) * pitchScale;
 
 		const float envCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
 		for (int i = 0; i < numSamples; ++i)
 			autoFbkEnvelope = envCoeff * autoFbkEnvelope + (1.0f - envCoeff) * 1.0f;
 
 		autoFbkEnvelope = juce::jlimit (0.0f, 1.0f, autoFbkEnvelope);
-		targetFeedback *= autoFbkEnvelope;
+
+		// ATT = modulation depth only (cubic curve for gradual onset).
+		//   att 10 % → attCurved ≈ 0.001 (barely perceptible)
+		//   att 25 % → attCurved ≈ 0.016 (subtle)
+		//   att 50 % → attCurved ≈ 0.125 (clearly audible)
+		//   att 75 % → attCurved ≈ 0.422 (dramatic)
+		//   att 100 % → multiplier = envelope (full modulation)
+		const float attCurved = attPct * attPct * attPct;
+		const float envMix = 1.0f - attCurved * (1.0f - autoFbkEnvelope);
+		targetFeedback *= envMix;
 	}
 	else
 	{
@@ -819,6 +902,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		// mid-session doesn't trigger a false reset.
 		autoFbkLastDelaySamples = delaySamples;
 		autoFbkEnvelope         = 1.0f;
+		autoFbkCooldownLeft     = 0;
 	}
 
 	// Bypass if delay < 1 sample
@@ -862,12 +946,22 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (std::abs (smoothedInputGain  - inputGain)  < kSnapEpsilon) smoothedInputGain  = inputGain;
 	if (std::abs (smoothedOutputGain - outputGain) < kSnapEpsilon) smoothedOutputGain = outputGain;
 	if (std::abs (smoothedMix        - mixValue)   < kSnapEpsilon) smoothedMix        = mixValue;
+
+	// ── Feedback loop coefficients (used by all delay modes) ──
+	// DC blocker only — maximally transparent path.
+	{
+		const float sr = (float) currentSampleRate;
+		fbkDcCoeff  = 1.0f - (6.2831853f * kFbkDcBlockHz / sr);  // ≈0.9993 @ 48kHz
+	}
 	
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
 	if (reverseEnabled)
 	{
+		const float revPitchSt = loadAtomicOrDefault (reversePitchParam, kReversePitchDefault);
+		const float pitchRate  = std::pow (2.0f, revPitchSt / 12.0f);
 		processReverseDelay (buffer, numSamples, numChannels, delaySamples,
-		                     targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+		                     targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff,
+		                     pitchRate);
 		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 		return;
 	}
@@ -1033,6 +1127,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		kParamAutoFbkAtt, "Auto Fbk Att",
 		juce::NormalisableRange<float> (kAutoFbkAttMin, kAutoFbkAttMax, 0.01f, 1.0f), kAutoFbkAttDefault));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamReverse, "Reverse", false));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamReversePitch, "Reverse Pitch",
+		juce::NormalisableRange<float> (kReversePitchMin, kReversePitchMax, 0.01f, 1.0f), kReversePitchDefault));
 
 	// UI state (hidden from automation)
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));

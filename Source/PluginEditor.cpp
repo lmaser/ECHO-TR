@@ -158,6 +158,13 @@ static juce::String formatAutoFbkTooltip (float tauPct, float attPct)
          + juce::String (juce::roundToInt (attPct)) + "%";
 }
 
+static juce::String formatReversePitchTooltip (float semitones)
+{
+    const int st = juce::roundToInt (semitones);
+    if (st == 0) return "0 st";
+    return (st > 0 ? juce::String ("+") : juce::String ("")) + juce::String (st) + " st";
+}
+
 // ── Parameter listener IDs (shared by ctor + dtor) ──
 static constexpr std::array<const char*, 5> kUiMirrorParamIds {
     ECHOTRAudioProcessor::kParamSync,
@@ -735,6 +742,20 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         autoFbkDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         autoFbkDisplay.setOpaque (false);
         addAndMakeVisible (autoFbkDisplay);
+    }
+
+    // Reverse pitch tooltip overlay — invisible label positioned over the REVERSE legend.
+    // Provides tooltip on hover; right-click forwarded to editor opens the pitch prompt.
+    {
+        const float savedPitch = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamReversePitch)->load();
+        reverseDisplay.setText ("", juce::dontSendNotification);
+        reverseDisplay.setInterceptsMouseClicks (true, false);
+        reverseDisplay.addMouseListener (this, false);
+        reverseDisplay.setTooltip (formatReversePitchTooltip (savedPitch));
+        reverseDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+        reverseDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+        reverseDisplay.setOpaque (false);
+        addAndMakeVisible (reverseDisplay);
     }
 
     auto bindSlider = [&] (std::unique_ptr<SliderAttachment>& attachment,
@@ -2138,9 +2159,9 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         else if (&s == &feedbackSlider)
         {
             minVal = 0.0;
-            maxVal = 200.0;    // user types percent (up to 200% for self-oscillation)
+            maxVal = 100.0;    // user types percent (0-100%)
             maxDecs = 2;
-            maxLen = 6; // "200.00"
+            maxLen = 6; // "100.00"
         }
         else if (&s == &modeSlider)
         {
@@ -2792,8 +2813,22 @@ void ECHOTRAudioProcessorEditor::openAutoFbkPrompt()
         *syncing = false;
     };
 
-    tauBar->onValueChanged = [barToText] (float v) { barToText ("tau", v); };
-    attBar->onValueChanged = [barToText] (float v) { barToText ("att", v); };
+    // Get APVTS parameter pointers for real-time DSP updates while prompt is open
+    auto* tauApvts = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamAutoFbkTau);
+    auto* attApvts = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamAutoFbkAtt);
+
+    tauBar->onValueChanged = [barToText, tauApvts] (float v)
+    {
+        barToText ("tau", v);
+        if (tauApvts != nullptr)
+            tauApvts->setValueNotifyingHost (tauApvts->convertTo0to1 (v * 100.0f));
+    };
+    attBar->onValueChanged = [barToText, attApvts] (float v)
+    {
+        barToText ("att", v);
+        if (attApvts != nullptr)
+            attApvts->setValueNotifyingHost (attApvts->convertTo0to1 (v * 100.0f));
+    };
 
     // Layout: vertically center both rows (text + bar) in the space above buttons.
     auto layoutRows = [aw, tauSuffix, attSuffix, tauPctLabel, attPctLabel, tauBar, attBar] ()
@@ -2863,26 +2898,29 @@ void ECHOTRAudioProcessorEditor::openAutoFbkPrompt()
     };
 
     // Wire text-change → bar update + re-layout
-    auto textToBar = [syncing] (juce::TextEditor* te, PromptBar* bar)
+    auto textToBar = [syncing] (juce::TextEditor* te, PromptBar* bar,
+                                juce::RangedAudioParameter* apvtsParam)
     {
         if (*syncing || te == nullptr || bar == nullptr) return;
         *syncing = true;
         const float v = juce::jlimit (0.0f, 100.0f, (float) te->getText().getIntValue());
         bar->value = v * 0.01f;
         bar->repaint();
+        if (apvtsParam != nullptr)
+            apvtsParam->setValueNotifyingHost (apvtsParam->convertTo0to1 (v));
         *syncing = false;
     };
 
     if (auto* tauTe = aw->getTextEditor ("tau"))
-        tauTe->onTextChange = [layoutRows, tauTe, tauBar, textToBar] () mutable
+        tauTe->onTextChange = [layoutRows, tauTe, tauBar, textToBar, tauApvts] () mutable
         {
-            textToBar (tauTe, tauBar);
+            textToBar (tauTe, tauBar, tauApvts);
             layoutRows();
         };
     if (auto* attTe = aw->getTextEditor ("att"))
-        attTe->onTextChange = [layoutRows, attTe, attBar, textToBar] () mutable
+        attTe->onTextChange = [layoutRows, attTe, attBar, textToBar, attApvts] () mutable
         {
-            textToBar (attTe, attBar);
+            textToBar (attTe, attBar, attApvts);
             layoutRows();
         };
 
@@ -2957,26 +2995,355 @@ void ECHOTRAudioProcessorEditor::openAutoFbkPrompt()
     }
 
     aw->enterModalState (true,
-        juce::ModalCallbackFunction::create ([safeThis, aw, tauBar, attBar] (int result) mutable
+        juce::ModalCallbackFunction::create (
+            [safeThis, aw, tauBar, attBar,
+             savedTau = currentTau, savedAtt = currentAtt] (int result) mutable
         {
             std::unique_ptr<juce::AlertWindow> killer (aw);
 
             if (safeThis != nullptr)
                 safeThis->setPromptOverlayActive (false);
 
-            if (safeThis == nullptr || result != 1)
+            if (safeThis == nullptr)
                 return;
 
-            // Read final values from bars (authoritative)
+            if (result != 1)
+            {
+                // CANCEL: revert to original values (real-time changes undone)
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamAutoFbkTau))
+                    p->setValueNotifyingHost (p->convertTo0to1 (savedTau));
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamAutoFbkAtt))
+                    p->setValueNotifyingHost (p->convertTo0to1 (savedAtt));
+                return;
+            }
+
+            // OK: values already applied in real-time, just update tooltip
             const float newTau = juce::jlimit (0.0f, 100.0f, tauBar->value * 100.0f);
             const float newAtt = juce::jlimit (0.0f, 100.0f, attBar->value * 100.0f);
-
-            if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamAutoFbkTau))
-                p->setValueNotifyingHost (p->convertTo0to1 (newTau));
-            if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamAutoFbkAtt))
-                p->setValueNotifyingHost (p->convertTo0to1 (newAtt));
-
             safeThis->autoFbkDisplay.setTooltip (formatAutoFbkTooltip (newTau, newAtt));
+        }),
+        false);
+}
+
+void ECHOTRAudioProcessorEditor::openReversePitchPrompt()
+{
+    lnf.setScheme (activeScheme);
+    const auto scheme = activeScheme;
+
+    const float currentPitch = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamReversePitch)->load();
+
+    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    aw->setLookAndFeel (&lnf);
+
+    // Single text editor for semitones (-12 to +12)
+    aw->addTextEditor ("pitch", juce::String (juce::roundToInt (currentPitch)), juce::String());
+
+    // Input filter: digits, minus sign, max 3 chars (e.g. "-12")
+    struct SemitoneInputFilter : juce::TextEditor::InputFilter
+    {
+        juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
+        {
+            juce::ignoreUnused (editor);
+            juce::String result;
+            for (auto c : newText)
+            {
+                if (juce::CharacterFunctions::isDigit (c) || c == '-')
+                    result += c;
+                if (result.length() >= 3)
+                    break;
+            }
+            return result;
+        }
+    };
+
+    // ── Inline bar component (same as in AUTO FBK prompt) ──
+    struct PromptBar : public juce::Component
+    {
+        ECHOScheme colours;
+        float value      = 0.5f;   // 0..1 (maps to -12..+12)
+        float defaultVal = 0.5f;
+        std::function<void (float)> onValueChanged;
+
+        PromptBar (const ECHOScheme& s, float initial01, float default01)
+            : colours (s), value (initial01), defaultVal (default01) {}
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            g.setColour (colours.outline);
+            g.drawRect (r, 4.0f);
+
+            const float pad = 7.0f;
+            auto inner = r.reduced (pad);
+
+            g.setColour (colours.bg);
+            g.fillRect (inner);
+
+            const float fillW = juce::jlimit (0.0f, inner.getWidth(), inner.getWidth() * value);
+            g.setColour (colours.fg);
+            g.fillRect (inner.withWidth (fillW));
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override   { updateFromMouse (e); }
+        void mouseDrag (const juce::MouseEvent& e) override   { updateFromMouse (e); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { setValue (defaultVal); }
+
+        void setValue (float v01)
+        {
+            value = juce::jlimit (0.0f, 1.0f, v01);
+            repaint();
+            if (onValueChanged)
+                onValueChanged (value);
+        }
+
+    private:
+        void updateFromMouse (const juce::MouseEvent& e)
+        {
+            const float pad = 7.0f;
+            const float innerX = pad;
+            const float innerW = (float) getWidth() - pad * 2.0f;
+            const float v = (innerW > 0.0f) ? ((float) e.x - innerX) / innerW : 0.0f;
+            setValue (v);
+        }
+    };
+
+    struct ResetLabel : public juce::Label
+    {
+        PromptBar* pairedBar = nullptr;
+        void mouseDoubleClick (const juce::MouseEvent&) override
+        {
+            if (pairedBar != nullptr)
+                pairedBar->setValue (pairedBar->defaultVal);
+        }
+    };
+
+    const auto& f = kBoldFont40();
+
+    // Helper: map semitones (-12..+12) to 0..1
+    auto stTo01 = [] (float st) { return (st - ECHOTRAudioProcessor::kReversePitchMin)
+                                       / (ECHOTRAudioProcessor::kReversePitchMax - ECHOTRAudioProcessor::kReversePitchMin); };
+    auto from01 = [] (float v)  { return ECHOTRAudioProcessor::kReversePitchMin
+                                       + v * (ECHOTRAudioProcessor::kReversePitchMax - ECHOTRAudioProcessor::kReversePitchMin); };
+
+    ResetLabel* pitchSuffix = nullptr;
+    juce::Label* stLabel    = nullptr;
+
+    if (auto* te = aw->getTextEditor ("pitch"))
+    {
+        te->setFont (f);
+        te->applyFontToAllText (f);
+        te->setInputFilter (new SemitoneInputFilter(), true);
+
+        auto r = te->getBounds();
+        r.setHeight ((int) (f.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
+        te->setBounds (r);
+
+        pitchSuffix = new ResetLabel();
+        pitchSuffix->setText ("PITCH", juce::dontSendNotification);
+        pitchSuffix->setJustificationType (juce::Justification::centredLeft);
+        applyLabelTextColour (*pitchSuffix, scheme.text);
+        pitchSuffix->setBorderSize (juce::BorderSize<int> (0));
+        pitchSuffix->setFont (f);
+        aw->addAndMakeVisible (pitchSuffix);
+
+        stLabel = new juce::Label ("", "st");
+        stLabel->setJustificationType (juce::Justification::centredLeft);
+        applyLabelTextColour (*stLabel, scheme.text);
+        stLabel->setBorderSize (juce::BorderSize<int> (0));
+        stLabel->setFont (f);
+        aw->addAndMakeVisible (stLabel);
+    }
+
+    auto* pitchBar = new PromptBar (scheme, stTo01 (currentPitch), stTo01 (ECHOTRAudioProcessor::kReversePitchDefault));
+    aw->addAndMakeVisible (pitchBar);
+
+    if (pitchSuffix != nullptr) pitchSuffix->pairedBar = pitchBar;
+
+    // ── Bidirectional sync ──
+    auto syncing = std::make_shared<bool> (false);
+
+    auto barToText = [aw, syncing, from01] (float v01)
+    {
+        if (*syncing) return;
+        *syncing = true;
+        if (auto* te = aw->getTextEditor ("pitch"))
+        {
+            const int st = juce::roundToInt (from01 (v01));
+            te->setText (juce::String (st), juce::sendNotification);
+            te->selectAll();
+        }
+        *syncing = false;
+    };
+
+    auto* pitchApvts = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamReversePitch);
+
+    pitchBar->onValueChanged = [barToText, pitchApvts, from01] (float v)
+    {
+        barToText (v);
+        if (pitchApvts != nullptr)
+        {
+            const float st = from01 (v);
+            pitchApvts->setValueNotifyingHost (pitchApvts->convertTo0to1 (st));
+        }
+    };
+
+    // Layout: vertically center the single row (text + bar) above buttons.
+    auto layoutRows = [aw, pitchSuffix, stLabel, pitchBar] ()
+    {
+        auto* pitchTe = aw->getTextEditor ("pitch");
+        if (pitchTe == nullptr)
+            return;
+
+        const int buttonsTop = getAlertButtonsTop (*aw);
+        const int rowH = pitchTe->getHeight();
+        const int barH = juce::jmax (10, rowH / 2);
+        const int barGap = juce::jmax (2, rowH / 6);
+        const int rowTotal = rowH + barGap + barH;
+        const int startY = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - rowTotal) / 2);
+
+        const int contentPad = kPromptInlineContentPadPx;
+        const int contentW = aw->getWidth() - contentPad * 2;
+        const auto& font = pitchTe->getFont();
+        const int spaceW = juce::jmax (2, stringWidth (font, " "));
+        const int unitW = stringWidth (font, "st") + 2;
+
+        if (pitchSuffix == nullptr || pitchBar == nullptr)
+            return;
+
+        const int labelW = stringWidth (pitchSuffix->getFont(), pitchSuffix->getText()) + 2;
+        const auto txt = pitchTe->getText();
+        const int textW = juce::jmax (1, stringWidth (font, txt));
+
+        constexpr int kEditorTextPadPx = 12;
+        constexpr int kMinEditorWidthPx = 24;
+        const int editorW = juce::jlimit (kMinEditorWidthPx, 80, textW + kEditorTextPadPx * 2);
+
+        const int visualW = labelW + spaceW + textW + unitW;
+        const int centerX = contentPad + contentW / 2;
+        int blockLeft = centerX - visualW / 2;
+        blockLeft = juce::jlimit (contentPad, juce::jmax (contentPad, contentPad + contentW - visualW), blockLeft);
+
+        pitchSuffix->setBounds (blockLeft, startY, labelW, rowH);
+
+        int teX = blockLeft + labelW + spaceW - (editorW - textW) / 2;
+        teX = juce::jlimit (contentPad, juce::jmax (contentPad, contentPad + contentW - editorW), teX);
+        pitchTe->setBounds (teX, startY, editorW, rowH);
+
+        if (stLabel != nullptr)
+        {
+            const int textRightX = blockLeft + labelW + spaceW + textW;
+            stLabel->setBounds (textRightX, startY, unitW, rowH);
+        }
+
+        const int barX = kPromptInnerMargin;
+        const int barW = juce::jmax (60, aw->getWidth() - kPromptInnerMargin * 2);
+        pitchBar->setBounds (barX, startY + rowH + barGap, barW, barH);
+    };
+
+    // Wire text-change → bar + APVTS
+    auto textToBar = [syncing, stTo01] (juce::TextEditor* te, PromptBar* bar,
+                                        juce::RangedAudioParameter* apvtsParam)
+    {
+        if (*syncing || te == nullptr || bar == nullptr) return;
+        *syncing = true;
+        const float st = juce::jlimit (ECHOTRAudioProcessor::kReversePitchMin,
+                                        ECHOTRAudioProcessor::kReversePitchMax,
+                                        (float) te->getText().getIntValue());
+        bar->value = stTo01 (st);
+        bar->repaint();
+        if (apvtsParam != nullptr)
+            apvtsParam->setValueNotifyingHost (apvtsParam->convertTo0to1 (st));
+        *syncing = false;
+    };
+
+    if (auto* pitchTe = aw->getTextEditor ("pitch"))
+        pitchTe->onTextChange = [layoutRows, pitchTe, pitchBar, textToBar, pitchApvts] () mutable
+        {
+            textToBar (pitchTe, pitchBar, pitchApvts);
+            layoutRows();
+        };
+
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    applyPromptShellSize (*aw);
+    layoutAlertWindowButtons (*aw);
+    layoutRows();
+
+    const juce::Font& kReversePitchFont = kBoldFont40();
+    preparePromptTextEditor (*aw, "pitch", scheme.bg, scheme.text, scheme.fg, kReversePitchFont, false);
+    layoutRows();
+
+    styleAlertButtons (*aw, lnf);
+
+    juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
+
+    if (safeThis != nullptr)
+    {
+        fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+        {
+            juce::ignoreUnused (a);
+            layoutAlertWindowButtons (a);
+            layoutRows();
+        });
+
+        embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+    }
+    else
+    {
+        aw->centreAroundComponent (this, aw->getWidth(), aw->getHeight());
+        bringPromptWindowToFront (*aw);
+    }
+
+    // Final styling pass
+    {
+        preparePromptTextEditor (*aw, "pitch", scheme.bg, scheme.text, scheme.fg, kReversePitchFont, false);
+        layoutRows();
+
+        if (pitchSuffix != nullptr)
+        {
+            if (auto* te = aw->getTextEditor ("pitch"))
+            {
+                pitchSuffix->setFont (te->getFont());
+                if (stLabel != nullptr) stLabel->setFont (te->getFont());
+            }
+        }
+
+        layoutRows();
+
+        juce::Component::SafePointer<juce::AlertWindow> safeAw (aw);
+        juce::MessageManager::callAsync ([safeAw]()
+        {
+            if (safeAw == nullptr)
+                return;
+            bringPromptWindowToFront (*safeAw);
+            safeAw->repaint();
+        });
+    }
+
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create (
+            [safeThis, aw, pitchBar, from01,
+             savedPitch = currentPitch] (int result) mutable
+        {
+            std::unique_ptr<juce::AlertWindow> killer (aw);
+
+            if (safeThis != nullptr)
+                safeThis->setPromptOverlayActive (false);
+
+            if (safeThis == nullptr)
+                return;
+
+            if (result != 1)
+            {
+                // CANCEL: revert
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamReversePitch))
+                    p->setValueNotifyingHost (p->convertTo0to1 (savedPitch));
+                return;
+            }
+
+            // OK: update tooltip
+            const float newPitch = from01 (pitchBar->value);
+            safeThis->reverseDisplay.setTooltip (formatReversePitchTooltip (newPitch));
         }),
         false);
 }
@@ -3038,14 +3405,13 @@ void ECHOTRAudioProcessorEditor::openInfoPopup()
 
     // Each verse is its own single-line label — no word-wrap, no height measurement issues
     addPoemLine ("poemSpacer",  "");
-    addPoemLine ("poemLine1",   juce::String (juce::CharPointer_UTF8 ("\xc2\xab Flores tronchadas,")));
-    addPoemLine ("poemLine2",   "marchitas hojas");
-    addPoemLine ("poemLine3",   "arrastra el viento;");
-    addPoemLine ("poemLine4",   "en los espacios tristes");
-    addPoemLine ("poemLine5",   "gemidos");
-    addPoemLine ("poemLine6",   juce::String (juce::CharPointer_UTF8 ("repite el eco. \xc2\xbb")));
+    addPoemLine ("poemLine1",   "To the swinging and the ringing");
+    addPoemLine ("poemLine2",   juce::String (juce::CharPointer_UTF8 ("Of the bells, bells, bells \xe2\x80\x94")));
+    addPoemLine ("poemLine3",   "To the rhyming and the chiming of the bells!");
+    addPoemLine ("poemLine4",   juce::String (juce::CharPointer_UTF8 ("From the bells, bells, bells, bells\xe2\x80\xa6")));
+    addPoemLine ("poemLine5",   "Echoes the terror of their tones.");
     addPoemLine ("poemSpacer2", "");
-    addPoemLine ("authorText",  juce::String (juce::CharPointer_UTF8 ("B\xc3\xa9" "cquer")));
+    addPoemLine ("authorText",  "Edgar Allan Poe");
 
     auto* viewport = new juce::Viewport();
     viewport->setComponentID ("bodyViewport");
@@ -3874,9 +4240,12 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (getReverseLabelArea().contains (p))
+    if (getReverseLabelArea().contains (p) || reverseDisplay.getBounds().contains (p))
     {
-        reverseButton.setToggleState (! reverseButton.getToggleState(), juce::sendNotificationSync);
+        if (e.mods.isPopupMenu())
+            openReversePitchPrompt();
+        else
+            reverseButton.setToggleState (! reverseButton.getToggleState(), juce::sendNotificationSync);
         return;
     }
 
@@ -4235,6 +4604,12 @@ void ECHOTRAudioProcessorEditor::resized()
     {
         const auto autoFbkLabelRect = getAutoFbkLabelArea();
         autoFbkDisplay.setBounds (autoFbkLabelRect);
+    }
+
+    // Position invisible tooltip overlay on the REVERSE label area
+    {
+        const auto reverseLabelRect = getReverseLabelArea();
+        reverseDisplay.setBounds (reverseLabelRect);
     }
 
     if (resizerCorner != nullptr)

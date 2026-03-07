@@ -26,7 +26,8 @@ public:
 	static constexpr const char* kParamAutoFbk    = "auto_fbk";
 	static constexpr const char* kParamAutoFbkTau = "auto_fbk_tau";
 	static constexpr const char* kParamAutoFbkAtt = "auto_fbk_att";
-	static constexpr const char* kParamReverse    = "reverse";
+	static constexpr const char* kParamReverse      = "reverse";
+	static constexpr const char* kParamReversePitch = "reverse_pitch";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -47,7 +48,7 @@ public:
 	static constexpr int kTimeSyncDefault = 10;
 
 	static constexpr float kFeedbackMin = 0.0f;
-	static constexpr float kFeedbackMax = 2.0f;
+	static constexpr float kFeedbackMax = 1.0f;
 	static constexpr float kFeedbackDefault = 1.0f;
 
 	static constexpr int kModeMin = 0;
@@ -76,6 +77,10 @@ public:
 	static constexpr float kAutoFbkAttMin     = 0.0f;
 	static constexpr float kAutoFbkAttMax     = 100.0f;
 	static constexpr float kAutoFbkAttDefault = 75.0f;
+
+	static constexpr float kReversePitchMin     = -12.0f;
+	static constexpr float kReversePitchMax     =  12.0f;
+	static constexpr float kReversePitchDefault =   0.0f;
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -108,7 +113,8 @@ public:
 	// Reverse delay processing (chunk-based dual read with crossfade)
 	void processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                          float delaySamples, float feedback, float inputGain,
-	                          float outputGain, float mix, float delaySmoothCoeff);
+	                          float outputGain, float mix, float delaySmoothCoeff,
+	                          float pitchRate);
 
 	juce::AudioProcessorEditor* createEditor() override;
 	bool hasEditor() const override;
@@ -194,6 +200,17 @@ private:
 	// Multiplied with the user's feedback value so it "resets" on change.
 	float autoFbkEnvelope          = 1.0f;  // current envelope level (0 = silent, 1 = full)
 	float autoFbkLastDelaySamples  = -1.0f; // previous final delay in samples; -1 = uninitialised
+	bool  prevAutoFbkEnabled       = false;  // previous state for edge-detect buffer clear
+	int   autoFbkCooldownLeft      = 0;     // samples remaining before next reset allowed
+
+	// ── Feedback loop processing state ──
+	// DC blocker only (maximally transparent feedback path).
+	float fbkDcStateInL = 0.0f;  // DC blocker input state (left)
+	float fbkDcStateInR = 0.0f;  // DC blocker input state (right)
+	float fbkDcStateOutL = 0.0f; // DC blocker output state (left)
+	float fbkDcStateOutR = 0.0f; // DC blocker output state (right)
+	// Per-block precomputed coefficient
+	float fbkDcCoeff  = 0.999f;  // DC blocker R coefficient
 
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
@@ -214,6 +231,7 @@ private:
 	std::atomic<float>* autoFbkTauParam = nullptr;
 	std::atomic<float>* autoFbkAttParam = nullptr;
 	std::atomic<float>* reverseParam = nullptr;
+	std::atomic<float>* reversePitchParam = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;
