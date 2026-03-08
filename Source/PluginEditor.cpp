@@ -300,7 +300,7 @@ void ECHOTRAudioProcessorEditor::MinimalLNF::drawTooltip (juce::Graphics& g,
 ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    const std::array<BarSlider*, 7> barSliders { &timeSlider, &feedbackSlider, &modeSlider, &modSlider, &inputSlider, &outputSlider, &mixSlider };
+    const std::array<BarSlider*, 7> barSliders { &timeSlider, &modSlider, &feedbackSlider, &modeSlider, &inputSlider, &outputSlider, &mixSlider };
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     crtEnabled = audioProcessor.getUiCrtEnabled();
@@ -503,7 +503,7 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     dismissEditorOwnedModalPrompts (lnf);
     setPromptOverlayActive (false);
 
-    const std::array<BarSlider*, 7> barSliders { &timeSlider, &feedbackSlider, &modeSlider, &modSlider, &inputSlider, &outputSlider, &mixSlider };
+    const std::array<BarSlider*, 7> barSliders { &timeSlider, &modSlider, &feedbackSlider, &modeSlider, &inputSlider, &outputSlider, &mixSlider };
     for (auto* slider : barSliders)
         slider->removeListener (this);
 
@@ -3480,7 +3480,7 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
     cachedHLayout_ = buildHorizontalLayout (getWidth(), getTargetValueColumnWidth());
     cachedVLayout_ = buildVerticalLayout (getHeight(), kLayoutVerticalBiasPx);
 
-    const juce::Slider* sliders[7] = { &timeSlider, &feedbackSlider, &modeSlider, &modSlider,
+    const juce::Slider* sliders[7] = { &timeSlider, &modSlider, &feedbackSlider, &modeSlider,
                                         &inputSlider, &outputSlider, &mixSlider };
 
     for (int i = 0; i < 7; ++i)
@@ -3564,7 +3564,7 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getValueAreaFor (const juce::Re
 
 juce::Slider* ECHOTRAudioProcessorEditor::getSliderForValueAreaPoint (juce::Point<int> p)
 {
-    juce::Slider* sliders[7] = { &timeSlider, &feedbackSlider, &modeSlider, &modSlider,
+    juce::Slider* sliders[7] = { &timeSlider, &modSlider, &feedbackSlider, &modeSlider,
                                   &inputSlider, &outputSlider, &mixSlider };
 
     for (int i = 0; i < 7; ++i)
@@ -3868,15 +3868,15 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     }
 
     {
-        const juce::String* fullTexts[7]  = { &cachedTimeTextFull, &cachedFeedbackTextFull, &cachedModeTextFull,
-                                               &cachedModTextFull, &cachedInputTextFull, &cachedOutputTextFull, &cachedMixTextFull };
-        const juce::String* shortTexts[7] = { &cachedTimeTextShort, &cachedFeedbackTextShort, &cachedModeTextShort,
-                                               &cachedModTextShort, &cachedInputTextShort, &cachedOutputTextShort, &cachedMixTextShort };
+        const juce::String* fullTexts[7]  = { &cachedTimeTextFull, &cachedModTextFull, &cachedFeedbackTextFull,
+                                               &cachedModeTextFull, &cachedInputTextFull, &cachedOutputTextFull, &cachedMixTextFull };
+        const juce::String* shortTexts[7] = { &cachedTimeTextShort, &cachedModTextShort, &cachedFeedbackTextShort,
+                                               &cachedModeTextShort, &cachedInputTextShort, &cachedOutputTextShort, &cachedMixTextShort };
         const juce::String intTexts[7] = {
             juce::String ((int) timeSlider.getValue()),
+            juce::String ((int) modSlider.getValue()),
             juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)) + "%",
             juce::String ((int) modeSlider.getValue()),
-            juce::String ((int) modSlider.getValue()),
             juce::String ((int) inputSlider.getValue()) + "dB",
             juce::String ((int) outputSlider.getValue()) + "dB",
             juce::String ((int) std::lround (mixSlider.getValue() * 100.0)) + "%"
@@ -4022,9 +4022,9 @@ void ECHOTRAudioProcessorEditor::resized()
 
     // Position 7 sliders in 7 separate rows
     timeSlider.setBounds     (horizontalLayout.leftX, verticalLayout.topY + 0 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    feedbackSlider.setBounds (horizontalLayout.leftX, verticalLayout.topY + 1 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    modeSlider.setBounds     (horizontalLayout.leftX, verticalLayout.topY + 2 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    modSlider.setBounds      (horizontalLayout.leftX, verticalLayout.topY + 3 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
+    modSlider.setBounds      (horizontalLayout.leftX, verticalLayout.topY + 1 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
+    feedbackSlider.setBounds (horizontalLayout.leftX, verticalLayout.topY + 2 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
+    modeSlider.setBounds     (horizontalLayout.leftX, verticalLayout.topY + 3 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
     inputSlider.setBounds    (horizontalLayout.leftX, verticalLayout.topY + 4 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
     outputSlider.setBounds   (horizontalLayout.leftX, verticalLayout.topY + 5 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
     mixSlider.setBounds      (horizontalLayout.leftX, verticalLayout.topY + 6 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
