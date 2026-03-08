@@ -52,7 +52,7 @@ public:
 	static constexpr float kFeedbackDefault = 1.0f;
 
 	static constexpr int kModeMin = 0;
-	static constexpr int kModeMax = 2; // 0=MONO, 1=STEREO, 2=PING-PONG ("Style" in UI)
+	static constexpr int kModeMax = 3; // 0=MONO, 1=STEREO, 2=WIDE, 3=PING-PONG ("Style" in UI)
 	static constexpr float kModeDefault = 1.0f;
 
 	static constexpr float kModMin = 0.0f;
@@ -109,6 +109,9 @@ public:
 	void processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                            float delaySamples, float feedback, float inputGain,
 	                            float outputGain, float mix, float delaySmoothCoeff);
+	void processWideDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+	                       float delaySamples, float feedback, float inputGain,
+	                       float outputGain, float mix, float delaySmoothCoeff);
 
 	// Reverse delay processing (chunk-based backward playback with smooth taper control)
 	void processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,

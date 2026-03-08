@@ -3297,7 +3297,8 @@ juce::String ECHOTRAudioProcessorEditor::getModeText() const
     {
         case 0: return "MONO STYLE";
         case 1: return "STEREO STYLE";
-        case 2: return "PING-PONG STYLE";
+        case 2: return "WIDE STYLE";
+        case 3: return "PING-PONG STYLE";
         default: return "STEREO STYLE";
     }
 }
@@ -3309,7 +3310,8 @@ juce::String ECHOTRAudioProcessorEditor::getModeTextShort() const
     {
         case 0: return "MONO";
         case 1: return "STEREO";
-        case 2: return "PING-PONG";
+        case 2: return "WIDE";
+        case 3: return "PING-PONG";
         default: return "STEREO";
     }
 }
@@ -3392,9 +3394,9 @@ namespace
     constexpr const char* kFeedbackLegendShort = "100% FBK";
     constexpr const char* kFeedbackLegendInt   = "100%";
 
-    constexpr const char* kModeLegendFull  = "STEREO MODE";
+    constexpr const char* kModeLegendFull  = "PING-PONG STYLE";
     constexpr const char* kModeLegendShort = "PING-PONG";  // Value-only (worst-case width)
-    constexpr const char* kModeLegendInt   = "STR";
+    constexpr const char* kModeLegendInt   = "P-P";
 
     constexpr const char* kModLegendFull  = "X4.00 MOD";
     constexpr const char* kModLegendShort = "X4.00";

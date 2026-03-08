@@ -31,7 +31,7 @@ ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visib
 The value column to the right of each slider shows the current state in context:
 - TIME shows milliseconds (or MIDI note name when active, or sync division).
 - FEEDBACK shows percentage + "FBK".
-- STYLE shows MONO/STEREO/PING-PONG.
+- STYLE shows MONO/STEREO/WIDE/PING-PONG.
 - MOD shows the frequency multiplier.
 - INPUT/OUTPUT show dB values.
 - MIX shows percentage.
@@ -56,7 +56,8 @@ Only a DC blocker (5 Hz high-pass) sits in the feedback path — no filtering, n
 Routing topology for the delay:
 - **MONO**: Single delay line, summed to both channels.
 - **STEREO**: Independent left/right delay lines.
-- **PING-PONG**: Cross-feedback between channels for stereo bouncing.
+- **WIDE**: Cross-feedback between channels (like PING-PONG) but both channels receive their own stereo input. Creates a widening effect where repetitions gradually spread across the stereo field while preserving the original stereo image.
+- **PING-PONG**: Cross-feedback with mono-summed input fed into the left channel only. Each repetition alternates fully between left and right.
 
 All three modes share the same interpolation (4-point Hermite) and feedback processing.
 

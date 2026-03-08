@@ -540,6 +540,64 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	delayBufferWritePos = writePos;
 }
 
+void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+                                              float delaySamples, float feedback, float inputGain,
+                                              float outputGain, float mix, float delaySmoothCoeff)
+{
+	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
+	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
+
+	auto* delayL = delayBuffer.getWritePointer (0);
+	auto* delayR = delayBuffer.getWritePointer (1);
+
+	const int wrapMask = delayBufferLength - 1;
+	int writePos = delayBufferWritePos;
+
+	const float smoothCoeff = delaySmoothCoeff;
+	const float targetDelay = delaySamples;
+
+	for (int i = 0; i < numSamples; ++i)
+	{
+		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
+		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
+		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
+		float readPosF = (float) writePos - smoothedDelaySamples;
+		if (readPosF < 0.0f)
+			readPosF += (float) delayBufferLength;
+
+		const int idx0  = static_cast<int>(readPosF) & wrapMask;
+		const int idxM1 = (idx0 + wrapMask) & wrapMask;
+		const int idx1  = (idx0 + 1) & wrapMask;
+		const int idx2  = (idx0 + 2) & wrapMask;
+		const float frac = readPosF - static_cast<float>(static_cast<int>(readPosF));
+
+		const float delayedL = hermite4pt (delayL[idxM1], delayL[idx0], delayL[idx1], delayL[idx2], frac);
+		const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
+
+		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
+		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
+
+		// Cross-feedback: L reads from R delay, R reads from L delay (like ping-pong)
+		// but both channels receive their own stereo input (unlike ping-pong mono sum)
+		float fbkL = delayedR * feedback;
+		float fbkR = delayedL * feedback;
+
+		fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+		fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+
+		delayL[writePos] = inputL * smoothedInputGain + fbkL;
+		delayR[writePos] = inputR * smoothedInputGain + fbkR;
+
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
+
+		writePos = (writePos + 1) & wrapMask;
+	}
+
+	delayBufferWritePos = writePos;
+}
+
 void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                  float delaySamples, float feedback, float inputGain,
                                                  float outputGain, float mix, float delaySmoothCoeff,
@@ -1001,7 +1059,12 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		processMonoDelay (buffer, numSamples, numChannels, delaySamples, 
 		                  targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
-	else if (mode == 2) // PING-PONG
+	else if (mode == 2) // WIDE
+	{
+		processWideDelay (buffer, numSamples, numChannels, delaySamples,
+		                  targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+	}
+	else if (mode == 3) // PING-PONG
 	{
 		processPingPongDelay (buffer, numSamples, numChannels, delaySamples,
 		                      targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
