@@ -1453,9 +1453,9 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         // the current value).  Use a representative widest string per slider.
         juce::String worstCaseText;
         if (&s == &timeSlider)
-            worstCaseText = isTimeSyncMode ? "1/64T." : "10000.00";
+            worstCaseText = isTimeSyncMode ? "1/64T." : "10000.000";
         else if (&s == &feedbackSlider)
-            worstCaseText = "200.00";
+            worstCaseText = "100.00";
         else if (&s == &modeSlider)
             worstCaseText = "3";
         else if (&s == &modSlider)
@@ -1562,8 +1562,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             {
                 minVal = 0.0;
                 maxVal = 10000.0;  // 10 seconds max
-                maxDecs = 2;
-                maxLen = 8; // "10000.00"
+                maxDecs = 3;
+                maxLen = 9; // "10000.000"
             }
         }
         else if (&s == &feedbackSlider)
