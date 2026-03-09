@@ -22,12 +22,12 @@ namespace InfoContent
 {
     // Plugin version — used both in the XML and by the paint() version label.
     // Single source of truth: update HERE, the XML references it too.
-    static constexpr const char* version = "1.0c";
+    static constexpr const char* version = "1.1";
 
     static constexpr const char* xml = R"xml(<?xml version="1.0" encoding="UTF-8"?>
 <info>
   <content>
-    <heading>ECHO-TR v1.0c</heading>
+    <heading>ECHO-TR v1.1</heading>
     <spacer/>
     <text>by Nemester</text>
     <link url="https://github.com/lmaser/ECHO-TR">Github Repository</link>
