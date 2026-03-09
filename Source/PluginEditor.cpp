@@ -3995,14 +3995,14 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         // All area/position calculations (resized, getLabelArea) use this same 40px Bold.
         g.setFont (labelFont);
         
-        const int syncCR  = autoFbkButton.getX() - kToggleLegendCollisionPadPx;
+        const int revCR   = autoFbkButton.getX() - kToggleLegendCollisionPadPx;
         const int autoCR  = W - kToggleLegendCollisionPadPx;
-        const int revCR  = midiButton.getX() - kToggleLegendCollisionPadPx;
+        const int syncCR  = midiButton.getX() - kToggleLegendCollisionPadPx;
         const int midiCR  = W - kToggleLegendCollisionPadPx;
 
-        const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
+        const juce::String revLabel  = chooseToggleLabel (reverseButton, revCR,  "REVERSE",  "RVS");
         const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "AUTO FBK", "AUTO");
-        const juce::String revLabel = chooseToggleLabel (reverseButton,    revCR, "REVERSE",     "RVS");
+        const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
         const juce::String midiLabel = chooseToggleLabel (midiButton,    midiCR, "MIDI",     "MD");
         
         auto drawToggleLegend = [&] (const juce::Rectangle<int>& labelArea,
@@ -4021,12 +4021,12 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
             g.drawText (labelText, drawArea.getX(), drawArea.getY(), drawArea.getWidth(), drawArea.getHeight(), juce::Justification::left, true);
         };
 
-        // Row 1: SYNC + AUTO FBK
-        drawToggleLegend (getSyncLabelArea(),    syncLabel, syncCR);
+        // Row 1: RVS + AUTO FBK
+        drawToggleLegend (getReverseLabelArea(), revLabel, revCR);
         drawToggleLegend (getAutoFbkLabelArea(), autoLabel, autoCR);
 
-        // Row 2: REV + MIDI
-        drawToggleLegend (getReverseLabelArea(), revLabel, revCR);
+        // Row 2: SYNC + MIDI
+        drawToggleLegend (getSyncLabelArea(),    syncLabel, syncCR);
         drawToggleLegend (getMidiLabelArea(), midiLabel, midiCR);
     }
     
@@ -4159,7 +4159,7 @@ void ECHOTRAudioProcessorEditor::resized()
         mixSlider.setVisible (false);
     }
 
-    // Button area: 2x2 grid — Row 1: SYNC + AUTO FBK, Row 2: LOOP + MIDI
+    // Button area: 2x2 grid — Row 1: RVS + AUTO FBK, Row 2: SYNC + MIDI
     const int buttonAreaX = horizontalLayout.leftX;
 
     const int toggleVisualSide = juce::jlimit (14,
@@ -4168,14 +4168,14 @@ void ECHOTRAudioProcessorEditor::resized()
     const int toggleHitW = toggleVisualSide + 6;
 
     // Each row has 2 buttons: left-anchored + right-anchored
-    // Row 1: SYNC (left) + AUTO FBK (right)
-    // Row 2: REV (left) + MIDI (right)
+    // Row 1: RVS (left) + AUTO FBK (right)
+    // Row 2: SYNC (left) + MIDI (right)
     const int leftBlockX = buttonAreaX;
     const int rightBlockX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
 
-    syncButton.setBounds    (leftBlockX,  verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
+    reverseButton.setBounds (leftBlockX,  verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
     autoFbkButton.setBounds (rightBlockX, verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
-    reverseButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
+    syncButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     midiButton.setBounds    (rightBlockX, verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
     
     // Position invisible tooltip overlay on the MIDI label area
