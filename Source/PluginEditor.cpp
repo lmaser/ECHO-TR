@@ -304,6 +304,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     crtEnabled = audioProcessor.getUiCrtEnabled();
+    ioSectionExpanded_ = audioProcessor.getUiIoExpanded();
 
     for (int i = 0; i < 2; ++i)
         customPalette[(size_t) i] = audioProcessor.getUiCustomPaletteColour (i);
@@ -760,6 +761,14 @@ void ECHOTRAudioProcessorEditor::applyPersistedUiStateFromProcessor (bool applyS
         const bool paletteSwitchChanged = (useCustomPalette != targetUseCustomPalette);
         const bool fxChanged = (crtEnabled != targetCrtEnabled);
 
+        const bool targetIoExpanded = audioProcessor.getUiIoExpanded();
+        const bool ioChanged = (ioSectionExpanded_ != targetIoExpanded);
+        if (ioChanged)
+        {
+            ioSectionExpanded_ = targetIoExpanded;
+            resized();
+        }
+
         if (paletteSwitchChanged)
             useCustomPalette = targetUseCustomPalette;
 
@@ -769,7 +778,7 @@ void ECHOTRAudioProcessorEditor::applyPersistedUiStateFromProcessor (bool applyS
         if (paletteChanged || paletteSwitchChanged)
             applyActivePalette();
 
-        if (paletteChanged || paletteSwitchChanged || fxChanged)
+        if (paletteChanged || paletteSwitchChanged || fxChanged || ioChanged)
             repaint();
     }
 }
@@ -3674,7 +3683,18 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getInfoIconArea() const
 {
-    const int contentRight = cachedValueAreas_[0].getRight();  // time slider value area
+    int contentRight = 0;
+    for (size_t i = 0; i < cachedValueAreas_.size(); ++i)
+    {
+        if (! cachedValueAreas_[i].isEmpty())
+        {
+            contentRight = cachedValueAreas_[i].getRight();
+            break;
+        }
+    }
+    if (contentRight <= 0)
+        contentRight = getWidth() - 8;
+
     const int titleH = cachedVLayout_.titleH;
     const int titleY = cachedVLayout_.titleTopPad;
     const int titleAreaH = cachedVLayout_.titleAreaH;
@@ -3694,6 +3714,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     if (cachedToggleBarArea_.contains (p))
     {
         ioSectionExpanded_ = ! ioSectionExpanded_;
+        audioProcessor.setUiIoExpanded (ioSectionExpanded_);
         resized();
         repaint();
         return;
@@ -3912,39 +3933,36 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
 
     // ── Toggle bar (triangle + rounded horizontal bar) ──
     {
-        const auto toggleArea = cachedToggleBarArea_;
-        constexpr float triSize = 16.0f;
-        constexpr float barThick = 6.0f;
-        const float triX = (float) toggleArea.getX();
-        const float triCY = (float) toggleArea.getCentreY();
-
-        juce::Path triangle;
-        if (ioSectionExpanded_)
+        if (! cachedToggleBarArea_.isEmpty())
         {
-            // ▲ pointing up
-            triangle.addTriangle (triX, triCY + triSize * 0.5f,
-                                  triX + triSize, triCY + triSize * 0.5f,
-                                  triX + triSize * 0.5f, triCY - triSize * 0.5f);
+            const float barRadius = (float) cachedToggleBarArea_.getHeight() * 0.3f;
+            g.setColour (scheme.fg.withAlpha (0.25f));
+            g.fillRoundedRectangle (cachedToggleBarArea_.toFloat(), barRadius);
+
+            // Triangle indicator — centered, palette-coloured
+            const float triH = (float) cachedToggleBarArea_.getHeight() * 0.8f;
+            const float triW = triH * 1.125f;
+            const float cx = (float) cachedToggleBarArea_.getCentreX();
+            const float cy = (float) cachedToggleBarArea_.getCentreY();
+
+            juce::Path tri;
+            if (ioSectionExpanded_)
+            {
+                // ▲ pointing up (collapse)
+                tri.addTriangle (cx - triW * 0.5f, cy + triH * 0.35f,
+                                 cx + triW * 0.5f, cy + triH * 0.35f,
+                                 cx,               cy - triH * 0.35f);
+            }
+            else
+            {
+                // ▼ pointing down (expand)
+                tri.addTriangle (cx - triW * 0.5f, cy - triH * 0.35f,
+                                 cx + triW * 0.5f, cy - triH * 0.35f,
+                                 cx,               cy + triH * 0.35f);
+            }
+            g.setColour (scheme.text);
+            g.fillPath (tri);
         }
-        else
-        {
-            // ▼ pointing down
-            triangle.addTriangle (triX, triCY - triSize * 0.5f,
-                                  triX + triSize, triCY - triSize * 0.5f,
-                                  triX + triSize * 0.5f, triCY + triSize * 0.5f);
-        }
-
-        g.setColour (scheme.text);
-        g.fillPath (triangle);
-
-        // Horizontal rounded bar
-        const float barX = triX + triSize + 6.0f;
-        const float barY = triCY - barThick * 0.5f;
-        const float barW = juce::jmax (0.0f, (float) (toggleArea.getRight()) - barX);
-        const float cornerR = barThick * 0.5f;
-
-        g.setColour (scheme.text);
-        g.fillRoundedRectangle (barX, barY, barW, barThick, cornerR);
     }
 
     g.setColour (scheme.text);

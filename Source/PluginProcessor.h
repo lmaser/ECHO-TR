@@ -154,6 +154,9 @@ public:
 	void setMidiChannel (int channel);
 	int getMidiChannel() const noexcept;
 
+	void setUiIoExpanded (bool expanded);
+	bool getUiIoExpanded() const noexcept;
+
 	void setUiCustomPaletteColour (int index, juce::Colour colour);
 	juce::Colour getUiCustomPaletteColour (int index) const noexcept;
 
@@ -171,6 +174,7 @@ private:
 		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
 		static constexpr const char* crtEnabled = "uiFxTailEnabled";  // string kept for preset compat
 		static constexpr const char* midiPort = "midiPort";
+		static constexpr const char* ioExpanded = "uiIoExpanded";
 		static constexpr std::array<const char*, 2> customPalette {
 			"uiCustomPalette0", "uiCustomPalette1"
 		};

@@ -1309,6 +1309,18 @@ bool ECHOTRAudioProcessor::getUiCrtEnabled() const noexcept
 	return uiCrtEnabled.load (std::memory_order_relaxed) != 0;
 }
 
+void ECHOTRAudioProcessor::setUiIoExpanded (bool expanded)
+{
+	apvts.state.setProperty (UiStateKeys::ioExpanded, expanded, nullptr);
+}
+
+bool ECHOTRAudioProcessor::getUiIoExpanded() const noexcept
+{
+	const auto fromState = apvts.state.getProperty (UiStateKeys::ioExpanded);
+	if (! fromState.isVoid()) return (bool) fromState;
+	return false;
+}
+
 void ECHOTRAudioProcessor::setMidiChannel (int channel)
 {
 	const int ch = juce::jlimit (0, 16, channel);
