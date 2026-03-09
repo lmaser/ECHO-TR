@@ -33,12 +33,13 @@ namespace InfoContent
     <link url="https://github.com/lmaser/ECHO-TR">Github Repository</link>
     <separator>&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;</separator>
     <spacer/>
-    <poem>"I hear a sound of voices:</poem>
-    <poem>Not the voice which I gave forth.</poem>
-    <poem>It is as if the mountains</poem>
-    <poem>answered me with echo."</poem>
+    <poem>"What is history?</poem>
+    <poem>An echo of the past</poem>
+    <poem>in the future;</poem>
+    <poem>a reflex from the future </poem>
+    <poem>on the past."</poem>
     <spacer/>
-    <text>&#x2014; Percy B. Shelley</text>
+    <text>&#x2014; Victor Hugo</text>
   </content>
 </info>
 )xml";
