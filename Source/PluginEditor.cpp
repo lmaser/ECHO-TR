@@ -3464,12 +3464,18 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
 
     // Expanded: 7 bars + 8 gaps (6 inter-slider + 2 toggle padding).
-    // Collapsed: 4 bars + 4 gaps (3 inter-slider + 1 toggle+padding).
+    // Collapsed: 4 bars + 4 gaps (3 inter-slider + 1 toggle-to-slider).
+    //            The toggle bar (20px fixed) is subtracted from available space
+    //            BEFORE scaling so bars/gaps don't overflow.
     const int numSliders = ioExpanded ? 7 : 4;
     const int numGaps    = ioExpanded ? 8 : 4;
 
+    m.toggleBarH = 20;  // fixed visual height for click area
+    const int spaceForScale = ioExpanded ? m.availableForSliders
+                                         : juce::jmax (40, m.availableForSliders - m.toggleBarH);
+
     const int nominalStack = numSliders * nominalBarH + numGaps * nominalGapY;
-    const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) m.availableForSliders / (double) nominalStack)
+    const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) spaceForScale / (double) nominalStack)
                                                : 1.0;
 
     m.barH = juce::jmax (14, (int) std::round (nominalBarH * stackScale));
@@ -3477,19 +3483,18 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
 
     auto stackHeight = [&]() { return numSliders * m.barH + numGaps * m.gapY; };
 
-    while (stackHeight() > m.availableForSliders && m.gapY > 4)
+    while (stackHeight() > spaceForScale && m.gapY > 4)
         --m.gapY;
 
-    while (stackHeight() > m.availableForSliders && m.barH > 14)
+    while (stackHeight() > spaceForScale && m.barH > 14)
         --m.barH;
 
     m.topY = m.topMargin;
-    m.toggleBarH = m.gapY;
 
     if (ioExpanded)
         m.toggleBarY = m.topY + 3 * m.barH + 3 * m.gapY;
     else
-        m.toggleBarY = m.topY;
+        m.toggleBarY = m.topY;  // collapsed: toggle bar flush with content top
 
     return m;
 }
@@ -4120,8 +4125,8 @@ void ECHOTRAudioProcessorEditor::resized()
     }
     else
     {
-        // Collapsed: [toggle bar + padding] → TIME, MOD, FEEDBACK, STYLE
-        int y = verticalLayout.topY + (int) std::round (verticalLayout.gapY * 1.5);  // toggle bar + padding below
+        // Collapsed: sliders start after toggle bar + gap
+        int y = verticalLayout.toggleBarY + verticalLayout.toggleBarH + verticalLayout.gapY;
         timeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
         modSlider.setBounds      (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
         feedbackSlider.setBounds (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
