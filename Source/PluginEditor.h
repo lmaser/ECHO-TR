@@ -169,10 +169,12 @@ private:
         int barH = 0;
         int gapY = 0;
         int topY = 0;
+        int toggleBarH = 0;
+        int toggleBarY = 0;
     };
 
     static HorizontalLayoutMetrics buildHorizontalLayout (int editorW, int valueColW);
-    static VerticalLayoutMetrics buildVerticalLayout (int editorH, int biasY);
+    static VerticalLayoutMetrics buildVerticalLayout (int editorH, int biasY, bool ioExpanded);
     void updateCachedLayout();
 
     class MinimalLNF : public juce::LookAndFeel_V4
@@ -319,6 +321,8 @@ private:
     HorizontalLayoutMetrics cachedHLayout_;
     VerticalLayoutMetrics cachedVLayout_;
     std::array<juce::Rectangle<int>, 7> cachedValueAreas_;
+    juce::Rectangle<int> cachedToggleBarArea_;
+    bool ioSectionExpanded_ = false;
 
     static constexpr double kDefaultTimeMs = (double) ECHOTRAudioProcessor::kTimeMsDefault;
     static constexpr double kDefaultFeedback = (double) ECHOTRAudioProcessor::kFeedbackDefault;
@@ -329,7 +333,7 @@ private:
     static constexpr int kMinW = 360;
     static constexpr int kMinH = 540;
     static constexpr int kMaxW = 800;
-    static constexpr int kMaxH = 540;
+    static constexpr int kMaxH = 640;
 
     static constexpr int kLayoutVerticalBiasPx = 10;
 

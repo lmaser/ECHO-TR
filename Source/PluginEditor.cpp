@@ -359,6 +359,11 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     outputSlider.setNumDecimalPlacesToDisplay (1);
     mixSlider.setNumDecimalPlacesToDisplay (1);
 
+    // IO sliders start hidden (collapsible section, collapsed by default)
+    inputSlider.setVisible (false);
+    outputSlider.setVisible (false);
+    mixSlider.setVisible (false);
+
     syncButton.setButtonText ("");
     autoFbkButton.setButtonText ("");
     midiButton.setButtonText ("");
@@ -3436,7 +3441,7 @@ ECHOTRAudioProcessorEditor::buildHorizontalLayout (int editorW, int valueColW)
 }
 
 ECHOTRAudioProcessorEditor::VerticalLayoutMetrics
-ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY)
+ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool ioExpanded)
 {
     VerticalLayoutMetrics m;
     m.rhythm = juce::jlimit (6, 16, (int) std::round (editorH * 0.018));
@@ -3458,14 +3463,19 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY)
     m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
     m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
 
-    const int nominalStack = 7 * nominalBarH + 6 * nominalGapY;
+    // Expanded: 7 bars + 8 gaps (6 inter-slider + 2 toggle padding).
+    // Collapsed: 4 bars + 4 gaps (3 inter-slider + 1 toggle+padding).
+    const int numSliders = ioExpanded ? 7 : 4;
+    const int numGaps    = ioExpanded ? 8 : 4;
+
+    const int nominalStack = numSliders * nominalBarH + numGaps * nominalGapY;
     const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) m.availableForSliders / (double) nominalStack)
                                                : 1.0;
 
     m.barH = juce::jmax (14, (int) std::round (nominalBarH * stackScale));
     m.gapY = juce::jmax (4,  (int) std::round (nominalGapY * stackScale));
 
-    auto stackHeight = [&]() { return 7 * m.barH + 6 * m.gapY; };
+    auto stackHeight = [&]() { return numSliders * m.barH + numGaps * m.gapY; };
 
     while (stackHeight() > m.availableForSliders && m.gapY > 4)
         --m.gapY;
@@ -3474,19 +3484,32 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY)
         --m.barH;
 
     m.topY = m.topMargin;
+    m.toggleBarH = m.gapY;
+
+    if (ioExpanded)
+        m.toggleBarY = m.topY + 3 * m.barH + 3 * m.gapY;
+    else
+        m.toggleBarY = m.topY;
+
     return m;
 }
 
 void ECHOTRAudioProcessorEditor::updateCachedLayout()
 {
     cachedHLayout_ = buildHorizontalLayout (getWidth(), getTargetValueColumnWidth());
-    cachedVLayout_ = buildVerticalLayout (getHeight(), kLayoutVerticalBiasPx);
+    cachedVLayout_ = buildVerticalLayout (getHeight(), kLayoutVerticalBiasPx, ioSectionExpanded_);
 
     const juce::Slider* sliders[7] = { &timeSlider, &modSlider, &feedbackSlider, &modeSlider,
                                         &inputSlider, &outputSlider, &mixSlider };
 
     for (int i = 0; i < 7; ++i)
     {
+        if (! sliders[i]->isVisible())
+        {
+            cachedValueAreas_[(size_t) i] = {};
+            continue;
+        }
+
         const auto& bb = sliders[i]->getBounds();
         const int valueX = bb.getRight() + cachedHLayout_.valuePad;
         const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
@@ -3494,6 +3517,10 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
         const int y    = bb.getCentreY() - (kValueAreaHeightPx / 2);
         cachedValueAreas_[(size_t) i] = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
     }
+
+    // Cache toggle bar area
+    cachedToggleBarArea_ = { cachedHLayout_.leftX, cachedVLayout_.toggleBarY,
+                             cachedHLayout_.contentW, cachedVLayout_.toggleBarH };
 }
 
 int ECHOTRAudioProcessorEditor::getTargetValueColumnWidth() const
@@ -3657,6 +3684,15 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
 {
     lastUserInteractionMs.store (juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
     const auto p = e.getEventRelativeTo (this).getPosition();
+
+    // Toggle IO section expand/collapse
+    if (cachedToggleBarArea_.contains (p))
+    {
+        ioSectionExpanded_ = ! ioSectionExpanded_;
+        resized();
+        repaint();
+        return;
+    }
 
     // (MIDI channel prompt is now handled via right-click on the MIDI label area below)
 
@@ -3869,6 +3905,45 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         g.setFont (kBoldFont40());
     }
 
+    // ── Toggle bar (triangle + rounded horizontal bar) ──
+    {
+        const auto toggleArea = cachedToggleBarArea_;
+        constexpr float triSize = 16.0f;
+        constexpr float barThick = 6.0f;
+        const float triX = (float) toggleArea.getX();
+        const float triCY = (float) toggleArea.getCentreY();
+
+        juce::Path triangle;
+        if (ioSectionExpanded_)
+        {
+            // ▲ pointing up
+            triangle.addTriangle (triX, triCY + triSize * 0.5f,
+                                  triX + triSize, triCY + triSize * 0.5f,
+                                  triX + triSize * 0.5f, triCY - triSize * 0.5f);
+        }
+        else
+        {
+            // ▼ pointing down
+            triangle.addTriangle (triX, triCY - triSize * 0.5f,
+                                  triX + triSize, triCY - triSize * 0.5f,
+                                  triX + triSize * 0.5f, triCY + triSize * 0.5f);
+        }
+
+        g.setColour (scheme.text);
+        g.fillPath (triangle);
+
+        // Horizontal rounded bar
+        const float barX = triX + triSize + 6.0f;
+        const float barY = triCY - barThick * 0.5f;
+        const float barW = juce::jmax (0.0f, (float) (toggleArea.getRight()) - barX);
+        const float cornerR = barThick * 0.5f;
+
+        g.setColour (scheme.text);
+        g.fillRoundedRectangle (barX, barY, barW, barThick, cornerR);
+    }
+
+    g.setColour (scheme.text);
+
     {
         const juce::String* fullTexts[7]  = { &cachedTimeTextFull, &cachedModTextFull, &cachedFeedbackTextFull,
                                                &cachedModeTextFull, &cachedInputTextFull, &cachedOutputTextFull, &cachedMixTextFull };
@@ -4020,16 +4095,46 @@ void ECHOTRAudioProcessorEditor::resized()
     }
 
     const auto horizontalLayout = buildHorizontalLayout (W, getTargetValueColumnWidth());
-    const auto verticalLayout = buildVerticalLayout (H, kLayoutVerticalBiasPx);
+    const auto verticalLayout = buildVerticalLayout (H, kLayoutVerticalBiasPx, ioSectionExpanded_);
 
-    // Position 7 sliders in 7 separate rows
-    timeSlider.setBounds     (horizontalLayout.leftX, verticalLayout.topY + 0 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    modSlider.setBounds      (horizontalLayout.leftX, verticalLayout.topY + 1 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    feedbackSlider.setBounds (horizontalLayout.leftX, verticalLayout.topY + 2 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    modeSlider.setBounds     (horizontalLayout.leftX, verticalLayout.topY + 3 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    inputSlider.setBounds    (horizontalLayout.leftX, verticalLayout.topY + 4 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    outputSlider.setBounds   (horizontalLayout.leftX, verticalLayout.topY + 5 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
-    mixSlider.setBounds      (horizontalLayout.leftX, verticalLayout.topY + 6 * (verticalLayout.barH + verticalLayout.gapY), horizontalLayout.barW, verticalLayout.barH);
+    // Position sliders based on IO section expanded/collapsed state
+    if (ioSectionExpanded_)
+    {
+        // Expanded: INPUT, OUTPUT, MIX → [toggle bar] → TIME, MOD, FEEDBACK, STYLE
+        int y = verticalLayout.topY;
+        inputSlider.setBounds  (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
+        outputSlider.setBounds (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
+        mixSlider.setBounds    (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH;
+        // padding + toggle bar + padding
+        y += verticalLayout.gapY;  // padding above
+        y += verticalLayout.gapY;  // toggle bar
+        y += verticalLayout.gapY;  // padding below
+        timeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
+        modSlider.setBounds      (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
+        feedbackSlider.setBounds (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
+        modeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);
+
+        inputSlider.setVisible (true);
+        outputSlider.setVisible (true);
+        mixSlider.setVisible (true);
+    }
+    else
+    {
+        // Collapsed: [toggle bar + padding] → TIME, MOD, FEEDBACK, STYLE
+        int y = verticalLayout.topY + (int) std::round (verticalLayout.gapY * 1.5);  // toggle bar + padding below
+        timeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
+        modSlider.setBounds      (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
+        feedbackSlider.setBounds (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
+        modeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);
+
+        inputSlider.setBounds (0, 0, 0, 0);
+        outputSlider.setBounds (0, 0, 0, 0);
+        mixSlider.setBounds (0, 0, 0, 0);
+
+        inputSlider.setVisible (false);
+        outputSlider.setVisible (false);
+        mixSlider.setVisible (false);
+    }
 
     // Button area: 2x2 grid — Row 1: SYNC + AUTO FBK, Row 2: LOOP + MIDI
     const int buttonAreaX = horizontalLayout.leftX;
