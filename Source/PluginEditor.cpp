@@ -54,7 +54,7 @@ static juce::String formatMidiChannelTooltip (int ch)
     return "CHANNEL " + juce::String (ch);
 }
 
-// ── Auto-feedback tooltip ──
+// ── Env-feedback tooltip ──
 static juce::String formatAutoFbkTooltip (float tauPct, float attPct)
 {
     return juce::String (juce::roundToInt (tauPct)) + "% | "
@@ -4001,7 +4001,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const int midiCR  = W - kToggleLegendCollisionPadPx;
 
         const juce::String revLabel  = chooseToggleLabel (reverseButton, revCR,  "REVERSE",  "RVS");
-        const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "AUTO FBK", "AUTO");
+        const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "ENV FBK", "ENV");
         const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
         const juce::String midiLabel = chooseToggleLabel (midiButton,    midiCR, "MIDI",     "MD");
         

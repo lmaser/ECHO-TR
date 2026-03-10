@@ -1212,12 +1212,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamSync, "Sync", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamMidi, "MIDI", false));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAutoFbk, "Auto Fbk", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAutoFbk, "Env Fbk", false));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamAutoFbkTau, "Auto Fbk Tau",
+		kParamAutoFbkTau, "Env Fbk Tau",
 		juce::NormalisableRange<float> (kAutoFbkTauMin, kAutoFbkTauMax, 0.01f, 1.0f), kAutoFbkTauDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamAutoFbkAtt, "Auto Fbk Att",
+		kParamAutoFbkAtt, "Env Fbk Att",
 		juce::NormalisableRange<float> (kAutoFbkAttMin, kAutoFbkAttMax, 0.01f, 1.0f), kAutoFbkAttDefault));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamReverse, "Reverse", false));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (

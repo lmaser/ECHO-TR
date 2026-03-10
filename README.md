@@ -8,7 +8,7 @@
 <br/><br/>
 
 ECHO-TR is a creative delay effect built for texture generation, tonal manipulation, and pitch-shifted harmonics.  
-It combines forward and reverse delay with MIDI-controlled pitch, auto-feedback dynamics, and a minimal CRT-inspired interface.
+It combines forward and reverse delay with MIDI-controlled pitch, envelope-feedback dynamics, and a minimal CRT-inspired interface.
 
 ## Concept
 
@@ -16,15 +16,15 @@ ECHO-TR treats delay not as a mixing utility but as an instrument. By feeding MI
 
 The reverse mode reads audio backward in chunks while keeping the feedback path forward and coherent. This means reverse tails behave identically to direct mode — only the output is reversed.
 
-Auto-feedback adds an envelope that resets on every note change, letting the feedback "swell" back in naturally. The result is a self-clearing delay that never muddies across pitch changes.
+Envelope feedback adds an envelope that resets on every note change, letting the feedback "swell" back in naturally. The result is a self-clearing delay that never muddies across pitch changes.
 
 ## Interface
 
 ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visible at once — no pages, tabs, or hidden menus.
 
 - **Bar sliders**: Click and drag horizontally. Right-click for numeric entry (except STYLE, which is slider-only).
-- **Toggle buttons**: SYNC, MIDI, AUTO FBK, RVS (reverse). Click to enable/disable.
-- **Sub-labels**: Click the text next to MIDI, AUTO FBK, or RVS to open their configuration prompt.
+- **Toggle buttons**: SYNC, MIDI, ENV FBK, RVS (reverse). Click to enable/disable.
+- **Sub-labels**: Click the text next to MIDI, ENV FBK, or RVS to open their configuration prompt.
 - **Collapsible INPUT/OUTPUT/MIX section**: Click the toggle bar (triangle) at the top of the slider area to expand or collapse the INPUT, OUTPUT and MIX controls. The expanded/collapsed state persists across sessions and preset changes.
 - **Gear icon** (top-right): Opens the info popup with version, credits, and a link to Graphics settings.
 - **Graphics popup**: Toggle CRT post-processing effect and switch between default/custom colour palettes.
@@ -101,9 +101,9 @@ Direct and reverse modes use independent velocity curves calibrated so the perce
 
 **MIDI Channel**: Click the channel display to select channel 1–16, or OMNI (all channels).
 
-### AUTO FBK
+### ENV FBK
 
-Automatic feedback envelope. When enabled, feedback resets to zero on every note/time/MOD change, then ramps back to the user's feedback setting.
+Envelope feedback. When enabled, feedback resets to zero on every note/time/MOD change, then ramps back to the user's feedback setting.
 
 This prevents muddy buildup between pitch changes while preserving self-oscillation during sustained notes.
 
