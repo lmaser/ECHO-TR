@@ -1,4 +1,5 @@
 # Visual Studio
+.vs/
 **/Builds/**
 *.suo
 *.user
