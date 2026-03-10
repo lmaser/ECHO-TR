@@ -32,14 +32,7 @@ namespace InfoContent
     <text>by Nemester</text>
     <link url="https://github.com/lmaser/ECHO-TR">Github Repository</link>
     <separator>&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;</separator>
-    <spacer/>
-    <poem>"What is history?</poem>
-    <poem>An echo of the past</poem>
-    <poem>in the future;</poem>
-    <poem>a reflex from the future </poem>
-    <poem>on the past."</poem>
-    <spacer/>
-    <text>&#x2014; Victor Hugo</text>
+    <link url="https://ko-fi.com/nemester">Support on Ko-fi</link>
   </content>
 </info>
 )xml";
