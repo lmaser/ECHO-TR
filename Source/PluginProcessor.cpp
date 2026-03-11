@@ -856,10 +856,10 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// 50% slider = 50% real, but 90%→100% = only 2.8pp (fine control near self-oscillation)
 	targetFeedback = targetFeedback * targetFeedback * (3.0f - 2.0f * targetFeedback);
 
-	// MOD frequency multiplier (pure arithmetic, no transcendentals)
+	// MOD frequency multiplier (hyperbolic below centre, linear above)
 	float freqMultiplier;
 	if (modValue < 0.5f)
-		freqMultiplier = 0.25f + (modValue * 1.5f);
+		freqMultiplier = 1.0f / (4.0f - 6.0f * modValue);
 	else
 		freqMultiplier = 1.0f + ((modValue - 0.5f) * 6.0f);
 	

@@ -686,8 +686,8 @@ void ECHOTRAudioProcessorEditor::timerCallback()
     {
         cachedMidiDisplay = newMidiDisplay;
         cachedTimeSliderHeld = timeSliderHeld;
-        refreshLegendTextCache();
-        // Only repaint the time slider row, not the entire window
+        if (refreshLegendTextCache())
+            updateCachedLayout();
         repaint (getRowRepaintBounds (timeSlider));
     }
 
