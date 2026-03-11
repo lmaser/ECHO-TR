@@ -3312,7 +3312,8 @@ juce::String ECHOTRAudioProcessorEditor::getModeText() const
         case 0: return "MONO STYLE";
         case 1: return "STEREO STYLE";
         case 2: return "WIDE STYLE";
-        case 3: return "PING-PONG STYLE";
+        case 3: return "DUAL STYLE";
+        case 4: return "PING-PONG STYLE";
         default: return "STEREO STYLE";
     }
 }
@@ -3325,7 +3326,8 @@ juce::String ECHOTRAudioProcessorEditor::getModeTextShort() const
         case 0: return "MONO";
         case 1: return "STEREO";
         case 2: return "WIDE";
-        case 3: return "PING-PONG";
+        case 3: return "DUAL";
+        case 4: return "PING-PONG";
         default: return "STEREO";
     }
 }

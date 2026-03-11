@@ -52,7 +52,7 @@ public:
 	static constexpr float kFeedbackDefault = 1.0f;
 
 	static constexpr int kModeMin = 0;
-	static constexpr int kModeMax = 3; // 0=MONO, 1=STEREO, 2=WIDE, 3=PING-PONG ("Style" in UI)
+	static constexpr int kModeMax = 4; // 0=MONO, 1=STEREO, 2=WIDE, 3=DUAL, 4=PING-PONG ("Style" in UI)
 	static constexpr float kModeDefault = 1.0f;
 
 	static constexpr float kModMin = 0.0f;
@@ -112,12 +112,15 @@ public:
 	void processWideDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                       float delaySamples, float feedback, float inputGain,
 	                       float outputGain, float mix, float delaySmoothCoeff);
+	void processDualDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
+	                       float delaySamples, float feedback, float inputGain,
+	                       float outputGain, float mix, float delaySmoothCoeff);
 
 	// Reverse delay processing (chunk-based backward playback with smooth taper control)
 	void processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                          float delaySamples, float feedback, float inputGain,
 	                          float outputGain, float mix, float delaySmoothCoeff,
-	                          float smoothMult);
+	                          float smoothMult, int mode);
 
 	juce::AudioProcessorEditor* createEditor() override;
 	bool hasEditor() const override;
@@ -187,6 +190,7 @@ private:
 	int delayBufferWritePos = 0;
 	int delayBufferLength = 0;
 	float smoothedDelaySamples = 0.0f;
+	float smoothedDelaySamplesR = 0.0f; // Independent R delay for WIDE/DUAL modes
 	float smoothedInputGain = 1.0f;
 	float smoothedOutputGain = 1.0f;
 	float smoothedMix = 0.5f;

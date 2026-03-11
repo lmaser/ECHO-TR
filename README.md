@@ -1,4 +1,4 @@
-# ECHO-TR v1.1
+# ECHO-TR v1.2
 
 <br/><br/>
 
@@ -34,7 +34,7 @@ ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visib
 The value column to the right of each slider shows the current state in context:
 - TIME shows milliseconds (or MIDI note name when active, or sync division).
 - FEEDBACK shows percentage + "FBK".
-- STYLE shows MONO/STEREO/WIDE/PING-PONG.
+- STYLE shows MONO/STEREO/WIDE/DUAL/PING-PONG.
 - MOD shows the frequency multiplier.
 - INPUT/OUTPUT show dB values.
 - MIX shows percentage.
@@ -59,10 +59,11 @@ Only a DC blocker (5 Hz high-pass) sits in the feedback path — no filtering, n
 Routing topology for the delay:
 - **MONO**: Single delay line, summed to both channels.
 - **STEREO**: Independent left/right delay lines.
-- **WIDE**: Cross-feedback between channels (like PING-PONG) but both channels receive their own stereo input. Creates a widening effect where repetitions gradually spread across the stereo field while preserving the original stereo image.
+- **WIDE**: Cross-feedback between channels with pitch-compensated octave offset. The delays are scaled so that the cross-feedback round trip (T_L + T_R) equals the user’s delay time T, keeping the comb-filter resonance at the same pitch as STEREO mode. The ratio between channels is 2:1 (L = 2T/3, R = T/3), preserving the octave character that spreads repetitions across the stereo field. Unlike DUAL (which uses a ×0.5 ratio with independent feedback), WIDE uses cross-feedback — each channel feeds into the other — creating a widening bounce pattern at the correct pitch.
+- **DUAL**: Independent left/right delay lines with the right channel at half the delay time (×0.5). No cross-feedback — each channel repeats independently at different rates.
 - **PING-PONG**: Cross-feedback with mono-summed input fed into the left channel only. Each repetition alternates fully between left and right.
 
-All three modes share the same interpolation (4-point Hermite) and feedback processing.
+All modes share the same interpolation (4-point Hermite) and feedback processing.
 
 ### MOD (0–100%)
 
@@ -120,10 +121,11 @@ Cubic curve ensures gradual onset. UI 100% maps to internal 75% to keep the full
 
 Reverse delay mode. Reads audio backward in chunks, producing reversed playback.
 
-The feedback path reads **forward** (identical to direct mode), so the delay buffer always contains coherent audio. Only the output is reversed. This means:
-- Tails behave the same as direct mode.
+The feedback path reads **forward** and mirrors the current STYLE routing (cross-feedback for WIDE/PING-PONG, independent for others, mono-sum for MONO, etc.), so the delay buffer always contains coherent audio. Only the output is reversed. This means:
+- Tails behave the same as direct mode for the selected STYLE.
 - Self-oscillation works naturally.
 - Switching between modes doesn't corrupt the buffer.
+- WIDE/DUAL use per-channel chunk lengths matching their forward-mode delay times.
 
 Each chunk's length equals the current (smoothed) delay time. At chunk boundaries, the next chunk adopts the latest delay value, providing natural pitch tracking.
 
