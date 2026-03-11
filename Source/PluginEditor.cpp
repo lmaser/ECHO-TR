@@ -3474,16 +3474,13 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
     m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
 
-    // Expanded: 7 bars + 8 gaps (6 inter-slider + 2 toggle padding).
-    // Collapsed: 4 bars + 4 gaps (3 inter-slider + 1 toggle-to-slider).
-    //            The toggle bar (20px fixed) is subtracted from available space
-    //            BEFORE scaling so bars/gaps don't overflow.
-    const int numSliders = ioExpanded ? 7 : 4;
-    const int numGaps    = ioExpanded ? 8 : 4;
+    // Bars below toggle: 3 IO bars when expanded, 4 main bars when collapsed.
+    // Toggle bar stays fixed — only bar/gap sizing adapts to the visible count.
+    const int numSliders = ioExpanded ? 3 : 4;
+    const int numGaps    = ioExpanded ? 3 : 4;  // (N-1) inter-slider + 1 toggle-to-first
 
     m.toggleBarH = 20;  // fixed visual height for click area
-    const int spaceForScale = ioExpanded ? m.availableForSliders
-                                         : juce::jmax (40, m.availableForSliders - m.toggleBarH);
+    const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
 
     const int nominalStack = numSliders * nominalBarH + numGaps * nominalGapY;
     const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) spaceForScale / (double) nominalStack)
@@ -3502,10 +3499,7 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
 
     m.topY = m.topMargin;
 
-    if (ioExpanded)
-        m.toggleBarY = m.topY + 3 * m.barH + 3 * m.gapY;
-    else
-        m.toggleBarY = m.topY;  // collapsed: toggle bar flush with content top
+    m.toggleBarY = m.topY;  // toggle bar always at top
 
     return m;
 }
@@ -4122,35 +4116,43 @@ void ECHOTRAudioProcessorEditor::resized()
     const auto horizontalLayout = buildHorizontalLayout (W, getTargetValueColumnWidth());
     const auto verticalLayout = buildVerticalLayout (H, kLayoutVerticalBiasPx, ioSectionExpanded_);
 
-    // Position sliders based on IO section expanded/collapsed state
+    // Position sliders — toggle bar always at top, swaps between main and IO bars
+    const int mainTop = verticalLayout.toggleBarY + verticalLayout.toggleBarH + verticalLayout.gapY;
+    const int step = verticalLayout.barH + verticalLayout.gapY;
+
     if (ioSectionExpanded_)
     {
-        // Expanded: INPUT, OUTPUT, MIX → [toggle bar] → TIME, MOD, FEEDBACK, STYLE
-        int y = verticalLayout.topY;
-        inputSlider.setBounds  (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
-        outputSlider.setBounds (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
-        mixSlider.setBounds    (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH;
-        // padding + toggle bar + padding
-        y += verticalLayout.gapY;  // padding above
-        y += verticalLayout.gapY;  // toggle bar
-        y += verticalLayout.gapY;  // padding below
-        timeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
-        modSlider.setBounds      (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
-        feedbackSlider.setBounds (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
-        modeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);
+        // Expanded: [toggle bar] → INPUT, OUTPUT, MIX; main params hidden
+        inputSlider.setBounds  (horizontalLayout.leftX, mainTop + 0 * step, horizontalLayout.barW, verticalLayout.barH);
+        outputSlider.setBounds (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
+        mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
 
         inputSlider.setVisible (true);
         outputSlider.setVisible (true);
         mixSlider.setVisible (true);
+
+        timeSlider.setBounds (0, 0, 0, 0);
+        modSlider.setBounds (0, 0, 0, 0);
+        feedbackSlider.setBounds (0, 0, 0, 0);
+        modeSlider.setBounds (0, 0, 0, 0);
+
+        timeSlider.setVisible (false);
+        modSlider.setVisible (false);
+        feedbackSlider.setVisible (false);
+        modeSlider.setVisible (false);
     }
     else
     {
-        // Collapsed: sliders start after toggle bar + gap
-        int y = verticalLayout.toggleBarY + verticalLayout.toggleBarH + verticalLayout.gapY;
-        timeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
-        modSlider.setBounds      (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
-        feedbackSlider.setBounds (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);  y += verticalLayout.barH + verticalLayout.gapY;
-        modeSlider.setBounds     (horizontalLayout.leftX, y, horizontalLayout.barW, verticalLayout.barH);
+        // Collapsed: [toggle bar] → main params; IO hidden
+        timeSlider.setBounds     (horizontalLayout.leftX, mainTop + 0 * step, horizontalLayout.barW, verticalLayout.barH);
+        modSlider.setBounds      (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
+        feedbackSlider.setBounds (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
+        modeSlider.setBounds     (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
+
+        timeSlider.setVisible (true);
+        modSlider.setVisible (true);
+        feedbackSlider.setVisible (true);
+        modeSlider.setVisible (true);
 
         inputSlider.setBounds (0, 0, 0, 0);
         outputSlider.setBounds (0, 0, 0, 0);

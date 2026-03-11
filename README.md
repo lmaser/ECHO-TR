@@ -1,4 +1,4 @@
-# ECHO-TR v1.2
+# ECHO-TR v1.3
 
 <br/><br/>
 
@@ -26,7 +26,7 @@ ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visib
 - **Bar sliders**: Click and drag horizontally. Right-click for numeric entry (except STYLE, which is slider-only).
 - **Toggle buttons**: SYNC, MIDI, ENV FBK, RVS (reverse). Click to enable/disable.
 - **Sub-labels**: Click the text next to MIDI, ENV FBK, or RVS to open their configuration prompt.
-- **Collapsible INPUT/OUTPUT/MIX section**: Click the toggle bar (triangle) at the top of the slider area to expand or collapse the INPUT, OUTPUT and MIX controls. The expanded/collapsed state persists across sessions and preset changes.
+- **Collapsible INPUT/OUTPUT/MIX section**: Click the toggle bar (triangle) at the top of the slider area to swap between main parameters and the INPUT, OUTPUT, MIX controls. The toggle bar stays fixed in place; only the arrow direction changes. State persists across sessions and preset changes.
 - **Gear icon** (top-right): Opens the info popup with version, credits, and a link to Graphics settings.
 - **Graphics popup**: Toggle CRT post-processing effect and switch between default/custom colour palettes.
 - **Resize**: Drag the bottom-right corner. Size persists across sessions.
