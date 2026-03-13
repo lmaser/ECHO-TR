@@ -32,6 +32,7 @@ private:
     void openMidiChannelPrompt();
     void openAutoFbkPrompt();
     void openReverseSmoothPrompt();
+    void openFilterPrompt();
     void openInfoPopup();
     void openGraphicsPopup();
     void setPromptOverlayActive (bool shouldBeActive);
@@ -238,6 +239,56 @@ private:
         };
     };
 
+    // ── Wet-signal filter frequency bar component ──
+    class FilterBarComponent : public juce::Component,
+                               public juce::SettableTooltipClient
+    {
+    public:
+        FilterBarComponent() = default;
+        void setOwner (ECHOTRAudioProcessorEditor* o) { owner = o; }
+        void setScheme (const ECHOScheme& s) { scheme = s; repaint(); }
+
+        void paint (juce::Graphics& g) override;
+        void mouseDown (const juce::MouseEvent& e) override;
+        void mouseDrag (const juce::MouseEvent& e) override;
+        void mouseUp (const juce::MouseEvent& e) override;
+        void mouseMove (const juce::MouseEvent& e) override;
+        void mouseDoubleClick (const juce::MouseEvent& e) override;
+
+        void updateFromProcessor();
+
+        float getHpFreq() const { return hpFreq_; }
+        float getLpFreq() const { return lpFreq_; }
+        bool  isHpOn()    const { return hpOn_; }
+        bool  isLpOn()    const { return lpOn_; }
+
+    private:
+        ECHOTRAudioProcessorEditor* owner = nullptr;
+        ECHOScheme scheme {};
+
+        float hpFreq_ = 250.0f;
+        float lpFreq_ = 2000.0f;
+        bool  hpOn_   = false;
+        bool  lpOn_   = false;
+
+        enum DragTarget { None, HP, LP };
+        DragTarget currentDrag_ = None;
+
+        static constexpr float kMinFreq = 20.0f;
+        static constexpr float kMaxFreq = 20000.0f;
+        static constexpr float kPad     = 7.0f;
+        static constexpr int   kMarkerHitPx = 10;
+
+        juce::Rectangle<float> getInnerArea() const;
+        float freqToNormX (float freq) const;
+        float normXToFreq (float normX) const;
+        float getMarkerScreenX (float freq) const;
+        DragTarget hitTestMarker (juce::Point<float> p) const;
+        void  setFreqFromMouseX (float mouseX, DragTarget target);
+    };
+
+    FilterBarComponent filterBar_;
+
     using PromptOverlay = TR::PromptOverlay;
 
     MinimalLNF lnf;
@@ -311,6 +362,17 @@ private:
     juce::String cachedOutputTextShort;
     juce::String cachedMixTextFull;
     juce::String cachedMixTextShort;
+
+    juce::String cachedTimeIntOnly;
+    juce::String cachedFeedbackIntOnly;
+    juce::String cachedModeIntOnly;
+    juce::String cachedModIntOnly;
+    juce::String cachedInputIntOnly;
+    juce::String cachedOutputIntOnly;
+    juce::String cachedMixIntOnly;
+
+    juce::String cachedFilterTextFull;
+    juce::String cachedFilterTextShort;
     
     juce::String cachedMidiDisplay;
     bool cachedTimeSliderHeld = false;
@@ -321,6 +383,7 @@ private:
     HorizontalLayoutMetrics cachedHLayout_;
     VerticalLayoutMetrics cachedVLayout_;
     std::array<juce::Rectangle<int>, 7> cachedValueAreas_;
+    juce::Rectangle<int> cachedFilterValueArea_;
     juce::Rectangle<int> cachedToggleBarArea_;
     bool ioSectionExpanded_ = false;
 

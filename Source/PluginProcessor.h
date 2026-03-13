@@ -28,6 +28,14 @@ public:
 	static constexpr const char* kParamAutoFbkAtt = "auto_fbk_att";
 	static constexpr const char* kParamReverse      = "reverse";
 	static constexpr const char* kParamReverseSmooth = "reverse_smooth";
+
+	// Filter parameter IDs
+	static constexpr const char* kParamFilterHpFreq  = "filter_hp_freq";
+	static constexpr const char* kParamFilterLpFreq  = "filter_lp_freq";
+	static constexpr const char* kParamFilterHpSlope = "filter_hp_slope";
+	static constexpr const char* kParamFilterLpSlope = "filter_lp_slope";
+	static constexpr const char* kParamFilterHpOn    = "filter_hp_on";
+	static constexpr const char* kParamFilterLpOn    = "filter_lp_on";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -81,6 +89,15 @@ public:
 	static constexpr float kReverseSmoothMin     = -2.0f;
 	static constexpr float kReverseSmoothMax     =  2.0f;
 	static constexpr float kReverseSmoothDefault =  0.0f;
+
+	// Filter ranges and defaults
+	static constexpr float kFilterFreqMin       = 20.0f;
+	static constexpr float kFilterFreqMax       = 20000.0f;
+	static constexpr float kFilterHpFreqDefault = 250.0f;
+	static constexpr float kFilterLpFreqDefault = 2000.0f;
+	static constexpr int   kFilterSlopeMin      = 0;       // 6 dB/oct
+	static constexpr int   kFilterSlopeMax      = 2;       // 24 dB/oct
+	static constexpr int   kFilterSlopeDefault  = 1;       // 12 dB/oct
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -166,6 +183,10 @@ public:
 	juce::AudioProcessorValueTreeState apvts;
 	static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
+	// Wet-signal HP/LP filter biquad structs
+	struct WetFilterBiquadCoeffs { float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f; };
+	struct WetFilterBiquadState  { float z1 = 0.0f, z2 = 0.0f; };
+
 	// Performance tracing (enable with ECHOTR_PERF_TRACE=1)
 	PerfTrace perfTrace;
 
@@ -222,6 +243,33 @@ private:
 	// Per-block precomputed coefficient
 	float fbkDcCoeff  = 0.999f;  // DC blocker R coefficient
 
+	// ── Wet-signal HP/LP filter state ──
+	struct WetFilterChannelState
+	{
+		WetFilterBiquadState hp[2];   // up to 2 cascaded HP sections
+		WetFilterBiquadState lp[2];   // up to 2 cascaded LP sections
+		void reset() { hp[0] = hp[1] = lp[0] = lp[1] = {}; }
+	};
+	WetFilterChannelState wetFilterState_[2];
+	WetFilterBiquadCoeffs hpCoeffs_[2];       // per-section HP coeffs
+	WetFilterBiquadCoeffs lpCoeffs_[2];       // per-section LP coeffs
+	float smoothedFilterHpFreq_ = kFilterHpFreqDefault;
+	float smoothedFilterLpFreq_ = kFilterLpFreqDefault;
+	float lastCalcHpFreq_ = -1.0f, lastCalcLpFreq_ = -1.0f;
+	int   lastCalcHpSlope_ = -1,   lastCalcLpSlope_ = -1;
+	int   filterCoeffCountdown_ = 0;
+	static constexpr int kFilterCoeffUpdateInterval = 32;
+	void updateFilterCoeffs (bool forceHp, bool forceLp);
+
+	// Runtime filter targets (loaded in processBlock, used in process*Delay)
+	bool  wetFilterHpOn_   = false;
+	bool  wetFilterLpOn_   = false;
+	float wetFilterTargetHpFreq_ = kFilterHpFreqDefault;
+	float wetFilterTargetLpFreq_ = kFilterLpFreqDefault;
+	int   wetFilterNumSectionsHp_ = 0;
+	int   wetFilterNumSectionsLp_ = 0;
+	void  filterWetSample (float& wetL, float& wetR);
+
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
 	std::atomic<int> lastMidiVelocity { 127 };
@@ -242,6 +290,13 @@ private:
 	std::atomic<float>* autoFbkAttParam = nullptr;
 	std::atomic<float>* reverseParam = nullptr;
 	std::atomic<float>* reverseSmoothParam = nullptr;
+
+	std::atomic<float>* filterHpFreqParam  = nullptr;
+	std::atomic<float>* filterLpFreqParam  = nullptr;
+	std::atomic<float>* filterHpSlopeParam = nullptr;
+	std::atomic<float>* filterLpSlopeParam = nullptr;
+	std::atomic<float>* filterHpOnParam    = nullptr;
+	std::atomic<float>* filterLpOnParam    = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;

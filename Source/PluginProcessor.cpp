@@ -113,6 +113,80 @@ namespace
 		inState = in;
 		return outState;
 	}
+
+	// ── Wet-signal biquad filter helpers ──
+
+	using BQC = ECHOTRAudioProcessor::WetFilterBiquadCoeffs;
+
+	constexpr float kBW4_Q1 = 0.54119610f;   // Butterworth 4th-order section 1
+	constexpr float kBW4_Q2 = 1.30656296f;   // Butterworth 4th-order section 2
+	constexpr float kBW2_Q  = 0.70710678f;   // Butterworth 2nd-order
+
+	inline BQC calcOnePoleLP (float fc, float sr)
+	{
+		const float w = std::tan (juce::MathConstants<float>::pi * juce::jlimit (1.0f, sr * 0.499f, fc) / sr);
+		BQC c;
+		c.b0 = w / (1.0f + w);
+		c.b1 = c.b0;
+		c.b2 = 0.0f;
+		c.a1 = (w - 1.0f) / (1.0f + w);
+		c.a2 = 0.0f;
+		return c;
+	}
+
+	inline BQC calcOnePoleHP (float fc, float sr)
+	{
+		const float w = std::tan (juce::MathConstants<float>::pi * juce::jlimit (1.0f, sr * 0.499f, fc) / sr);
+		BQC c;
+		c.b0 =  1.0f / (1.0f + w);
+		c.b1 = -c.b0;
+		c.b2 = 0.0f;
+		c.a1 = (w - 1.0f) / (1.0f + w);
+		c.a2 = 0.0f;
+		return c;
+	}
+
+	inline BQC calcBiquadLP (float fc, float sr, float Q)
+	{
+		const float w0 = 2.0f * juce::MathConstants<float>::pi * juce::jlimit (1.0f, sr * 0.499f, fc) / sr;
+		const float cosw = std::cos (w0);
+		const float sinw = std::sin (w0);
+		const float alpha = sinw / (2.0f * Q);
+		const float a0inv = 1.0f / (1.0f + alpha);
+		BQC c;
+		c.b0 = ((1.0f - cosw) * 0.5f) * a0inv;
+		c.b1 = ( 1.0f - cosw)         * a0inv;
+		c.b2 = c.b0;
+		c.a1 = (-2.0f * cosw)         * a0inv;
+		c.a2 = ( 1.0f - alpha)        * a0inv;
+		return c;
+	}
+
+	inline BQC calcBiquadHP (float fc, float sr, float Q)
+	{
+		const float w0 = 2.0f * juce::MathConstants<float>::pi * juce::jlimit (1.0f, sr * 0.499f, fc) / sr;
+		const float cosw = std::cos (w0);
+		const float sinw = std::sin (w0);
+		const float alpha = sinw / (2.0f * Q);
+		const float a0inv = 1.0f / (1.0f + alpha);
+		BQC c;
+		c.b0 = ((1.0f + cosw) * 0.5f) * a0inv;
+		c.b1 = (-(1.0f + cosw))       * a0inv;
+		c.b2 = c.b0;
+		c.a1 = (-2.0f * cosw)         * a0inv;
+		c.a2 = ( 1.0f - alpha)        * a0inv;
+		return c;
+	}
+
+	inline float processBiquad (float in,
+	                            const BQC& c,
+	                            ECHOTRAudioProcessor::WetFilterBiquadState& s) noexcept
+	{
+		const float out = c.b0 * in + s.z1;
+		s.z1 = c.b1 * in - c.a1 * out + s.z2;
+		s.z2 = c.b2 * in - c.a2 * out;
+		return out;
+	}
 }
 
 //==============================================================================
@@ -145,6 +219,13 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	autoFbkAttParam = apvts.getRawParameterValue (kParamAutoFbkAtt);
 	reverseParam = apvts.getRawParameterValue (kParamReverse);
 	reverseSmoothParam = apvts.getRawParameterValue (kParamReverseSmooth);
+
+	filterHpFreqParam  = apvts.getRawParameterValue (kParamFilterHpFreq);
+	filterLpFreqParam  = apvts.getRawParameterValue (kParamFilterLpFreq);
+	filterHpSlopeParam = apvts.getRawParameterValue (kParamFilterHpSlope);
+	filterLpSlopeParam = apvts.getRawParameterValue (kParamFilterLpSlope);
+	filterHpOnParam    = apvts.getRawParameterValue (kParamFilterHpOn);
+	filterLpOnParam    = apvts.getRawParameterValue (kParamFilterLpOn);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
@@ -315,6 +396,16 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	// Reset feedback loop processing state
 	fbkDcStateInL = fbkDcStateInR = 0.0f;
 	fbkDcStateOutL = fbkDcStateOutR = 0.0f;
+
+	// Reset wet-signal HP/LP filter state
+	wetFilterState_[0].reset();
+	wetFilterState_[1].reset();
+	smoothedFilterHpFreq_ = loadAtomicOrDefault (filterHpFreqParam, kFilterHpFreqDefault);
+	smoothedFilterLpFreq_ = loadAtomicOrDefault (filterLpFreqParam, kFilterLpFreqDefault);
+	lastCalcHpFreq_ = -1.0f; lastCalcLpFreq_ = -1.0f;
+	lastCalcHpSlope_ = -1;   lastCalcLpSlope_ = -1;
+	filterCoeffCountdown_ = 0;
+	updateFilterCoeffs (true, true);
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -352,6 +443,92 @@ bool ECHOTRAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
   #endif
 }
 #endif
+
+//==============================================================================
+// Wet-signal HP/LP filter coefficient update
+
+void ECHOTRAudioProcessor::updateFilterCoeffs (bool forceHp, bool forceLp)
+{
+	const float sr = (float) currentSampleRate;
+	const int hpSlope = juce::roundToInt (loadAtomicOrDefault (filterHpSlopeParam, (float) kFilterSlopeDefault));
+	const int lpSlope = juce::roundToInt (loadAtomicOrDefault (filterLpSlopeParam, (float) kFilterSlopeDefault));
+
+	if (forceHp || smoothedFilterHpFreq_ != lastCalcHpFreq_ || hpSlope != lastCalcHpSlope_)
+	{
+		lastCalcHpFreq_ = smoothedFilterHpFreq_;
+		lastCalcHpSlope_ = hpSlope;
+		if (hpSlope == 0)
+		{
+			hpCoeffs_[0] = calcOnePoleHP (smoothedFilterHpFreq_, sr);
+			hpCoeffs_[1] = {};
+		}
+		else if (hpSlope == 1)
+		{
+			hpCoeffs_[0] = calcBiquadHP (smoothedFilterHpFreq_, sr, kBW2_Q);
+			hpCoeffs_[1] = {};
+		}
+		else
+		{
+			hpCoeffs_[0] = calcBiquadHP (smoothedFilterHpFreq_, sr, kBW4_Q1);
+			hpCoeffs_[1] = calcBiquadHP (smoothedFilterHpFreq_, sr, kBW4_Q2);
+		}
+	}
+
+	if (forceLp || smoothedFilterLpFreq_ != lastCalcLpFreq_ || lpSlope != lastCalcLpSlope_)
+	{
+		lastCalcLpFreq_ = smoothedFilterLpFreq_;
+		lastCalcLpSlope_ = lpSlope;
+		if (lpSlope == 0)
+		{
+			lpCoeffs_[0] = calcOnePoleLP (smoothedFilterLpFreq_, sr);
+			lpCoeffs_[1] = {};
+		}
+		else if (lpSlope == 1)
+		{
+			lpCoeffs_[0] = calcBiquadLP (smoothedFilterLpFreq_, sr, kBW2_Q);
+			lpCoeffs_[1] = {};
+		}
+		else
+		{
+			lpCoeffs_[0] = calcBiquadLP (smoothedFilterLpFreq_, sr, kBW4_Q1);
+			lpCoeffs_[1] = calcBiquadLP (smoothedFilterLpFreq_, sr, kBW4_Q2);
+		}
+	}
+}
+
+void ECHOTRAudioProcessor::filterWetSample (float& wetL, float& wetR)
+{
+	// EMA frequency smoothing
+	smoothedFilterHpFreq_ += (wetFilterTargetHpFreq_ - smoothedFilterHpFreq_) * (1.0f - kGainSmoothCoeff);
+	smoothedFilterLpFreq_ += (wetFilterTargetLpFreq_ - smoothedFilterLpFreq_) * (1.0f - kGainSmoothCoeff);
+
+	// Batched coefficient update
+	if (--filterCoeffCountdown_ <= 0)
+	{
+		filterCoeffCountdown_ = kFilterCoeffUpdateInterval;
+		updateFilterCoeffs (false, false);
+	}
+
+	// Apply HP cascade
+	if (wetFilterHpOn_)
+	{
+		for (int s = 0; s < wetFilterNumSectionsHp_; ++s)
+		{
+			wetL = processBiquad (wetL, hpCoeffs_[s], wetFilterState_[0].hp[s]);
+			wetR = processBiquad (wetR, hpCoeffs_[s], wetFilterState_[1].hp[s]);
+		}
+	}
+
+	// Apply LP cascade
+	if (wetFilterLpOn_)
+	{
+		for (int s = 0; s < wetFilterNumSectionsLp_; ++s)
+		{
+			wetL = processBiquad (wetL, lpCoeffs_[s], wetFilterState_[0].lp[s]);
+			wetR = processBiquad (wetR, lpCoeffs_[s], wetFilterState_[1].lp[s]);
+		}
+	}
+}
 
 //==============================================================================
 // Optimized delay processing functions
@@ -408,8 +585,11 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 
 				delayL[writePos] = inputL * smoothedInputGain + fbkL;
 				delayR[writePos] = inputR * smoothedInputGain + fbkR;
-				channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
-				channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
+
+				float wetL = delayedL, wetR = delayedR;
+				filterWetSample (wetL, wetR);
+				channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
+				channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
 			}
 			else
 			{
@@ -417,7 +597,9 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				// DC blocker (transparent feedback path)
 				fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
 				delayL[writePos] = inputL * smoothedInputGain + fbkL;
-				channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
+				float wetL = delayedL, wetR = delayedL;
+				filterWetSample (wetL, wetR);
+				channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
 			}
 		}
 		
@@ -473,9 +655,11 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		const float toWrite = inputMid * smoothedInputGain + fbkMono;
 		delayL[writePos] = toWrite;
 		delayR[writePos] = toWrite;
-		
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + delayed * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + delayed * smoothedMix * smoothedOutputGain;
+
+		float wetL = delayed, wetR = delayed;
+		filterWetSample (wetL, wetR);
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -531,9 +715,11 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 
 		delayL[writePos] = inputMono * smoothedInputGain + fbkPpL;
 		delayR[writePos] = fbkPpR;
-		
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
+
+		float wetL = delayedL, wetR = delayedR;
+		filterWetSample (wetL, wetR);
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -609,8 +795,10 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		delayL[writePos] = inputL * smoothedInputGain + fbkL;
 		delayR[writePos] = inputR * smoothedInputGain + fbkR;
 
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
+		float wetL = delayedL, wetR = delayedR;
+		filterWetSample (wetL, wetR);
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
 
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -681,8 +869,10 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		delayL[writePos] = inputL * smoothedInputGain + fbkL;
 		delayR[writePos] = inputR * smoothedInputGain + fbkR;
 
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + delayedL * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + delayedR * smoothedMix * smoothedOutputGain;
+		float wetL = delayedL, wetR = delayedR;
+		filterWetSample (wetL, wetR);
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
 
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -850,16 +1040,18 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		const float outRevL = rawRevL * outTaper;
 		const float outRevR = rawRevR * outTaper;
 
+		float wetL = outRevL, wetR = outRevR;
+		filterWetSample (wetL, wetR);
+
 		if (monoInput)
 		{
-			const float outMono = outRevL;
-			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + outMono * smoothedMix * smoothedOutputGain;
-			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + outMono * smoothedMix * smoothedOutputGain;
+			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
+			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
 		}
 		else
 		{
-			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + outRevL * smoothedMix * smoothedOutputGain;
-			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + outRevR * smoothedMix * smoothedOutputGain;
+			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
+			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
 		}
 
 		// Advance write position
@@ -1178,6 +1370,18 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const float sr = (float) currentSampleRate;
 		fbkDcCoeff  = 1.0f - (6.2831853f * kFbkDcBlockHz / sr);  // ≈0.9993 @ 48kHz
 	}
+
+	// ── Load wet-signal filter targets for process*Delay functions ──
+	wetFilterHpOn_ = loadBoolParamOrDefault (filterHpOnParam, false);
+	wetFilterLpOn_ = loadBoolParamOrDefault (filterLpOnParam, false);
+	wetFilterTargetHpFreq_ = loadAtomicOrDefault (filterHpFreqParam, kFilterHpFreqDefault);
+	wetFilterTargetLpFreq_ = loadAtomicOrDefault (filterLpFreqParam, kFilterLpFreqDefault);
+	{
+		const int hpSlope = juce::roundToInt (loadAtomicOrDefault (filterHpSlopeParam, (float) kFilterSlopeDefault));
+		const int lpSlope = juce::roundToInt (loadAtomicOrDefault (filterLpSlopeParam, (float) kFilterSlopeDefault));
+		wetFilterNumSectionsHp_ = (hpSlope == 0) ? 1 : (hpSlope == 1) ? 1 : 2;
+		wetFilterNumSectionsLp_ = (lpSlope == 0) ? 1 : (lpSlope == 1) ? 1 : 2;
+	}
 	
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
 	if (reverseEnabled)
@@ -1365,6 +1569,22 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamReverseSmooth, "Reverse Smooth",
 		juce::NormalisableRange<float> (kReverseSmoothMin, kReverseSmoothMax, 0.01f, 1.0f), kReverseSmoothDefault));
+
+	// HP/LP wet-signal filter
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamFilterHpFreq, "Filter HP Freq",
+		juce::NormalisableRange<float> (kFilterFreqMin, kFilterFreqMax, 0.01f, 0.35f), kFilterHpFreqDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamFilterLpFreq, "Filter LP Freq",
+		juce::NormalisableRange<float> (kFilterFreqMin, kFilterFreqMax, 0.01f, 0.35f), kFilterLpFreqDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamFilterHpSlope, "Filter HP Slope",
+		juce::NormalisableRange<float> ((float) kFilterSlopeMin, (float) kFilterSlopeMax, 1.0f), (float) kFilterSlopeDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamFilterLpSlope, "Filter LP Slope",
+		juce::NormalisableRange<float> ((float) kFilterSlopeMin, (float) kFilterSlopeMax, 1.0f), (float) kFilterSlopeDefault));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamFilterHpOn, "Filter HP On", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamFilterLpOn, "Filter LP On", false));
 
 	// UI state (hidden from automation)
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));

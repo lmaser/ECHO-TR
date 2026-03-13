@@ -27,6 +27,7 @@ ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visib
 - **Toggle buttons**: SYNC, MIDI, ENV FBK, RVS (reverse). Click to enable/disable.
 - **Sub-labels**: Click the text next to MIDI, ENV FBK, or RVS to open their configuration prompt.
 - **Collapsible INPUT/OUTPUT/MIX section**: Click the toggle bar (triangle) at the top of the slider area to swap between main parameters and the INPUT, OUTPUT, MIX controls. The toggle bar stays fixed in place; only the arrow direction changes. State persists across sessions and preset changes.
+- **Filter bar**: Visible in the INPUT/OUTPUT/MIX section. Click to open the HP/LP filter configuration prompt with frequency, slope, and enable/disable controls for each filter.
 - **Gear icon** (top-right): Opens the info popup with version, credits, and a link to Graphics settings.
 - **Graphics popup**: Toggle CRT post-processing effect and switch between default/custom colour palettes.
 - **Resize**: Drag the bottom-right corner. Size persists across sessions.
@@ -82,6 +83,21 @@ Post-delay gain. Applied to the wet signal only.
 ### MIX (0–100%)
 
 Dry/wet balance. 0% = fully dry, 100% = fully wet.
+
+### HP/LP FILTER
+
+High-pass and low-pass filters applied to the wet signal, accessible via the filter bar in the IO section.
+
+- **HP FREQ (20–20 000 Hz)**: High-pass cutoff frequency.
+- **LP FREQ (20–20 000 Hz)**: Low-pass cutoff frequency.
+- **HP SLOPE (6 dB / 12 dB / 24 dB)**: High-pass filter slope.
+- **LP SLOPE (6 dB / 12 dB / 24 dB)**: Low-pass filter slope.
+- **HP / LP toggles**: Enable or disable each filter independently. Click the HP/LP label or its checkbox to toggle.
+
+Slope modes:
+- **6 dB/oct**: Single-pole filter.
+- **12 dB/oct**: Second-order Butterworth.
+- **24 dB/oct**: Two cascaded second-order Butterworth stages.
 
 ### SYNC
 
@@ -145,6 +161,7 @@ The taper is **proportional** to chunk length (1/16th × multiplier) so high MID
 - **Smoothing**: One-pole EMA per sample for delay time, gain, and mix.
 - **Feedback path**: DC blocker only (one-pole HP at 5 Hz). No saturation, no filtering.
 - **Reverse taper**: Precomputed 129-point Tukey (raised-cosine) lookup table with linear interpolation. No per-sample trigonometry.
+- **Wet filter**: Biquad HP/LP on the wet signal. Transposed Direct Form II. Coefficients updated once per block (channel 0), shared across channels.
 
 ### MIDI Implementation
 - Standard A440 tuning: `frequency = 440 × 2^((note − 69) / 12)`.
