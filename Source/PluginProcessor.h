@@ -40,6 +40,9 @@ public:
 	// Tilt parameter ID
 	static constexpr const char* kParamTilt = "tilt";
 
+	// Engine parameter ID
+	static constexpr const char* kParamEngine    = "engine";
+
 	// Chaos parameter IDs
 	static constexpr const char* kParamChaos     = "chaos";      // filter chaos (CHS F)
 	static constexpr const char* kParamChaosD    = "chaos_d";    // delay chaos  (CHS D)
@@ -120,6 +123,11 @@ public:
 	static constexpr float kChaosSpdMin     = 0.01f;   // Hz
 	static constexpr float kChaosSpdMax     = 100.0f;  // Hz
 	static constexpr float kChaosSpdDefault = 5.0f;    // Hz
+
+	// Engine ranges and defaults
+	static constexpr int kEngineMin     = 0;       // 0=CLEAN
+	static constexpr int kEngineMax     = 2;       // 2=BBD
+	static constexpr int kEngineDefault = 0;       // CLEAN
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -298,15 +306,20 @@ private:
 	float tiltTargetB0_ = 1.0f, tiltTargetB1_ = 0.0f, tiltTargetA1_ = 0.0f;
 	float tiltState_[2]  = { 0.0f, 0.0f };
 	float lastTiltDb_    = 0.0f;
+	float tiltSmoothSc_  = 0.0f;  // cached EMA coeff (depends only on sampleRate)
 
 	// Chaos S&H shared state
 	bool  chaosFilterEnabled_    = false;
 	bool  chaosDelayEnabled_     = false;
 	float chaosAmt_              = 0.0f;
-	float chaosShPeriod_         = 8820.0f;
+	float chaosShPeriod_         = 8820.0f;  // target (set per-block)
+	float smoothedChaosShPeriod2_ = 8820.0f; // per-sample smoothed
 	float chaosSmoothCoeff_      = 0.999f;
-	float chaosFilterMaxOct_     = 0.0f;    // ±octaves for filter mod
-	float chaosDelayMaxSamples_  = 0.0f;    // micro-delay depth in samples
+	float chaosFilterMaxOct_     = 0.0f;     // target ±octaves for filter mod
+	float chaosDelayMaxSamples_  = 0.0f;     // target micro-delay depth
+	float smoothedChaosFilterMaxOct_    = 0.0f;   // per-sample smoothed
+	float smoothedChaosDelayMaxSamples_ = 0.0f;   // per-sample smoothed
+	float chaosParamSmoothCoeff_       = 0.999f;  // per-sample EMA coeff (~5ms tau)
 	float chaosPhase_            = 0.0f;
 	float chaosTarget_           = 0.0f;
 	float chaosSmoothed_         = 0.0f;
@@ -317,13 +330,37 @@ private:
 	float chaosDelayBuf_[2][kChaosDelayBufLen] = {};
 	int   chaosDelayWritePos_ = 0;
 
+	// Engine feedback-loop processing state
+	int   engineMode_ = 0;            // 0=CLEAN, 1=ANALOG, 2=BBD
+	int   prevEngineMode_ = 0;        // previous mode for LP state reset on switch
+	float engineLpStateL_ = 0.0f;     // 1-pole LP filter state (left)
+	float engineLpStateR_ = 0.0f;     // 1-pole LP filter state (right)
+	float engineLpCoeff_ = 0.0f;      // 1-pole LP coeff (precomputed per block)
+
+	// Per-sample feedback EMA smoothing
+	float smoothedFeedback_ = 0.0f;
+
+	// Engine micro-oscillation (subtle analog drift)
+	// Slow S&H (~10 Hz) modulating gain ±0.3 dB, simulates real-device
+	// component tolerance drift and power supply ripple. Near-zero CPU.
+	float engineDriftPhase_    = 0.0f;
+	float engineDriftPeriod_   = 4800.0f;  // samples per S&H step (~10 Hz @ 48kHz)
+	float engineDriftTarget_   = 1.0f;     // raw S&H target (gain multiplier)
+	float engineDriftSmoothed_ = 1.0f;     // EMA-smoothed gain multiplier
+	float engineDriftSmoothCoeff_ = 0.9995f; // EMA coeff (~10ms)
+
 	// Per-sample S&H step (shared between filter and delay chaos)
 	inline void advanceChaosShStep() noexcept
 	{
+		// Per-sample smoothing of chaos depth and S&H rate
+		smoothedChaosFilterMaxOct_    += (chaosFilterMaxOct_    - smoothedChaosFilterMaxOct_)    * (1.0f - chaosParamSmoothCoeff_);
+		smoothedChaosDelayMaxSamples_ += (chaosDelayMaxSamples_ - smoothedChaosDelayMaxSamples_) * (1.0f - chaosParamSmoothCoeff_);
+		smoothedChaosShPeriod2_       += (chaosShPeriod_        - smoothedChaosShPeriod2_)       * (1.0f - chaosParamSmoothCoeff_);
+
 		chaosPhase_ += 1.0f;
-		if (chaosPhase_ >= chaosShPeriod_)
+		if (chaosPhase_ >= smoothedChaosShPeriod2_)
 		{
-			chaosPhase_ -= chaosShPeriod_;
+			chaosPhase_ -= smoothedChaosShPeriod2_;
 			chaosTarget_ = chaosRng_.nextFloat() * 2.0f - 1.0f;
 		}
 		chaosSmoothed_ = chaosSmoothCoeff_ * chaosSmoothed_
@@ -337,9 +374,9 @@ private:
 		chaosDelayBuf_[0][wp] = wetL;
 		chaosDelayBuf_[1][wp] = wetR;
 
-		const float centerDelay = chaosDelayMaxSamples_;
+		const float centerDelay = smoothedChaosDelayMaxSamples_;
 		const float delaySamp   = juce::jlimit (0.0f, (float)(kChaosDelayBufLen - 2),
-		                                        centerDelay + chaosSmoothed_ * chaosDelayMaxSamples_);
+		                                        centerDelay + chaosSmoothed_ * smoothedChaosDelayMaxSamples_);
 
 		const float readPos = (float) wp - delaySamp;
 		const int iPos = (int) std::floor (readPos);
@@ -361,6 +398,90 @@ private:
 		}
 
 		chaosDelayWritePos_ = (wp + 1) & mask;
+	}
+
+	// Engine feedback-loop processing (Airwindows-inspired saturation + LP)
+	inline void applyEngineToFeedback (float& fbkL, float& fbkR) noexcept
+	{
+		if (engineMode_ == 0) return; // CLEAN: bypass
+
+		// ── Micro-drift: subtle gain oscillation simulating analog instability ──
+		engineDriftPhase_ += 1.0f;
+		if (engineDriftPhase_ >= engineDriftPeriod_)
+		{
+			engineDriftPhase_ -= engineDriftPeriod_;
+			// ±0.3 dB ≈ multiplier range [0.966, 1.035]
+			// nextFloat() → [0,1] → map to [0.966, 1.035]
+			engineDriftTarget_ = 0.966f + chaosRng_.nextFloat() * 0.069f;
+		}
+		engineDriftSmoothed_ = engineDriftSmoothCoeff_ * engineDriftSmoothed_
+		                     + (1.0f - engineDriftSmoothCoeff_) * engineDriftTarget_;
+
+		// Hard-clamp input to waveshaper — prevents Tube formula sign-reversal
+		// and runaway oscillation when switching from CLEAN with hot signals.
+		fbkL = juce::jlimit (-1.5f, 1.5f, fbkL);
+		fbkR = juce::jlimit (-1.5f, 1.5f, fbkR);
+
+		if (engineMode_ == 1)
+		{
+			// ANALOG: Airwindows Tube soft-clip with asymmetric even harmonics
+			// Waveshaper FIRST → LP AFTER (natural tube → output-transformer rolloff)
+			//
+			// Tube: (x - x·|x|·0.5) × 2 — smooth 3rd-harmonic saturation, unity at ±1
+			fbkL = (fbkL - fbkL * std::abs (fbkL) * 0.5f) * 2.0f;
+			fbkR = (fbkR - fbkR * std::abs (fbkR) * 0.5f) * 2.0f;
+
+			// Asymmetric 2nd harmonic — real tubes clip positive/negative half-cycles
+			// differently. x² is always positive, so subtracting it shifts the waveform
+			// asymmetrically, producing even harmonics (warmth). The existing DC blocker
+			// in the feedback path removes any resulting DC offset.
+			fbkL -= fbkL * fbkL * 0.1f;
+			fbkR -= fbkR * fbkR * 0.1f;
+
+			// Post-waveshaper LP at ~4 kHz (tube output rolloff — harmonics generated
+			// by the waveshaper get smoothed, just like a real analog circuit)
+			engineLpStateL_ += engineLpCoeff_ * (fbkL - engineLpStateL_);
+			engineLpStateR_ += engineLpCoeff_ * (fbkR - engineLpStateR_);
+			fbkL = engineLpStateL_;
+			fbkR = engineLpStateR_;
+		}
+		else
+		{
+			// BBD: Pre-clip LP at ~3 kHz (anti-aliasing input filter, then waveshaper)
+			// Real BBD chips filter BEFORE the sample-and-hold stage
+			engineLpStateL_ += engineLpCoeff_ * (fbkL - engineLpStateL_);
+			engineLpStateR_ += engineLpCoeff_ * (fbkR - engineLpStateR_);
+			fbkL = engineLpStateL_;
+			fbkR = engineLpStateR_;
+
+			// Density/IronOxide-style sin() waveshaper with π/2 prescaling
+			// Scale |x| by π/2 first → stronger mid-range saturation (matches
+			// Airwindows convention). Unity at ±1, hard-limits above.
+			// Uses fast 5th-order minimax polynomial instead of std::sin()
+			// for the [0, π/2] range (max error < 0.0002).
+			constexpr float kPiHalf = 1.57079633f;
+			float rectL = std::abs (fbkL) * kPiHalf;
+			float rectR = std::abs (fbkR) * kPiHalf;
+			if (rectL > kPiHalf) rectL = kPiHalf;
+			if (rectR > kPiHalf) rectR = kPiHalf;
+			// Minimax poly: sin(x) ≈ x - x³/6 + x⁵/120  (Horner form)
+			{
+				const float x2L = rectL * rectL;
+				rectL = rectL * (1.0f - x2L * (0.16666667f - x2L * 0.00833333f));
+				const float x2R = rectR * rectR;
+				rectR = rectR * (1.0f - x2R * (0.16666667f - x2R * 0.00833333f));
+			}
+			fbkL = (fbkL > 0.0f) ? rectL : -rectL;
+			fbkR = (fbkR > 0.0f) ? rectR : -rectR;
+		}
+
+		// Apply micro-drift gain modulation
+		fbkL *= engineDriftSmoothed_;
+		fbkR *= engineDriftSmoothed_;
+
+		// Final safety clamp — prevent any accumulation beyond ±1.5
+		fbkL = juce::jlimit (-1.5f, 1.5f, fbkL);
+		fbkR = juce::jlimit (-1.5f, 1.5f, fbkR);
 	}
 
 	std::atomic<float> currentMidiFrequency { 0.0f };
@@ -396,6 +517,7 @@ private:
 	std::atomic<float>* chaosDelayParam  = nullptr;
 	std::atomic<float>* chaosAmtParam    = nullptr;
 	std::atomic<float>* chaosSpdParam    = nullptr;
+	std::atomic<float>* engineParam     = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;

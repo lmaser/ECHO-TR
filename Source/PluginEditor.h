@@ -108,6 +108,7 @@ private:
     BarSlider feedbackSlider;
     BarSlider modeSlider;
     BarSlider modSlider;
+    BarSlider engineSlider;
     BarSlider inputSlider;
     BarSlider outputSlider;
     BarSlider tiltSlider;
@@ -134,6 +135,7 @@ private:
     std::unique_ptr<SliderAttachment> feedbackAttachment;
     std::unique_ptr<SliderAttachment> modeAttachment;
     std::unique_ptr<SliderAttachment> modAttachment;
+    std::unique_ptr<SliderAttachment> engineAttachment;
     std::unique_ptr<SliderAttachment> inputAttachment;
     std::unique_ptr<SliderAttachment> outputAttachment;
     std::unique_ptr<SliderAttachment> tiltAttachment;
@@ -315,6 +317,9 @@ private:
     juce::String getModeText() const;
     juce::String getModeTextShort() const;
 
+    juce::String getEngineText() const;
+    juce::String getEngineTextShort() const;
+
     juce::String getModText() const;
     juce::String getModTextShort() const;
 
@@ -367,6 +372,8 @@ private:
     juce::String cachedFeedbackTextShort;
     juce::String cachedModeTextFull;
     juce::String cachedModeTextShort;
+    juce::String cachedEngineTextFull;
+    juce::String cachedEngineTextShort;
     juce::String cachedModTextFull;
     juce::String cachedModTextShort;
     juce::String cachedInputTextFull;
@@ -381,6 +388,7 @@ private:
     juce::String cachedTimeIntOnly;
     juce::String cachedFeedbackIntOnly;
     juce::String cachedModeIntOnly;
+    juce::String cachedEngineIntOnly;
     juce::String cachedModIntOnly;
     juce::String cachedInputIntOnly;
     juce::String cachedOutputIntOnly;
@@ -398,7 +406,7 @@ private:
 
     HorizontalLayoutMetrics cachedHLayout_;
     VerticalLayoutMetrics cachedVLayout_;
-    std::array<juce::Rectangle<int>, 8> cachedValueAreas_;
+    std::array<juce::Rectangle<int>, 9> cachedValueAreas_;
     juce::Rectangle<int> cachedFilterValueArea_;
     juce::Rectangle<int> cachedTiltValueArea_;
     juce::Rectangle<int> cachedToggleBarArea_;
