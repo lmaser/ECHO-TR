@@ -64,9 +64,9 @@ public:
 	static constexpr int kTimeSyncMax = 29;
 	static constexpr int kTimeSyncDefault = 10;
 
-	static constexpr float kFeedbackMin = 0.0f;
-	static constexpr float kFeedbackMax = 1.0f;
-	static constexpr float kFeedbackDefault = 1.0f;
+	static constexpr float kFeedbackMin = -1.0f;
+	static constexpr float kFeedbackMax =  1.0f;
+	static constexpr float kFeedbackDefault = 0.5f;
 
 	static constexpr int kModeMin = 0;
 	static constexpr int kModeMax = 4; // 0=MONO, 1=STEREO, 2=WIDE, 3=DUAL, 4=PING-PONG ("Style" in UI)

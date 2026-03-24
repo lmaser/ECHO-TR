@@ -295,8 +295,12 @@ double ECHOTRAudioProcessor::getTailLengthSeconds() const
 	const float timeMsValue = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
 	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
 	float feedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
-	feedback = juce::jlimit (0.0f, kFeedbackMax, feedback);
-	feedback = feedback * feedback * (3.0f - 2.0f * feedback);  // smoothstep (must match processBlock)
+	feedback = juce::jlimit (kFeedbackMin, kFeedbackMax, feedback);
+	{
+		const float sign = feedback < 0.0f ? -1.0f : 1.0f;
+		const float af   = std::abs (feedback);
+		feedback         = sign * af * af * (3.0f - 2.0f * af);
+	}
 	
 	// Get delay time
 	float delayMs = timeMsValue;
@@ -321,14 +325,15 @@ double ECHOTRAudioProcessor::getTailLengthSeconds() const
 	// Calculate tail: time for signal to decay to -60dB (~0.001 amplitude)
 	// Formula: tailTime = delayTime * log(0.001) / log(feedback)
 	// But we need to handle edge cases
-	if (feedback < 0.01f || delayMs < 0.5f)
+	const float absFeedback = std::abs (feedback);
+	if (absFeedback < 0.01f || delayMs < 0.5f)
 		return 0.5; // Minimum 0.5s tail for very low feedback
 	
-	if (feedback >= 1.0f)
+	if (absFeedback >= 1.0f)
 		return 30.0; // feedback >= 100% → infinite sustain / self-oscillation
 	
 	const double delaySeconds = delayMs / 1000.0;
-	const double numRepeatsTo60dB = std::log (0.001) / std::log (feedback);
+	const double numRepeatsTo60dB = std::log (0.001) / std::log ((double) absFeedback);
 	const double tailSeconds = delaySeconds * numRepeatsTo60dB;
 	
 	// Clamp to reasonable range
@@ -1276,11 +1281,15 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Fast dB→linear (std::exp2 instead of std::pow via Decibels::decibelsToGain)
 	const float inputGain  = fastDecibelsToGain (inputGainDb);
 	const float outputGain = fastDecibelsToGain (outputGainDb);
-	targetFeedback = juce::jlimit (0.0f, kFeedbackMax, targetFeedback);
+	targetFeedback = juce::jlimit (kFeedbackMin, kFeedbackMax, targetFeedback);
 
-	// Smoothstep mapping: resolution at both extremes (3x²−2x³)
-	// 50% slider = 50% real, but 90%→100% = only 2.8pp (fine control near self-oscillation)
-	targetFeedback = targetFeedback * targetFeedback * (3.0f - 2.0f * targetFeedback);
+	// Smoothstep mapping on |feedback|, sign preserved
+	// Positive = additive comb (all harmonics, sawtooth), negative = subtractive comb (odd harmonics, square)
+	{
+		const float sign = targetFeedback < 0.0f ? -1.0f : 1.0f;
+		const float af   = std::abs (targetFeedback);
+		targetFeedback   = sign * af * af * (3.0f - 2.0f * af);
+	}
 
 	// MOD frequency multiplier (hyperbolic below centre, linear above)
 	float freqMultiplier;
