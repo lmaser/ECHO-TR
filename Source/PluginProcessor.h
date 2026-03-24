@@ -36,6 +36,15 @@ public:
 	static constexpr const char* kParamFilterLpSlope = "filter_lp_slope";
 	static constexpr const char* kParamFilterHpOn    = "filter_hp_on";
 	static constexpr const char* kParamFilterLpOn    = "filter_lp_on";
+
+	// Tilt parameter ID
+	static constexpr const char* kParamTilt = "tilt";
+
+	// Chaos parameter IDs
+	static constexpr const char* kParamChaos     = "chaos";      // filter chaos (CHS F)
+	static constexpr const char* kParamChaosD    = "chaos_d";    // delay chaos  (CHS D)
+	static constexpr const char* kParamChaosAmt  = "chaos_amt";
+	static constexpr const char* kParamChaosSpd  = "chaos_spd";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -98,6 +107,19 @@ public:
 	static constexpr int   kFilterSlopeMin      = 0;       // 6 dB/oct
 	static constexpr int   kFilterSlopeMax      = 2;       // 24 dB/oct
 	static constexpr int   kFilterSlopeDefault  = 1;       // 12 dB/oct
+
+	// Tilt ranges and defaults
+	static constexpr float kTiltMin     = -6.0f;
+	static constexpr float kTiltMax     =  6.0f;
+	static constexpr float kTiltDefault =  0.0f;
+
+	// Chaos ranges and defaults
+	static constexpr float kChaosAmtMin     = 0.0f;
+	static constexpr float kChaosAmtMax     = 100.0f;
+	static constexpr float kChaosAmtDefault = 50.0f;
+	static constexpr float kChaosSpdMin     = 0.01f;   // Hz
+	static constexpr float kChaosSpdMax     = 100.0f;  // Hz
+	static constexpr float kChaosSpdDefault = 5.0f;    // Hz
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -270,6 +292,77 @@ private:
 	int   wetFilterNumSectionsLp_ = 0;
 	void  filterWetSample (float& wetL, float& wetR);
 
+	// Tilt filter state
+	float tiltDb_        = 0.0f;
+	float tiltB0_ = 1.0f, tiltB1_ = 0.0f, tiltA1_ = 0.0f;
+	float tiltTargetB0_ = 1.0f, tiltTargetB1_ = 0.0f, tiltTargetA1_ = 0.0f;
+	float tiltState_[2]  = { 0.0f, 0.0f };
+	float lastTiltDb_    = 0.0f;
+
+	// Chaos S&H shared state
+	bool  chaosFilterEnabled_    = false;
+	bool  chaosDelayEnabled_     = false;
+	float chaosAmt_              = 0.0f;
+	float chaosShPeriod_         = 8820.0f;
+	float chaosSmoothCoeff_      = 0.999f;
+	float chaosFilterMaxOct_     = 0.0f;    // ±octaves for filter mod
+	float chaosDelayMaxSamples_  = 0.0f;    // micro-delay depth in samples
+	float chaosPhase_            = 0.0f;
+	float chaosTarget_           = 0.0f;
+	float chaosSmoothed_         = 0.0f;
+	juce::Random chaosRng_;
+
+	// Chaos micro-delay buffer (post-wet, CAB-TR style)
+	static constexpr int kChaosDelayBufLen = 1024;
+	float chaosDelayBuf_[2][kChaosDelayBufLen] = {};
+	int   chaosDelayWritePos_ = 0;
+
+	// Per-sample S&H step (shared between filter and delay chaos)
+	inline void advanceChaosShStep() noexcept
+	{
+		chaosPhase_ += 1.0f;
+		if (chaosPhase_ >= chaosShPeriod_)
+		{
+			chaosPhase_ -= chaosShPeriod_;
+			chaosTarget_ = chaosRng_.nextFloat() * 2.0f - 1.0f;
+		}
+		chaosSmoothed_ = chaosSmoothCoeff_ * chaosSmoothed_
+		               + (1.0f - chaosSmoothCoeff_) * chaosTarget_;
+	}
+
+	// Post-wet micro-delay modulation (CAB-TR style, ±5ms max)
+	inline void applyChaosDelay (float& wetL, float& wetR) noexcept
+	{
+		const int wp = chaosDelayWritePos_;
+		chaosDelayBuf_[0][wp] = wetL;
+		chaosDelayBuf_[1][wp] = wetR;
+
+		const float centerDelay = chaosDelayMaxSamples_;
+		const float delaySamp   = juce::jlimit (0.0f, (float)(kChaosDelayBufLen - 2),
+		                                        centerDelay + chaosSmoothed_ * chaosDelayMaxSamples_);
+
+		const float readPos = (float) wp - delaySamp;
+		const int iPos = (int) std::floor (readPos);
+		const float frac = readPos - (float) iPos;
+		const int mask = kChaosDelayBufLen - 1;
+
+		for (int ch = 0; ch < 2; ++ch)
+		{
+			const float p0 = chaosDelayBuf_[ch][(iPos - 1) & mask];
+			const float p1 = chaosDelayBuf_[ch][(iPos    ) & mask];
+			const float p2 = chaosDelayBuf_[ch][(iPos + 1) & mask];
+			const float p3 = chaosDelayBuf_[ch][(iPos + 2) & mask];
+			const float c0 = p1;
+			const float c1 = p2 - (1.0f / 3.0f) * p0 - 0.5f * p1 - (1.0f / 6.0f) * p3;
+			const float c2 = 0.5f * (p0 + p2) - p1;
+			const float c3 = (1.0f / 6.0f) * (p3 - p0) + 0.5f * (p1 - p2);
+			float& wet = (ch == 0) ? wetL : wetR;
+			wet = ((c3 * frac + c2) * frac + c1) * frac + c0;
+		}
+
+		chaosDelayWritePos_ = (wp + 1) & mask;
+	}
+
 	std::atomic<float> currentMidiFrequency { 0.0f };
 	std::atomic<int> lastMidiNote { -1 };
 	std::atomic<int> lastMidiVelocity { 127 };
@@ -297,6 +390,12 @@ private:
 	std::atomic<float>* filterLpSlopeParam = nullptr;
 	std::atomic<float>* filterHpOnParam    = nullptr;
 	std::atomic<float>* filterLpOnParam    = nullptr;
+
+	std::atomic<float>* tiltParam     = nullptr;
+	std::atomic<float>* chaosParam      = nullptr;
+	std::atomic<float>* chaosDelayParam  = nullptr;
+	std::atomic<float>* chaosAmtParam    = nullptr;
+	std::atomic<float>* chaosSpdParam    = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;

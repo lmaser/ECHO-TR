@@ -33,6 +33,7 @@ private:
     void openAutoFbkPrompt();
     void openReverseSmoothPrompt();
     void openFilterPrompt();
+    void openChaosPrompt();
     void openInfoPopup();
     void openGraphicsPopup();
     void setPromptOverlayActive (bool shouldBeActive);
@@ -109,16 +110,21 @@ private:
     BarSlider modSlider;
     BarSlider inputSlider;
     BarSlider outputSlider;
+    BarSlider tiltSlider;
     BarSlider mixSlider;
 
     juce::ToggleButton syncButton;
     juce::ToggleButton midiButton;
     juce::ToggleButton autoFbkButton;
     juce::ToggleButton reverseButton;
+    juce::ToggleButton chaosFilterButton;
+    juce::ToggleButton chaosDelayButton;
 
     juce::Label midiChannelDisplay;
     juce::Label autoFbkDisplay;
     juce::Label reverseDisplay;
+    juce::Label chaosFilterDisplay;
+    juce::Label chaosDelayDisplay;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
@@ -130,12 +136,15 @@ private:
     std::unique_ptr<SliderAttachment> modAttachment;
     std::unique_ptr<SliderAttachment> inputAttachment;
     std::unique_ptr<SliderAttachment> outputAttachment;
+    std::unique_ptr<SliderAttachment> tiltAttachment;
     std::unique_ptr<SliderAttachment> mixAttachment;
 
     std::unique_ptr<ButtonAttachment> syncAttachment;
     std::unique_ptr<ButtonAttachment> midiAttachment;
     std::unique_ptr<ButtonAttachment> autoFbkAttachment;
     std::unique_ptr<ButtonAttachment> reverseAttachment;
+    std::unique_ptr<ButtonAttachment> chaosFilterAttachment;
+    std::unique_ptr<ButtonAttachment> chaosDelayAttachment;
 
     juce::ComponentBoundsConstrainer resizeConstrainer;
     std::unique_ptr<juce::ResizableCornerComponent> resizerCorner;
@@ -318,6 +327,9 @@ private:
     juce::String getMixText() const;
     juce::String getMixTextShort() const;
 
+    juce::String getTiltText() const;
+    juce::String getTiltTextShort() const;
+
     int getTargetValueColumnWidth() const;
 
     void sliderValueChanged (juce::Slider* slider) override;
@@ -338,6 +350,7 @@ private:
     juce::Rectangle<int> getAutoFbkLabelArea() const;
     juce::Rectangle<int> getReverseLabelArea() const;
     juce::Rectangle<int> getMidiLabelArea() const;
+    juce::Rectangle<int> getChaosLabelArea() const;
     juce::Rectangle<int> getInfoIconArea() const;
     void updateInfoIconCache();
     bool refreshLegendTextCache();
@@ -362,6 +375,8 @@ private:
     juce::String cachedOutputTextShort;
     juce::String cachedMixTextFull;
     juce::String cachedMixTextShort;
+    juce::String cachedTiltTextFull;
+    juce::String cachedTiltTextShort;
 
     juce::String cachedTimeIntOnly;
     juce::String cachedFeedbackIntOnly;
@@ -370,6 +385,7 @@ private:
     juce::String cachedInputIntOnly;
     juce::String cachedOutputIntOnly;
     juce::String cachedMixIntOnly;
+    juce::String cachedTiltIntOnly;
 
     juce::String cachedFilterTextFull;
     juce::String cachedFilterTextShort;
@@ -382,9 +398,11 @@ private:
 
     HorizontalLayoutMetrics cachedHLayout_;
     VerticalLayoutMetrics cachedVLayout_;
-    std::array<juce::Rectangle<int>, 7> cachedValueAreas_;
+    std::array<juce::Rectangle<int>, 8> cachedValueAreas_;
     juce::Rectangle<int> cachedFilterValueArea_;
+    juce::Rectangle<int> cachedTiltValueArea_;
     juce::Rectangle<int> cachedToggleBarArea_;
+    juce::Rectangle<int> cachedChaosArea_;
     bool ioSectionExpanded_ = false;
 
     static constexpr double kDefaultTimeMs = (double) ECHOTRAudioProcessor::kTimeMsDefault;
@@ -392,6 +410,7 @@ private:
     static constexpr double kDefaultMix = (double) ECHOTRAudioProcessor::kMixDefault;
     static constexpr double kDefaultInput = (double) ECHOTRAudioProcessor::kInputDefault;
     static constexpr double kDefaultOutput = (double) ECHOTRAudioProcessor::kOutputDefault;
+    static constexpr double kDefaultTilt = (double) ECHOTRAudioProcessor::kTiltDefault;
 
     static constexpr int kMinW = 360;
     static constexpr int kMinH = 540;

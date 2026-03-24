@@ -118,19 +118,18 @@ void ECHOTRAudioProcessorEditor::MinimalLNF::drawTickBox (juce::Graphics& g, juc
                                      side,
                                      side).getIntersection (local);
 
-    g.setColour (scheme.outline);
-    g.drawRect (r, 4.0f);
-
-    const float innerInset = juce::jlimit (1.0f, side * 0.45f, side * UiMetrics::tickBoxInnerInsetRatio);
-    auto inner = r.reduced (innerInset);
-
     if (ticked)
     {
-        g.setColour (scheme.fg);
-        g.fillRect (inner);
+        g.setColour (scheme.outline);
+        g.fillRect (r);
     }
     else
     {
+        g.setColour (scheme.outline);
+        g.drawRect (r, 4.0f);
+
+        const float innerInset = juce::jlimit (1.0f, side * 0.45f, side * UiMetrics::tickBoxInnerInsetRatio);
+        auto inner = r.reduced (innerInset);
         g.setColour (scheme.bg);
         g.fillRect (inner);
     }
@@ -518,7 +517,7 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseDoubleClick (const juc
 ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    const std::array<BarSlider*, 7> barSliders { &timeSlider, &modSlider, &feedbackSlider, &modeSlider, &inputSlider, &outputSlider, &mixSlider };
+    const std::array<BarSlider*, 8> barSliders { &timeSlider, &modSlider, &feedbackSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider };
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     crtEnabled = audioProcessor.getUiCrtEnabled();
@@ -577,10 +576,12 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     inputSlider.setNumDecimalPlacesToDisplay (1);
     outputSlider.setNumDecimalPlacesToDisplay (1);
     mixSlider.setNumDecimalPlacesToDisplay (1);
+    tiltSlider.setNumDecimalPlacesToDisplay (1);
 
     // IO sliders start hidden (collapsible section, collapsed by default)
     inputSlider.setVisible (false);
     outputSlider.setVisible (false);
+    tiltSlider.setVisible (false);
     mixSlider.setVisible (false);
 
     filterBar_.setOwner (this);
@@ -588,6 +589,40 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     addAndMakeVisible (filterBar_);
     filterBar_.setVisible (false);
     filterBar_.updateFromProcessor();
+
+    // Chaos filter button + tooltip overlay
+    chaosFilterButton.setButtonText ("");
+    addAndMakeVisible (chaosFilterButton);
+    chaosFilterButton.setVisible (false);
+    {
+        const float savedAmt = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosAmt)->load();
+        const float savedSpd = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosSpd)->load();
+        chaosFilterDisplay.setText ("", juce::dontSendNotification);
+        chaosFilterDisplay.setInterceptsMouseClicks (true, false);
+        chaosFilterDisplay.addMouseListener (this, false);
+        chaosFilterDisplay.setTooltip (juce::String (juce::roundToInt (savedAmt)) + "% | " + juce::String (juce::roundToInt (savedSpd)) + " Hz");
+        chaosFilterDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+        chaosFilterDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+        chaosFilterDisplay.setOpaque (false);
+        addAndMakeVisible (chaosFilterDisplay);
+        chaosFilterDisplay.setVisible (false);
+    }
+
+    // Chaos delay button + tooltip overlay
+    chaosDelayButton.setButtonText ("");
+    addAndMakeVisible (chaosDelayButton);
+    chaosDelayButton.setVisible (false);
+    {
+        chaosDelayDisplay.setText ("", juce::dontSendNotification);
+        chaosDelayDisplay.setInterceptsMouseClicks (true, false);
+        chaosDelayDisplay.addMouseListener (this, false);
+        chaosDelayDisplay.setTooltip ("Delay chaos");
+        chaosDelayDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+        chaosDelayDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+        chaosDelayDisplay.setOpaque (false);
+        addAndMakeVisible (chaosDelayDisplay);
+        chaosDelayDisplay.setVisible (false);
+    }
 
     syncButton.setButtonText ("");
     autoFbkButton.setButtonText ("");
@@ -666,6 +701,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindSlider (modAttachment, ECHOTRAudioProcessor::kParamMod, modSlider, 0.5);
     bindSlider (inputAttachment, ECHOTRAudioProcessor::kParamInput, inputSlider, kDefaultInput);
     bindSlider (outputAttachment, ECHOTRAudioProcessor::kParamOutput, outputSlider, kDefaultOutput);
+    bindSlider (tiltAttachment, ECHOTRAudioProcessor::kParamTilt, tiltSlider, kDefaultTilt);
     bindSlider (mixAttachment, ECHOTRAudioProcessor::kParamMix, mixSlider, kDefaultMix);
 
     // Disable numeric popup for STYLE (slider-only operation)
@@ -682,6 +718,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindButton (autoFbkAttachment, ECHOTRAudioProcessor::kParamAutoFbk, autoFbkButton);
     bindButton (midiAttachment, ECHOTRAudioProcessor::kParamMidi, midiButton);
     bindButton (reverseAttachment, ECHOTRAudioProcessor::kParamReverse, reverseButton);
+    bindButton (chaosFilterAttachment, ECHOTRAudioProcessor::kParamChaos, chaosFilterButton);
+    bindButton (chaosDelayAttachment, ECHOTRAudioProcessor::kParamChaosD, chaosDelayButton);
 
     for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.addParameterListener (paramId, this);
@@ -733,7 +771,7 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     dismissEditorOwnedModalPrompts (lnf);
     setPromptOverlayActive (false);
 
-    const std::array<BarSlider*, 7> barSliders { &timeSlider, &modSlider, &feedbackSlider, &modeSlider, &inputSlider, &outputSlider, &mixSlider };
+    const std::array<BarSlider*, 8> barSliders { &timeSlider, &modSlider, &feedbackSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider };
     for (auto* slider : barSliders)
         slider->removeListener (this);
 
@@ -1092,6 +1130,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
     const auto oldOutputShort   = cachedOutputTextShort;
     const auto oldMixFull       = cachedMixTextFull;
     const auto oldMixShort      = cachedMixTextShort;
+    const auto oldTiltFull      = cachedTiltTextFull;
+    const auto oldTiltShort     = cachedTiltTextShort;
 
     cachedTimeTextFull = getTimeText();
     cachedTimeTextShort = getTimeTextShort();
@@ -1107,6 +1147,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
     cachedOutputTextShort = getOutputTextShort();
     cachedMixTextFull = getMixText();
     cachedMixTextShort = getMixTextShort();
+    cachedTiltTextFull = getTiltText();
+    cachedTiltTextShort = getTiltTextShort();
 
     // Cached int-only representations (avoids per-frame juce::String allocation in paint)
     {
@@ -1124,6 +1166,12 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
         cachedInputIntOnly    = juce::String ((int) inputSlider.getValue()) + "dB";
         cachedOutputIntOnly   = juce::String ((int) outputSlider.getValue()) + "dB";
         cachedMixIntOnly      = juce::String ((int) std::lround (mixSlider.getValue() * 100.0)) + "%";
+
+        const float tiltVal = (float) tiltSlider.getValue();
+        if (std::abs (tiltVal) < 0.05f)
+            cachedTiltIntOnly = "0dB";
+        else
+            cachedTiltIntOnly = juce::String ((int) tiltVal) + "dB";
     }
 
     cachedFilterTextFull  = "FILTER";
@@ -1142,7 +1190,9 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
                       || oldOutputFull    != cachedOutputTextFull
                       || oldOutputShort   != cachedOutputTextShort
                       || oldMixFull       != cachedMixTextFull
-                      || oldMixShort      != cachedMixTextShort;
+                      || oldMixShort      != cachedMixTextShort
+                      || oldTiltFull      != cachedTiltTextFull
+                      || oldTiltShort     != cachedTiltTextShort;
 
     return changed;
 }
@@ -3472,6 +3522,406 @@ void ECHOTRAudioProcessorEditor::openReverseSmoothPrompt()
         false);
 }
 
+//==============================================================================
+//  CHAOS prompt (AMOUNT + SPEED)
+//==============================================================================
+void ECHOTRAudioProcessorEditor::openChaosPrompt()
+{
+    using namespace TR;
+    lnf.setScheme (activeScheme);
+    const auto scheme = activeScheme;
+
+    const float currentAmt = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosAmt)->load();
+    const float currentSpd = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosSpd)->load();
+
+    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    aw->setLookAndFeel (&lnf);
+
+    aw->addTextEditor ("amt", juce::String (juce::roundToInt (currentAmt)), juce::String());
+    aw->addTextEditor ("spd", juce::String (currentSpd, 2), juce::String());
+
+    // ── Inline bar component ──
+    struct PromptBar : public juce::Component
+    {
+        ECHOScheme colours;
+        float value      = 0.5f;
+        float defaultVal = 0.5f;
+        std::function<void (float)> onValueChanged;
+
+        PromptBar (const ECHOScheme& s, float initial01, float default01)
+            : colours (s), value (initial01), defaultVal (default01) {}
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            g.setColour (colours.outline);
+            g.drawRect (r, 4.0f);
+
+            const float pad = 7.0f;
+            auto inner = r.reduced (pad);
+
+            g.setColour (colours.bg);
+            g.fillRect (inner);
+
+            const float fillW = juce::jlimit (0.0f, inner.getWidth(), inner.getWidth() * value);
+            g.setColour (colours.fg);
+            g.fillRect (inner.withWidth (fillW));
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override  { updateFromMouse (e); }
+        void mouseDrag (const juce::MouseEvent& e) override  { updateFromMouse (e); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { setValue (defaultVal); }
+
+        void setValue (float v01)
+        {
+            value = juce::jlimit (0.0f, 1.0f, v01);
+            repaint();
+            if (onValueChanged)
+                onValueChanged (value);
+        }
+
+    private:
+        void updateFromMouse (const juce::MouseEvent& e)
+        {
+            const float pad = 7.0f;
+            const float innerX = pad;
+            const float innerW = (float) getWidth() - pad * 2.0f;
+            const float v = (innerW > 0.0f) ? ((float) e.x - innerX) / innerW : 0.0f;
+            setValue (v);
+        }
+    };
+
+    struct ResetLabel : public juce::Label
+    {
+        PromptBar* pairedBar = nullptr;
+        void mouseDoubleClick (const juce::MouseEvent&) override
+        {
+            if (pairedBar != nullptr)
+                pairedBar->setValue (pairedBar->defaultVal);
+        }
+    };
+
+    const auto& f = kBoldFont40();
+
+    ResetLabel* amtSuffix    = nullptr;
+    ResetLabel* spdSuffix    = nullptr;
+    juce::Label* amtUnitLabel = nullptr;
+    juce::Label* spdUnitLabel = nullptr;
+
+    auto setupField = [&] (const char* editorId, const juce::String& suffixText,
+                           const juce::String& unitText, bool useDecimalFilter,
+                           ResetLabel*& suffixOut, juce::Label*& unitOut)
+    {
+        if (auto* te = aw->getTextEditor (editorId))
+        {
+            te->setFont (f);
+            te->applyFontToAllText (f);
+
+            if (useDecimalFilter)
+                te->setInputRestrictions (6, "0123456789.");
+            else
+                te->setInputFilter (new PctInputFilter(), true);
+
+            auto r = te->getBounds();
+            r.setHeight ((int) (f.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
+            te->setBounds (r);
+
+            suffixOut = new ResetLabel();
+            suffixOut->setText (suffixText, juce::dontSendNotification);
+            suffixOut->setJustificationType (juce::Justification::centredLeft);
+            applyLabelTextColour (*suffixOut, scheme.text);
+            suffixOut->setBorderSize (juce::BorderSize<int> (0));
+            suffixOut->setFont (f);
+            aw->addAndMakeVisible (suffixOut);
+
+            unitOut = new juce::Label ("", unitText);
+            unitOut->setJustificationType (juce::Justification::centredLeft);
+            applyLabelTextColour (*unitOut, scheme.text);
+            unitOut->setBorderSize (juce::BorderSize<int> (0));
+            unitOut->setFont (f);
+            aw->addAndMakeVisible (unitOut);
+        }
+    };
+
+    setupField ("amt", "AMT", "%",  false, amtSuffix, amtUnitLabel);
+    setupField ("spd", "SPD", "Hz", true,  spdSuffix, spdUnitLabel);
+
+    // Bars: AMOUNT 0-100 → 0..1, SPEED 0.01-100 Hz → 0..1 (logarithmic)
+    const float spdLogMin   = std::log (ECHOTRAudioProcessor::kChaosSpdMin);
+    const float spdLogMax   = std::log (ECHOTRAudioProcessor::kChaosSpdMax);
+    const float spdLogRange = spdLogMax - spdLogMin;
+
+    auto hzToBar = [spdLogMin, spdLogRange] (float hz) -> float
+    {
+        if (hz <= ECHOTRAudioProcessor::kChaosSpdMin) return 0.0f;
+        if (hz >= ECHOTRAudioProcessor::kChaosSpdMax) return 1.0f;
+        return (std::log (hz) - spdLogMin) / spdLogRange;
+    };
+
+    auto barToHz = [spdLogMin, spdLogRange] (float v01) -> float
+    {
+        return std::exp (spdLogMin + v01 * spdLogRange);
+    };
+
+    auto* amtBar = new PromptBar (scheme, currentAmt * 0.01f,
+                                  ECHOTRAudioProcessor::kChaosAmtDefault * 0.01f);
+    auto* spdBar = new PromptBar (scheme,
+                                  hzToBar (currentSpd),
+                                  hzToBar (ECHOTRAudioProcessor::kChaosSpdDefault));
+    aw->addAndMakeVisible (amtBar);
+    aw->addAndMakeVisible (spdBar);
+
+    if (amtSuffix != nullptr) amtSuffix->pairedBar = amtBar;
+    if (spdSuffix != nullptr) spdSuffix->pairedBar = spdBar;
+
+    auto syncing = std::make_shared<bool> (false);
+
+    auto* amtApvts = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamChaosAmt);
+    auto* spdApvts = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamChaosSpd);
+
+    // Bar → text + APVTS
+    auto barToTextAmt = [aw, syncing, amtApvts] (float v01)
+    {
+        if (*syncing) return;
+        *syncing = true;
+        if (auto* te = aw->getTextEditor ("amt"))
+        {
+            te->setText (juce::String (juce::roundToInt (v01 * 100.0f)), juce::sendNotification);
+            te->selectAll();
+        }
+        if (amtApvts != nullptr)
+            amtApvts->setValueNotifyingHost (amtApvts->convertTo0to1 (v01 * 100.0f));
+        *syncing = false;
+    };
+
+    auto barToTextSpd = [aw, syncing, spdApvts, barToHz] (float v01)
+    {
+        if (*syncing) return;
+        *syncing = true;
+        const float hz = juce::jlimit (ECHOTRAudioProcessor::kChaosSpdMin,
+                                       ECHOTRAudioProcessor::kChaosSpdMax, barToHz (v01));
+        if (auto* te = aw->getTextEditor ("spd"))
+        {
+            te->setText (juce::String (hz, 2), juce::sendNotification);
+            te->selectAll();
+        }
+        if (spdApvts != nullptr)
+            spdApvts->setValueNotifyingHost (spdApvts->convertTo0to1 (hz));
+        *syncing = false;
+    };
+
+    amtBar->onValueChanged = barToTextAmt;
+    spdBar->onValueChanged = barToTextSpd;
+
+    // Layout helper
+    auto layoutRows = [aw, amtSuffix, spdSuffix, amtUnitLabel, spdUnitLabel, amtBar, spdBar] ()
+    {
+        auto* amtTe = aw->getTextEditor ("amt");
+        auto* spdTe = aw->getTextEditor ("spd");
+        if (amtTe == nullptr || spdTe == nullptr)
+            return;
+
+        const int buttonsTop = getAlertButtonsTop (*aw);
+        const int rowH = amtTe->getHeight();
+        const int barH = juce::jmax (10, rowH / 2);
+        const int barGap = juce::jmax (2, rowH / 6);
+        const int rowTotal = rowH + barGap + barH;
+        const int gap = juce::jmax (4, rowH / 3);
+        const int totalH = rowTotal * 2 + gap;
+        const int startY = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - totalH) / 2);
+
+        const int contentPad = kPromptInlineContentPadPx;
+        const int contentW = aw->getWidth() - contentPad * 2;
+        const auto& font = amtTe->getFont();
+        const int spaceW = juce::jmax (2, stringWidth (font, " "));
+
+        auto placeRow = [&] (juce::TextEditor* te, juce::Label* suffix,
+                             juce::Label* unitLabel, PromptBar* bar, int y)
+        {
+            if (te == nullptr || suffix == nullptr || bar == nullptr)
+                return;
+
+            const int labelW  = stringWidth (suffix->getFont(), suffix->getText()) + 2;
+            const auto txt    = te->getText();
+            const int textW   = juce::jmax (1, stringWidth (font, txt));
+            const int unitW   = (unitLabel != nullptr)
+                              ? stringWidth (font, unitLabel->getText()) + 2 : 0;
+
+            constexpr int kEditorTextPadPx = 12;
+            constexpr int kMinEditorWidthPx = 24;
+            const int editorW = juce::jlimit (kMinEditorWidthPx, 80,
+                                              textW + kEditorTextPadPx * 2);
+
+            const int visualW = labelW + spaceW + textW + unitW;
+            const int centerX = contentPad + contentW / 2;
+            int blockLeft = juce::jlimit (contentPad,
+                                          juce::jmax (contentPad, contentPad + contentW - visualW),
+                                          centerX - visualW / 2);
+
+            suffix->setBounds (blockLeft, y, labelW, rowH);
+
+            int teX = blockLeft + labelW + spaceW - (editorW - textW) / 2;
+            teX = juce::jlimit (contentPad,
+                                juce::jmax (contentPad, contentPad + contentW - editorW), teX);
+            te->setBounds (teX, y, editorW, rowH);
+
+            if (unitLabel != nullptr)
+            {
+                const int textRightX = blockLeft + labelW + spaceW + textW;
+                unitLabel->setBounds (textRightX, y, unitW, rowH);
+            }
+
+            const int barX = kPromptInnerMargin;
+            const int barW = juce::jmax (60, aw->getWidth() - kPromptInnerMargin * 2);
+            bar->setBounds (barX, y + rowH + barGap, barW, barH);
+        };
+
+        placeRow (amtTe, amtSuffix, amtUnitLabel, amtBar, startY);
+        placeRow (spdTe, spdSuffix, spdUnitLabel, spdBar, startY + rowTotal + gap);
+    };
+
+    // Text → bar + APVTS
+    auto textToBar = [syncing, hzToBar] (juce::TextEditor* te, PromptBar* bar,
+                                juce::RangedAudioParameter* param, bool isSpeed)
+    {
+        if (*syncing || te == nullptr || bar == nullptr) return;
+        *syncing = true;
+        const float raw = juce::jlimit (0.0f, 100.0f, te->getText().getFloatValue());
+        if (isSpeed)
+        {
+            const float hz = juce::jlimit (ECHOTRAudioProcessor::kChaosSpdMin,
+                                           ECHOTRAudioProcessor::kChaosSpdMax, raw);
+            bar->value = hzToBar (hz);
+            if (param != nullptr)
+                param->setValueNotifyingHost (param->convertTo0to1 (hz));
+        }
+        else
+        {
+            bar->value = raw * 0.01f;
+            if (param != nullptr)
+                param->setValueNotifyingHost (param->convertTo0to1 (raw));
+        }
+        bar->repaint();
+        *syncing = false;
+    };
+
+    if (auto* amtTe = aw->getTextEditor ("amt"))
+        amtTe->onTextChange = [layoutRows, amtTe, amtBar, textToBar, amtApvts] () mutable
+        {
+            textToBar (amtTe, amtBar, amtApvts, false);
+            layoutRows();
+        };
+    if (auto* spdTe = aw->getTextEditor ("spd"))
+        spdTe->onTextChange = [layoutRows, spdTe, spdBar, textToBar, spdApvts] () mutable
+        {
+            textToBar (spdTe, spdBar, spdApvts, true);
+            layoutRows();
+        };
+
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->setEscapeKeyCancels (true);
+    applyPromptShellSize (*aw);
+    layoutAlertWindowButtons (*aw);
+    layoutRows();
+
+    const auto& kChaosFont = kBoldFont40();
+    preparePromptTextEditor (*aw, "amt", scheme.bg, scheme.text, scheme.fg, kChaosFont, false);
+    preparePromptTextEditor (*aw, "spd", scheme.bg, scheme.text, scheme.fg, kChaosFont, false);
+    layoutRows();
+
+    styleAlertButtons (*aw, lnf);
+
+    juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
+
+    if (safeThis != nullptr)
+    {
+        fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+        {
+            juce::ignoreUnused (a);
+            layoutAlertWindowButtons (a);
+            layoutRows();
+        });
+
+        embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+    }
+    else
+    {
+        aw->centreAroundComponent (this, aw->getWidth(), aw->getHeight());
+        bringPromptWindowToFront (*aw);
+    }
+
+    // Final styling pass
+    {
+        preparePromptTextEditor (*aw, "amt", scheme.bg, scheme.text, scheme.fg, kChaosFont, false);
+        preparePromptTextEditor (*aw, "spd", scheme.bg, scheme.text, scheme.fg, kChaosFont, false);
+        layoutRows();
+
+        if (amtSuffix != nullptr)
+        {
+            if (auto* te = aw->getTextEditor ("amt"))
+            {
+                amtSuffix->setFont (te->getFont());
+                if (amtUnitLabel != nullptr) amtUnitLabel->setFont (te->getFont());
+            }
+        }
+        if (spdSuffix != nullptr)
+        {
+            if (auto* te = aw->getTextEditor ("spd"))
+            {
+                spdSuffix->setFont (te->getFont());
+                if (spdUnitLabel != nullptr) spdUnitLabel->setFont (te->getFont());
+            }
+        }
+
+        layoutRows();
+
+        juce::Component::SafePointer<juce::AlertWindow> safeAw (aw);
+        juce::MessageManager::callAsync ([safeAw]()
+        {
+            if (safeAw == nullptr) return;
+            bringPromptWindowToFront (*safeAw);
+            safeAw->repaint();
+        });
+    }
+
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create (
+            [safeThis, aw, amtBar, spdBar,
+             savedAmt = currentAmt, savedSpd = currentSpd,
+             spdLogMin, spdLogRange] (int result) mutable
+        {
+            std::unique_ptr<juce::AlertWindow> killer (aw);
+
+            if (safeThis != nullptr)
+                safeThis->setPromptOverlayActive (false);
+
+            if (safeThis == nullptr)
+                return;
+
+            if (result != 1)
+            {
+                // CANCEL: revert to original values
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamChaosAmt))
+                    p->setValueNotifyingHost (p->convertTo0to1 (savedAmt));
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamChaosSpd))
+                    p->setValueNotifyingHost (p->convertTo0to1 (savedSpd));
+                return;
+            }
+
+            // OK: update tooltip
+            const float newAmt = juce::jlimit (0.0f, 100.0f, amtBar->value * 100.0f);
+            const float newSpd = juce::jlimit (ECHOTRAudioProcessor::kChaosSpdMin,
+                                                ECHOTRAudioProcessor::kChaosSpdMax,
+                                                std::exp (spdLogMin + juce::jlimit (0.0f, 1.0f, spdBar->value) * spdLogRange));
+            auto tip = juce::String (juce::roundToInt (newAmt)) + "% | "
+                     + juce::String (juce::roundToInt (newSpd)) + " Hz";
+            safeThis->chaosFilterDisplay.setTooltip (tip);
+            safeThis->chaosDelayDisplay.setTooltip (tip);
+        }),
+        false);
+}
+
 void ECHOTRAudioProcessorEditor::openInfoPopup()
 {
     lnf.setScheme (activeScheme);
@@ -4095,6 +4545,22 @@ juce::String ECHOTRAudioProcessorEditor::getMixTextShort() const
     return juce::String (pct) + "%";
 }
 
+juce::String ECHOTRAudioProcessorEditor::getTiltText() const
+{
+    const float db = (float) tiltSlider.getValue();
+    if (std::abs (db) < 0.05f)
+        return "0 dB TILT";
+    return juce::String (db, 1) + " dB TILT";
+}
+
+juce::String ECHOTRAudioProcessorEditor::getTiltTextShort() const
+{
+    const float db = (float) tiltSlider.getValue();
+    if (std::abs (db) < 0.05f)
+        return "0 dB TLT";
+    return juce::String (db, 1) + " dB TLT";
+}
+
 namespace
 {
     constexpr const char* kTimeLegendFull  = "5000 ms TIME";
@@ -4169,10 +4635,10 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
     m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
 
-    // Bars below toggle: 4 IO bars when expanded (IN/OUT/FILTER/MIX), 4 main bars when collapsed.
-    // Toggle bar stays fixed — only bar/gap sizing adapts to the visible count.
-    const int numSliders = ioExpanded ? 4 : 4;
-    const int numGaps    = ioExpanded ? 4 : 4;  // (N-1) inter-slider + 1 toggle-to-first
+// Bars below toggle: 6 IO bars when expanded (IN/OUT/TILT/FILTER/MIX + CHAOS row),
+	// 4 main bars when collapsed.  Toggle bar stays fixed — only bar/gap sizing adapts.
+	const int numSliders = ioExpanded ? 6 : 4;
+	const int numGaps    = ioExpanded ? 6 : 4;  // (N-1) inter-slider + 1 toggle-to-first
 
     m.toggleBarH = 20;  // fixed visual height for click area
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -4204,10 +4670,10 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
     cachedHLayout_ = buildHorizontalLayout (getWidth(), getTargetValueColumnWidth());
     cachedVLayout_ = buildVerticalLayout (getHeight(), kLayoutVerticalBiasPx, ioSectionExpanded_);
 
-    const juce::Slider* sliders[7] = { &timeSlider, &modSlider, &feedbackSlider, &modeSlider,
-                                        &inputSlider, &outputSlider, &mixSlider };
+    const juce::Slider* sliders[8] = { &timeSlider, &modSlider, &feedbackSlider, &modeSlider,
+                                        &inputSlider, &outputSlider, &tiltSlider, &mixSlider };
 
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 8; ++i)
     {
         if (! sliders[i]->isVisible())
         {
@@ -4237,6 +4703,27 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
     {
         cachedFilterValueArea_ = {};
     }
+
+    // Cache tilt slider value area
+    if (tiltSlider.isVisible())
+    {
+        const auto& bb = tiltSlider.getBounds();
+        const int valueX = bb.getRight() + cachedHLayout_.valuePad;
+        const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
+        const int vw   = juce::jmin (cachedHLayout_.valueW, maxW);
+        const int y    = bb.getCentreY() - (kValueAreaHeightPx / 2);
+        cachedTiltValueArea_ = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
+    }
+    else
+    {
+        cachedTiltValueArea_ = {};
+    }
+
+    // Cache chaos checkbox area
+    if (chaosFilterButton.isVisible())
+        cachedChaosArea_ = chaosFilterButton.getBounds().getUnion (chaosDelayButton.getBounds());
+    else
+        cachedChaosArea_ = {};
 
     // Cache toggle bar area
     cachedToggleBarArea_ = { cachedHLayout_.leftX, cachedVLayout_.toggleBarY,
@@ -4387,6 +4874,19 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
     return makeToggleLabelArea (midiButton, getWidth() - kToggleLegendCollisionPadPx, "MIDI", "MD");
 }
 
+juce::Rectangle<int> ECHOTRAudioProcessorEditor::getChaosLabelArea() const
+{
+    if (! chaosFilterButton.isVisible())
+        return {};
+
+    const auto bb = chaosFilterButton.getBounds();
+    const int toggleVisualSide = juce::jlimit (14, juce::jmax (14, bb.getHeight() - 2),
+                                               (int) std::lround (bb.getHeight() * 0.65));
+    const int toggleHitW = toggleVisualSide + 6;
+    const int x = bb.getX() + toggleHitW + 4;
+    return { x, bb.getY(), bb.getRight() - x, bb.getHeight() };
+}
+
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getInfoIconArea() const
 {
     int contentRight = 0;
@@ -4479,6 +4979,34 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         else
             midiButton.setToggleState (! midiButton.getToggleState(), juce::sendNotificationSync);
         return;
+    }
+
+    if (getChaosLabelArea().contains (p) || chaosFilterDisplay.getBounds().contains (p))
+    {
+        if (e.mods.isPopupMenu())
+            openChaosPrompt();
+        else
+            chaosFilterButton.setToggleState (! chaosFilterButton.getToggleState(), juce::sendNotificationSync);
+        return;
+    }
+
+    // CHS D — right-click opens same prompt, left-click toggles
+    if (chaosDelayButton.isVisible())
+    {
+        const auto bb = chaosDelayButton.getBounds();
+        const int toggleVisualSide = juce::jlimit (14, juce::jmax (14, bb.getHeight() - 2),
+                                                   (int) std::lround (bb.getHeight() * 0.65));
+        const int toggleHitW = toggleVisualSide + 6;
+        const int lx = bb.getX() + toggleHitW + 4;
+        const juce::Rectangle<int> dLabelArea { lx, bb.getY(), bb.getRight() - lx, bb.getHeight() };
+        if (dLabelArea.contains (p) || chaosDelayDisplay.getBounds().contains (p))
+        {
+            if (e.mods.isPopupMenu())
+                openChaosPrompt();
+            else
+                chaosDelayButton.setToggleState (! chaosDelayButton.getToggleState(), juce::sendNotificationSync);
+            return;
+        }
     }
 }
 
@@ -4674,26 +5202,50 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (scheme.text);
 
     {
-        const juce::String* fullTexts[7]  = { &cachedTimeTextFull, &cachedModTextFull, &cachedFeedbackTextFull,
-                                               &cachedModeTextFull, &cachedInputTextFull, &cachedOutputTextFull, &cachedMixTextFull };
-        const juce::String* shortTexts[7] = { &cachedTimeTextShort, &cachedModTextShort, &cachedFeedbackTextShort,
-                                               &cachedModeTextShort, &cachedInputTextShort, &cachedOutputTextShort, &cachedMixTextShort };
-        const juce::String* intTexts[7] = {
+        const juce::String* fullTexts[8]  = { &cachedTimeTextFull, &cachedModTextFull, &cachedFeedbackTextFull,
+                                               &cachedModeTextFull, &cachedInputTextFull, &cachedOutputTextFull, &cachedTiltTextFull, &cachedMixTextFull };
+        const juce::String* shortTexts[8] = { &cachedTimeTextShort, &cachedModTextShort, &cachedFeedbackTextShort,
+                                               &cachedModeTextShort, &cachedInputTextShort, &cachedOutputTextShort, &cachedTiltTextShort, &cachedMixTextShort };
+        const juce::String* intTexts[8] = {
             &cachedTimeIntOnly,
             &cachedModIntOnly,
             &cachedFeedbackIntOnly,
             &cachedModeIntOnly,
             &cachedInputIntOnly,
             &cachedOutputIntOnly,
+            &cachedTiltIntOnly,
             &cachedMixIntOnly
         };
 
-        for (int i = 0; i < 7; ++i)
+        for (int i = 0; i < 8; ++i)
             drawLegendForMode (cachedValueAreas_[(size_t) i], *fullTexts[i], *shortTexts[i], *intTexts[i]);
+
+        // Tilt legend (when IO section is expanded)
+        if (tiltSlider.isVisible() && cachedTiltValueArea_.getWidth() > 0)
+            drawLegendForMode (cachedTiltValueArea_, cachedTiltTextFull, cachedTiltTextShort, cachedTiltIntOnly);
 
         // Filter bar legend (when IO section is expanded)
         if (filterBar_.isVisible() && cachedFilterValueArea_.getWidth() > 0)
             drawLegendForMode (cachedFilterValueArea_, cachedFilterTextFull, cachedFilterTextShort, cachedFilterTextShort);
+
+        // Chaos checkbox legends (when IO section is expanded)
+        if (chaosFilterButton.isVisible())
+        {
+            const auto chaosArea = getChaosLabelArea();
+            if (chaosArea.getWidth() > 0)
+                g.drawText ("CHS F", chaosArea, juce::Justification::left, true);
+        }
+        if (chaosDelayButton.isVisible())
+        {
+            const auto bb = chaosDelayButton.getBounds();
+            const int toggleVisualSide = juce::jlimit (14, juce::jmax (14, bb.getHeight() - 2),
+                                                       (int) std::lround (bb.getHeight() * 0.65));
+            const int toggleHitW = toggleVisualSide + 6;
+            const int lx = bb.getX() + toggleHitW + 4;
+            const juce::Rectangle<int> dArea { lx, bb.getY(), bb.getRight() - lx, bb.getHeight() };
+            if (dArea.getWidth() > 0)
+                g.drawText ("CHS D", dArea, juce::Justification::left, true);
+        }
     }
 
     {
@@ -4836,16 +5388,32 @@ void ECHOTRAudioProcessorEditor::resized()
 
     if (ioSectionExpanded_)
     {
-        // Expanded: [toggle bar] → INPUT, OUTPUT, FILTER, MIX; main params hidden
+        // Expanded: [toggle bar] → INPUT, OUTPUT, TILT, FILTER, MIX, CHAOS; main params hidden
         inputSlider.setBounds  (horizontalLayout.leftX, mainTop + 0 * step, horizontalLayout.barW, verticalLayout.barH);
         outputSlider.setBounds (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
-        filterBar_.setBounds   (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
-        mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
+        tiltSlider.setBounds   (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
+        filterBar_.setBounds   (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
+        mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
+
+        // CHAOS checkboxes — CHS F (left-aligned with REVERSE/SYNC), CHS D (right-aligned with ENV FBK/MIDI)
+        const int chaosY = mainTop + 5 * step;
+        const int chaosRightX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
+        const int chaosLeftW  = chaosRightX - horizontalLayout.leftX;
+        const int chaosRightW = horizontalLayout.leftX + horizontalLayout.contentW - chaosRightX;
+        chaosFilterButton.setBounds  (horizontalLayout.leftX, chaosY, chaosLeftW,  verticalLayout.box);
+        chaosFilterDisplay.setBounds (horizontalLayout.leftX, chaosY, chaosLeftW,  verticalLayout.box);
+        chaosDelayButton.setBounds   (chaosRightX,            chaosY, chaosRightW, verticalLayout.box);
+        chaosDelayDisplay.setBounds  (chaosRightX,            chaosY, chaosRightW, verticalLayout.box);
 
         inputSlider.setVisible (true);
         outputSlider.setVisible (true);
+        tiltSlider.setVisible (true);
         filterBar_.setVisible (true);
         mixSlider.setVisible (true);
+        chaosFilterButton.setVisible (true);
+        chaosFilterDisplay.setVisible (true);
+        chaosDelayButton.setVisible (true);
+        chaosDelayDisplay.setVisible (true);
 
         timeSlider.setBounds (0, 0, 0, 0);
         modSlider.setBounds (0, 0, 0, 0);
@@ -4872,13 +5440,19 @@ void ECHOTRAudioProcessorEditor::resized()
 
         inputSlider.setBounds (0, 0, 0, 0);
         outputSlider.setBounds (0, 0, 0, 0);
+        tiltSlider.setBounds (0, 0, 0, 0);
         mixSlider.setBounds (0, 0, 0, 0);
         filterBar_.setBounds (0, 0, 0, 0);
 
         inputSlider.setVisible (false);
         outputSlider.setVisible (false);
+        tiltSlider.setVisible (false);
         mixSlider.setVisible (false);
         filterBar_.setVisible (false);
+        chaosFilterButton.setVisible (false);
+        chaosFilterDisplay.setVisible (false);
+        chaosDelayButton.setVisible (false);
+        chaosDelayDisplay.setVisible (false);
     }
 
     // Button area: 2x2 grid — Row 1: RVS + AUTO FBK, Row 2: SYNC + MIDI
