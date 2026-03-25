@@ -49,10 +49,10 @@ Smoothed per-sample via exponential moving average (80 ms time constant) for gli
 
 When MIDI is active, TIME shows the note name instead of milliseconds. When the note releases, the delay glides back to the manual TIME knob value.
 
-### FEEDBACK (0–100%)
+### FEEDBACK (−100 to +100%)
 
-Signal fed back into the delay line. 100% = infinite sustain / self-oscillation.  
-Smoothstep mapping (3x²−2x³): the slider is linear (50% centred → 50% real), but both extremes have finer resolution — especially near 100% where self-oscillation lives. 90% slider → 97.2% real; 10% → 2.8%.  
+Signal fed back into the delay line. 100% = infinite sustain / self-oscillation. Negative values invert the feedback polarity, producing pitch-inverted repetitions and a different comb-filter character.  
+Sign-preserving smoothstep mapping (3x²−2x³): both extremes have finer resolution — especially near ±100% where self-oscillation lives.  
 Only a DC blocker (5 Hz high-pass) sits in the feedback path — no filtering, no saturation. Maximally transparent.
 
 ### STYLE
@@ -153,15 +153,44 @@ Maps to a multiplier: 2^(value).
 
 The taper is **proportional** to chunk length (1/16th × multiplier) so high MIDI notes (short chunks) are never silenced by a fixed-length taper.
 
+### ENGINE
+
+Delay character mode:
+- **CLEAN** (default): Transparent digital delay. No coloration.
+- **TAPE**: Applies subtle saturation and frequency-dependent rolloff to the feedback path, emulating analog tape delay.
+- **BBD**: Emulates bucket-brigade device delays with band-limited frequency response and mild distortion characteristics.
+
+### TILT (−6 to +6 dB)
+
+Spectral tilt applied to the wet signal. A first-order symmetric shelf filter pivoted at 1 kHz.  
+Positive values boost highs and cut lows; negative values cut highs and boost lows.  
+Useful for darkening or brightening the delay tail without external EQ.
+
+### CHAOS
+
+Micro-variation engine that adds organic randomness to the effect. Two independent chaos targets:
+
+- **CHAOS F (Filter)**: Modulates the HP/LP filter cutoff frequencies when filters are enabled. Creates evolving tonal movement in the delay tail.
+- **CHAOS D (Delay)**: Modulates the delay time. Produces drifting, tape-like pitch wobble.
+
+Each chaos target has its own toggle and shares two global controls:
+
+- **AMOUNT (0–100%)**: Modulation depth — how far from the base value the parameter can drift. Default: 50%.
+- **SPEED (0.01–100 Hz)**: Sample-and-hold rate — how often a new random target is picked. Default: 5 Hz.
+
+Uses exponential smoothing between random targets for glitch-free transitions.
+
 ## Technical Details
 
 ### DSP Architecture
 - **Buffer**: Power-of-2 circular buffer with bitwise AND wrapping.
 - **Interpolation**: 4-point Hermite cubic on all delay reads.
 - **Smoothing**: One-pole EMA per sample for delay time, gain, and mix.
-- **Feedback path**: DC blocker only (one-pole HP at 5 Hz). No saturation, no filtering.
+- **Feedback path**: DC blocker only (one-pole HP at 5 Hz). Sign-preserving bipolar smoothstep mapping. No saturation, no filtering.
 - **Reverse taper**: Precomputed 129-point Tukey (raised-cosine) lookup table with linear interpolation. No per-sample trigonometry.
 - **Wet filter**: Biquad HP/LP on the wet signal. Transposed Direct Form II. Coefficients updated once per block (channel 0), shared across channels.
+- **Tilt EQ**: First-order symmetric shelf at 1 kHz. Coefficients cached with tolerance-based update.
+- **Chaos**: Sample-and-hold random modulation with exponential smoothing. Per-block coefficient precomputation.
 
 ### MIDI Implementation
 - Standard A440 tuning: `frequency = 440 × 2^((note − 69) / 12)`.
@@ -189,6 +218,12 @@ The taper is **proportional** to chunk length (1/16th × multiplier) so high MID
 ## Changelog
 
 ### v1.4
+- Feedback is now bipolar (−100% to +100%). Negative feedback inverts polarity, producing pitch-inverted repetitions and alternate comb-filter character.
+- Added ENGINE selector: CLEAN (default), TAPE, and BBD delay character modes.
+- Added TILT EQ (−6 to +6 dB) — first-order spectral tilt on the wet signal.
+- Added CHAOS engine with two independent targets: CHAOS F (filter modulation) and CHAOS D (delay time modulation). Sample-and-hold with exponential smoothing.
 - Added safety hard-limiter at +48 dBFS on all output paths (forward and reverse). Catches NaN/Inf runaways without ever engaging during normal operation.
 - INPUT slider now displays "−INF" when set to −80 dB or below.
-- Numeric entry popup for percentage sliders: precision reduced from 2 to 1 decimal place.
+- Numeric entry popup for percentage sliders: precision standardized to 1 decimal place.
+- Filter coefficient update now uses tolerance-based comparison, preventing unnecessary recalculation from floating-point noise.
+- Ported `drawToggleButton` with automatic text-shrinking from CAB-TR for consistent toggle rendering.

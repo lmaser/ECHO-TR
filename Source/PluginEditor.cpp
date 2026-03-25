@@ -1914,10 +1914,10 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         }
         else if (&s == &feedbackSlider)
         {
-            minVal = 0.0;
-            maxVal = 100.0;    // user types percent (0-100%)
-            maxDecs = 2;
-            maxLen = 6; // "100.00"
+            minVal = -100.0;
+            maxVal = 100.0;    // user types percent (-100% to 100%)
+            maxDecs = 1;
+            maxLen = 6; // "-100.0"
         }
         else if (&s == &modeSlider)
         {

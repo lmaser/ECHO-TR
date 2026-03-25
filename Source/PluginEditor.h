@@ -69,15 +69,7 @@ private:
             if (owner != nullptr && (this == &owner->feedbackSlider || this == &owner->mixSlider))
             {
                 double percent = v * 100.0;
-                juce::String t (percent, 4);
-                if (t.containsChar ('.'))
-                {
-                    while (t.endsWithChar ('0'))
-                        t = t.dropLastCharacters (1);
-                    if (t.endsWithChar ('.'))
-                        t = t.dropLastCharacters (1);
-                }
-                return t;
+                return juce::String (percent, 1);
             }
 
             // For time_ms (0-2000 ms)
