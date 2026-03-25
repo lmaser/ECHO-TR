@@ -135,6 +135,43 @@ void ECHOTRAudioProcessorEditor::MinimalLNF::drawTickBox (juce::Graphics& g, juc
     }
 }
 
+void ECHOTRAudioProcessorEditor::MinimalLNF::drawToggleButton (
+	juce::Graphics& g, juce::ToggleButton& button,
+	bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown)
+{
+	const auto local = button.getLocalBounds().toFloat().reduced (1.0f);
+	const float side = juce::jlimit (14.0f,
+	                                 juce::jmax (14.0f, local.getHeight() - 2.0f),
+	                                 std::round (local.getHeight() * 0.65f));
+
+	drawTickBox (g, button, 0, 0, 0, 0,
+	             button.getToggleState(), button.isEnabled(),
+	             shouldDrawButtonAsHighlighted, shouldDrawButtonAsDown);
+
+	const float textX = local.getX() + 2.0f + side + 2.0f;
+	auto textArea = button.getLocalBounds().toFloat();
+	textArea.removeFromLeft (textX);
+
+	g.setColour (button.findColour (juce::ToggleButton::textColourId));
+
+	float fontSize = juce::jlimit (12.0f, 40.0f, (float) button.getHeight() - 6.0f);
+
+	const auto text = button.getButtonText();
+	const float availW = textArea.getWidth();
+	if (availW > 0)
+	{
+		juce::Font testFont (juce::FontOptions (fontSize).withStyle ("Bold"));
+		juce::GlyphArrangement ga;
+		ga.addLineOfText (testFont, text, 0.0f, 0.0f);
+		const float neededW = ga.getBoundingBox (0, -1, false).getWidth();
+		if (neededW > availW)
+			fontSize = juce::jmax (8.0f, fontSize * (availW / neededW));
+	}
+
+	g.setFont (juce::Font (juce::FontOptions (fontSize).withStyle ("Bold")));
+	g.drawText (text, textArea, juce::Justification::centredLeft, false);
+}
+
 void ECHOTRAudioProcessorEditor::MinimalLNF::drawButtonBackground (juce::Graphics& g,
                                                                       juce::Button& button,
                                                                       const juce::Colour& backgroundColour,

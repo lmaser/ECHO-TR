@@ -212,6 +212,10 @@ private:
                           bool shouldDrawButtonAsHighlighted,
                           bool shouldDrawButtonAsDown) override;
 
+        void drawToggleButton (juce::Graphics&, juce::ToggleButton&,
+                              bool shouldDrawButtonAsHighlighted,
+                              bool shouldDrawButtonAsDown) override;
+
         void drawButtonBackground (juce::Graphics& g,
                        juce::Button& button,
                        const juce::Colour& backgroundColour,

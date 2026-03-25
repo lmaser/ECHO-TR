@@ -504,7 +504,7 @@ void ECHOTRAudioProcessor::updateFilterCoeffs (bool forceHp, bool forceLp)
 	const int hpSlope = juce::roundToInt (loadAtomicOrDefault (filterHpSlopeParam, (float) kFilterSlopeDefault));
 	const int lpSlope = juce::roundToInt (loadAtomicOrDefault (filterLpSlopeParam, (float) kFilterSlopeDefault));
 
-	if (forceHp || smoothedFilterHpFreq_ != lastCalcHpFreq_ || hpSlope != lastCalcHpSlope_)
+	if (forceHp || hpSlope != lastCalcHpSlope_ || std::abs (smoothedFilterHpFreq_ - lastCalcHpFreq_) > 0.01f)
 	{
 		lastCalcHpFreq_ = smoothedFilterHpFreq_;
 		lastCalcHpSlope_ = hpSlope;
@@ -525,7 +525,7 @@ void ECHOTRAudioProcessor::updateFilterCoeffs (bool forceHp, bool forceLp)
 		}
 	}
 
-	if (forceLp || smoothedFilterLpFreq_ != lastCalcLpFreq_ || lpSlope != lastCalcLpSlope_)
+	if (forceLp || lpSlope != lastCalcLpSlope_ || std::abs (smoothedFilterLpFreq_ - lastCalcLpFreq_) > 0.01f)
 	{
 		lastCalcLpFreq_ = smoothedFilterLpFreq_;
 		lastCalcLpSlope_ = lpSlope;
