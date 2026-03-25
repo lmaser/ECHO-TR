@@ -48,6 +48,8 @@ public:
 	static constexpr const char* kParamChaosD    = "chaos_d";    // delay chaos  (CHS D)
 	static constexpr const char* kParamChaosAmt  = "chaos_amt";
 	static constexpr const char* kParamChaosSpd  = "chaos_spd";
+	static constexpr const char* kParamChaosAmtFilter = "chaos_amt_filter";
+	static constexpr const char* kParamChaosSpdFilter = "chaos_spd_filter";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -308,22 +310,49 @@ private:
 	float lastTiltDb_    = 0.0f;
 	float tiltSmoothSc_  = 0.0f;  // cached EMA coeff (depends only on sampleRate)
 
-	// Chaos S&H shared state
+	// ── Chaos state (3 independent S&H engines) ──
 	bool  chaosFilterEnabled_    = false;
 	bool  chaosDelayEnabled_     = false;
-	float chaosAmt_              = 0.0f;
-	float chaosShPeriod_         = 8820.0f;  // target (set per-block)
-	float smoothedChaosShPeriod2_ = 8820.0f; // per-sample smoothed
-	float chaosSmoothCoeff_      = 0.999f;
-	float chaosFilterMaxOct_     = 0.0f;     // target ±octaves for filter mod
-	float chaosDelayMaxSamples_  = 0.0f;     // target micro-delay depth
-	float smoothedChaosFilterMaxOct_    = 0.0f;   // per-sample smoothed
-	float smoothedChaosDelayMaxSamples_ = 0.0f;   // per-sample smoothed
-	float chaosParamSmoothCoeff_       = 0.999f;  // per-sample EMA coeff (~5ms tau)
-	float chaosPhase_            = 0.0f;
-	float chaosTarget_           = 0.0f;
-	float chaosSmoothed_         = 0.0f;
-	juce::Random chaosRng_;
+
+	// CHS D parameters
+	float chaosAmtD_                    = 0.0f;
+	float chaosShPeriodD_               = 8820.0f;
+	float smoothedChaosShPeriodD_       = 8820.0f;
+	float chaosDelayMaxSamples_         = 0.0f;
+	float smoothedChaosDelayMaxSamples_ = 0.0f;
+	float chaosGainMaxDb_               = 0.0f;
+	float smoothedChaosGainMaxDb_       = 0.0f;
+
+	// CHS D S&H: delay (30ms EMA)
+	float chaosDPhase_       = 0.0f;
+	float chaosDTarget_      = 0.0f;
+	float chaosDSmoothed_    = 0.0f;
+	float chaosDSmoothCoeff_ = 0.999f;
+	juce::Random chaosDRng_;
+
+	// CHS D S&H: gain (15ms EMA, decorrelated)
+	float chaosGPhase_       = 0.0f;
+	float chaosGTarget_      = 0.0f;
+	float chaosGSmoothed_    = 0.0f;
+	float chaosGSmoothCoeff_ = 0.999f;
+	juce::Random chaosGRng_;
+
+	// CHS F parameters
+	float chaosAmtF_                  = 0.0f;
+	float chaosShPeriodF_             = 8820.0f;
+	float smoothedChaosShPeriodF_     = 8820.0f;
+	float chaosFilterMaxOct_          = 0.0f;
+	float smoothedChaosFilterMaxOct_  = 0.0f;
+
+	// CHS F S&H: filter (60ms EMA)
+	float chaosFPhase_       = 0.0f;
+	float chaosFTarget_      = 0.0f;
+	float chaosFSmoothed_    = 0.0f;
+	float chaosFSmoothCoeff_ = 0.999f;
+	juce::Random chaosFRng_;
+
+	// Chaos per-sample param smoothing
+	float chaosParamSmoothCoeff_ = 0.999f;
 
 	// Chaos micro-delay buffer (post-wet, CAB-TR style)
 	static constexpr int kChaosDelayBufLen = 1024;
@@ -349,25 +378,49 @@ private:
 	float engineDriftSmoothed_ = 1.0f;     // EMA-smoothed gain multiplier
 	float engineDriftSmoothCoeff_ = 0.9995f; // EMA coeff (~10ms)
 
-	// Per-sample S&H step (shared between filter and delay chaos)
-	inline void advanceChaosShStep() noexcept
+	// Per-sample S&H step for CHS D (delay + gain, 2 independent S&H engines)
+	inline void advanceChaosD() noexcept
 	{
-		// Per-sample smoothing of chaos depth and S&H rate
-		smoothedChaosFilterMaxOct_    += (chaosFilterMaxOct_    - smoothedChaosFilterMaxOct_)    * (1.0f - chaosParamSmoothCoeff_);
 		smoothedChaosDelayMaxSamples_ += (chaosDelayMaxSamples_ - smoothedChaosDelayMaxSamples_) * (1.0f - chaosParamSmoothCoeff_);
-		smoothedChaosShPeriod2_       += (chaosShPeriod_        - smoothedChaosShPeriod2_)       * (1.0f - chaosParamSmoothCoeff_);
+		smoothedChaosGainMaxDb_       += (chaosGainMaxDb_       - smoothedChaosGainMaxDb_)       * (1.0f - chaosParamSmoothCoeff_);
+		smoothedChaosShPeriodD_       += (chaosShPeriodD_       - smoothedChaosShPeriodD_)       * (1.0f - chaosParamSmoothCoeff_);
 
-		chaosPhase_ += 1.0f;
-		if (chaosPhase_ >= smoothedChaosShPeriod2_)
+		chaosDPhase_ += 1.0f;
+		if (chaosDPhase_ >= smoothedChaosShPeriodD_)
 		{
-			chaosPhase_ -= smoothedChaosShPeriod2_;
-			chaosTarget_ = chaosRng_.nextFloat() * 2.0f - 1.0f;
+			chaosDPhase_ -= smoothedChaosShPeriodD_;
+			chaosDTarget_ = chaosDRng_.nextFloat() * 2.0f - 1.0f;
 		}
-		chaosSmoothed_ = chaosSmoothCoeff_ * chaosSmoothed_
-		               + (1.0f - chaosSmoothCoeff_) * chaosTarget_;
+		chaosDSmoothed_ = chaosDSmoothCoeff_ * chaosDSmoothed_
+		                + (1.0f - chaosDSmoothCoeff_) * chaosDTarget_;
+
+		chaosGPhase_ += 1.0f;
+		if (chaosGPhase_ >= smoothedChaosShPeriodD_)
+		{
+			chaosGPhase_ -= smoothedChaosShPeriodD_;
+			chaosGTarget_ = chaosGRng_.nextFloat() * 2.0f - 1.0f;
+		}
+		chaosGSmoothed_ = chaosGSmoothCoeff_ * chaosGSmoothed_
+		                + (1.0f - chaosGSmoothCoeff_) * chaosGTarget_;
 	}
 
-	// Post-wet micro-delay modulation (CAB-TR style, ±5ms max)
+	// Per-sample S&H step for CHS F (filter, 1 independent S&H engine)
+	inline void advanceChaosF() noexcept
+	{
+		smoothedChaosFilterMaxOct_  += (chaosFilterMaxOct_  - smoothedChaosFilterMaxOct_)  * (1.0f - chaosParamSmoothCoeff_);
+		smoothedChaosShPeriodF_     += (chaosShPeriodF_     - smoothedChaosShPeriodF_)     * (1.0f - chaosParamSmoothCoeff_);
+
+		chaosFPhase_ += 1.0f;
+		if (chaosFPhase_ >= smoothedChaosShPeriodF_)
+		{
+			chaosFPhase_ -= smoothedChaosShPeriodF_;
+			chaosFTarget_ = chaosFRng_.nextFloat() * 2.0f - 1.0f;
+		}
+		chaosFSmoothed_ = chaosFSmoothCoeff_ * chaosFSmoothed_
+		                + (1.0f - chaosFSmoothCoeff_) * chaosFTarget_;
+	}
+
+	// Post-wet micro-delay + gain modulation (CAB-TR style, ±5ms max, ±1dB gain)
 	inline void applyChaosDelay (float& wetL, float& wetR) noexcept
 	{
 		const int wp = chaosDelayWritePos_;
@@ -376,7 +429,7 @@ private:
 
 		const float centerDelay = smoothedChaosDelayMaxSamples_;
 		const float delaySamp   = juce::jlimit (0.0f, (float)(kChaosDelayBufLen - 2),
-		                                        centerDelay + chaosSmoothed_ * smoothedChaosDelayMaxSamples_);
+		                                        centerDelay + chaosDSmoothed_ * smoothedChaosDelayMaxSamples_);
 
 		const float readPos = (float) wp - delaySamp;
 		const int iPos = (int) std::floor (readPos);
@@ -398,6 +451,12 @@ private:
 		}
 
 		chaosDelayWritePos_ = (wp + 1) & mask;
+
+		// Gain modulation (±1dB from decorrelated gain S&H)
+		const float gainDb  = chaosGSmoothed_ * smoothedChaosGainMaxDb_;
+		const float gainLin = std::pow (10.0f, gainDb * 0.05f);
+		wetL *= gainLin;
+		wetR *= gainLin;
 	}
 
 	// Engine feedback-loop processing (Airwindows-inspired saturation + LP)
@@ -412,7 +471,7 @@ private:
 			engineDriftPhase_ -= engineDriftPeriod_;
 			// ±0.3 dB ≈ multiplier range [0.966, 1.035]
 			// nextFloat() → [0,1] → map to [0.966, 1.035]
-			engineDriftTarget_ = 0.966f + chaosRng_.nextFloat() * 0.069f;
+			engineDriftTarget_ = 0.966f + chaosDRng_.nextFloat() * 0.069f;
 		}
 		engineDriftSmoothed_ = engineDriftSmoothCoeff_ * engineDriftSmoothed_
 		                     + (1.0f - engineDriftSmoothCoeff_) * engineDriftTarget_;
@@ -517,6 +576,8 @@ private:
 	std::atomic<float>* chaosDelayParam  = nullptr;
 	std::atomic<float>* chaosAmtParam    = nullptr;
 	std::atomic<float>* chaosSpdParam    = nullptr;
+	std::atomic<float>* chaosAmtFilterParam = nullptr;
+	std::atomic<float>* chaosSpdFilterParam = nullptr;
 	std::atomic<float>* engineParam     = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;

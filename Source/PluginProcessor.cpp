@@ -232,6 +232,8 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	chaosDelayParam= apvts.getRawParameterValue (kParamChaosD);
 	chaosAmtParam  = apvts.getRawParameterValue (kParamChaosAmt);
 	chaosSpdParam  = apvts.getRawParameterValue (kParamChaosSpd);
+	chaosAmtFilterParam = apvts.getRawParameterValue (kParamChaosAmtFilter);
+	chaosSpdFilterParam = apvts.getRawParameterValue (kParamChaosSpdFilter);
 	engineParam    = apvts.getRawParameterValue (kParamEngine);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
@@ -430,10 +432,15 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	// Reset chaos state
 	chaosFilterEnabled_ = false;
 	chaosDelayEnabled_  = false;
-	chaosAmt_ = 0.0f;
-	chaosPhase_ = 0.0f;
-	chaosTarget_ = 0.0f;
-	chaosSmoothed_ = 0.0f;
+	chaosAmtD_ = 0.0f; chaosAmtF_ = 0.0f;
+	chaosShPeriodD_ = 8820.0f; smoothedChaosShPeriodD_ = 8820.0f;
+	chaosShPeriodF_ = 8820.0f; smoothedChaosShPeriodF_ = 8820.0f;
+	chaosDelayMaxSamples_ = 0.0f; smoothedChaosDelayMaxSamples_ = 0.0f;
+	chaosGainMaxDb_ = 0.0f; smoothedChaosGainMaxDb_ = 0.0f;
+	chaosFilterMaxOct_ = 0.0f; smoothedChaosFilterMaxOct_ = 0.0f;
+	chaosDPhase_ = 0.0f; chaosDTarget_ = 0.0f; chaosDSmoothed_ = 0.0f;
+	chaosGPhase_ = 0.0f; chaosGTarget_ = 0.0f; chaosGSmoothed_ = 0.0f;
+	chaosFPhase_ = 0.0f; chaosFTarget_ = 0.0f; chaosFSmoothed_ = 0.0f;
 	std::memset (chaosDelayBuf_, 0, sizeof (chaosDelayBuf_));
 	chaosDelayWritePos_ = 0;
 
@@ -546,9 +553,9 @@ void ECHOTRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 	float lpTarget = wetFilterTargetLpFreq_;
 
 	// ── CHAOS filter modulation (S&H already advanced in delay loop) ──
-	if (chaosFilterEnabled_ && chaosAmt_ > 0.01f)
+	if (chaosFilterEnabled_ && chaosAmtF_ > 0.01f)
 	{
-		const float octaveShift = chaosSmoothed_ * smoothedChaosFilterMaxOct_;
+		const float octaveShift = chaosFSmoothed_ * smoothedChaosFilterMaxOct_;
 		const float freqMult = std::exp2 (octaveShift);
 		// When HP/LP knobs are off, chaos sweeps the full 20–20k range
 		const float hpBase = wetFilterHpOn_ ? hpTarget : kFilterFreqMin;
@@ -569,7 +576,7 @@ void ECHOTRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 	}
 
 	// Apply HP cascade (also when chaos modulates frequency)
-	const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmt_ > 0.01f;
+	const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmtF_ > 0.01f;
 	if (wetFilterHpOn_ || chaosFilterActive)
 	{
 		for (int s = 0; s < wetFilterNumSectionsHp_; ++s)
@@ -659,7 +666,8 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
-		if (chaosFilterEnabled_ || chaosDelayEnabled_) advanceChaosShStep();
+		if (chaosDelayEnabled_) advanceChaosD();
+		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
@@ -741,7 +749,8 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
-		if (chaosFilterEnabled_ || chaosDelayEnabled_) advanceChaosShStep();
+		if (chaosDelayEnabled_) advanceChaosD();
+		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
@@ -803,7 +812,8 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
-		if (chaosFilterEnabled_ || chaosDelayEnabled_) advanceChaosShStep();
+		if (chaosDelayEnabled_) advanceChaosD();
+		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
@@ -874,7 +884,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 	{
 		smoothedDelaySamples  = smoothedDelaySamples  * smoothCoeff + targetDelayL * (1.0f - smoothCoeff);
 		smoothedDelaySamplesR = smoothedDelaySamplesR * smoothCoeff + targetDelayR * (1.0f - smoothCoeff);
-		if (chaosFilterEnabled_ || chaosDelayEnabled_) advanceChaosShStep();
+		if (chaosDelayEnabled_) advanceChaosD();
+		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
@@ -954,7 +965,8 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 	{
 		smoothedDelaySamples  = smoothedDelaySamples  * smoothCoeff + targetDelayL * (1.0f - smoothCoeff);
 		smoothedDelaySamplesR = smoothedDelaySamplesR * smoothCoeff + targetDelayR * (1.0f - smoothCoeff);
-		if (chaosFilterEnabled_ || chaosDelayEnabled_) advanceChaosShStep();
+		if (chaosDelayEnabled_) advanceChaosD();
+		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
@@ -1057,7 +1069,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 	{
 		// EMA smoothing — always tracks the user's nominal delay T
 		revSmoothedDelay   = revSmoothedDelay * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
-		if (chaosFilterEnabled_ || chaosDelayEnabled_) advanceChaosShStep();
+		if (chaosDelayEnabled_) advanceChaosD();
+		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
@@ -1523,7 +1536,9 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (std::abs (engineLpStateR_) < kDnr) engineLpStateR_ = 0.0f;
 		if (std::abs (tiltState_[0])   < kDnr) tiltState_[0]   = 0.0f;
 		if (std::abs (tiltState_[1])   < kDnr) tiltState_[1]   = 0.0f;
-		if (std::abs (chaosSmoothed_)  < kDnr) chaosSmoothed_  = 0.0f;
+		if (std::abs (chaosDSmoothed_) < kDnr) chaosDSmoothed_ = 0.0f;
+		if (std::abs (chaosGSmoothed_) < kDnr) chaosGSmoothed_ = 0.0f;
+		if (std::abs (chaosFSmoothed_) < kDnr) chaosFSmoothed_ = 0.0f;
 	}
 
 	// ── Load wet-signal filter targets for process*Delay functions ──
@@ -1547,31 +1562,51 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const bool anyChaos = chaosFilterEnabled_ || chaosDelayEnabled_;
 	if (anyChaos)
 	{
-		const float rawChaosAmt = loadAtomicOrDefault (chaosAmtParam, kChaosAmtDefault);
-		const float rawChaosSpd = loadAtomicOrDefault (chaosSpdParam, kChaosSpdDefault);
+		if (chaosDelayEnabled_)
+		{
+			const float rawAmtD = loadAtomicOrDefault (chaosAmtParam, kChaosAmtDefault);
+			const float rawSpdD = loadAtomicOrDefault (chaosSpdParam, kChaosSpdDefault);
+			chaosAmtD_       = rawAmtD;
+			chaosShPeriodD_  = (float) currentSampleRate / rawSpdD;
+			const float amtNormD = rawAmtD * 0.01f;
+			chaosDelayMaxSamples_ = amtNormD * 0.005f * (float) currentSampleRate;  // ±5ms at 100%
+			chaosGainMaxDb_       = amtNormD * 1.0f;                                // ±1dB at 100%
+			constexpr float kChaosDTau = 0.030f;
+			chaosDSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosDTau));
+			constexpr float kChaosGTau = 0.015f;
+			chaosGSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosGTau));
+		}
+		else
+		{
+			chaosDelayMaxSamples_ = 0.0f;
+			chaosGainMaxDb_ = 0.0f;
+		}
 
-		chaosAmt_      = rawChaosAmt;
-		chaosShPeriod_ = (float) currentSampleRate / rawChaosSpd;
+		if (chaosFilterEnabled_)
+		{
+			const float rawAmtF = loadAtomicOrDefault (chaosAmtFilterParam, kChaosAmtDefault);
+			const float rawSpdF = loadAtomicOrDefault (chaosSpdFilterParam, kChaosSpdDefault);
+			chaosAmtF_       = rawAmtF;
+			chaosShPeriodF_  = (float) currentSampleRate / rawSpdF;
+			const float amtNormF = rawAmtF * 0.01f;
+			chaosFilterMaxOct_ = amtNormF * 2.0f;  // ±2 oct at 100%
+			constexpr float kChaosFTau = 0.060f;
+			chaosFSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosFTau));
+		}
+		else
+		{
+			chaosFilterMaxOct_ = 0.0f;
+		}
 
-		const float amountNorm = rawChaosAmt * 0.01f;
-		chaosFilterMaxOct_     = chaosFilterEnabled_ ? amountNorm * 2.0f : 0.0f;  // ±2 oct at 100%
-		chaosDelayMaxSamples_  = chaosDelayEnabled_
-		    ? amountNorm * 0.005f * (float) currentSampleRate   // ±5ms at 100%
-		    : 0.0f;
-
-		// Fixed EMA τ = 60ms (speed-independent, smooth tape-like sweeps)
-		constexpr float kChaosTau = 0.060f;
-		chaosSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosTau));
-
-		// Per-sample EMA τ = 10ms for chaos depth / rate parameter transitions
 		constexpr float kChaosParamTau = 0.010f;
 		chaosParamSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosParamTau));
 	}
 	else
 	{
-		chaosAmt_ = 0.0f;
-		chaosFilterMaxOct_    = 0.0f;
+		chaosAmtD_ = 0.0f; chaosAmtF_ = 0.0f;
 		chaosDelayMaxSamples_ = 0.0f;
+		chaosGainMaxDb_ = 0.0f;
+		chaosFilterMaxOct_ = 0.0f;
 	}
 
 	// ── Load engine mode and precompute feedback-loop LP coefficient ──
@@ -1601,6 +1636,15 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		processReverseDelay (buffer, numSamples, numChannels, delaySamples,
 		                     targetFeedback, inputGain, outputGain, mixValue, revDelaySmoothCoeff,
 		                     smoothMult, mode);
+		// Safety hard-limiter (same as main path)
+		{
+			constexpr float kSafetyLimit = 251.19f;
+			for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+			{
+				auto* data = buffer.getWritePointer (ch);
+				juce::FloatVectorOperations::clip (data, data, -kSafetyLimit, kSafetyLimit, numSamples);
+			}
+		}
 		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 		return;
 	}
@@ -1629,6 +1673,17 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		processStereoDelay (buffer, numSamples, numChannels, delaySamples,
 		                    targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+	}
+
+	// Safety hard-limiter: prevent catastrophic output only (NaN/Inf runaway).
+	// Set very high (+48 dBFS) so it never engages during normal operation.
+	{
+		constexpr float kSafetyLimit = 251.19f; // +48 dBFS — only catches runaways
+		for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+		{
+			auto* data = buffer.getWritePointer (ch);
+			juce::FloatVectorOperations::clip (data, data, -kSafetyLimit, kSafetyLimit, numSamples);
+		}
 	}
 
 	PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
@@ -1809,6 +1864,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		juce::NormalisableRange<float> (kChaosAmtMin, kChaosAmtMax, 0.1f), kChaosAmtDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamChaosSpd, "Chaos Speed",
+		juce::NormalisableRange<float> (kChaosSpdMin, kChaosSpdMax, 0.01f, 0.3f), kChaosSpdDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamChaosAmtFilter, "Chaos Filter Amount",
+		juce::NormalisableRange<float> (kChaosAmtMin, kChaosAmtMax, 0.1f), kChaosAmtDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamChaosSpdFilter, "Chaos Filter Speed",
 		juce::NormalisableRange<float> (kChaosSpdMin, kChaosSpdMax, 0.01f, 0.3f), kChaosSpdDefault));
 
 	// Engine (feedback-loop character: CLEAN / ANALOG / BBD)

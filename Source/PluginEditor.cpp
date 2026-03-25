@@ -595,12 +595,12 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     addAndMakeVisible (chaosFilterButton);
     chaosFilterButton.setVisible (false);
     {
-        const float savedAmt = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosAmt)->load();
-        const float savedSpd = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosSpd)->load();
+        const float savedAmtF = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosAmtFilter)->load();
+        const float savedSpdF = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosSpdFilter)->load();
         chaosFilterDisplay.setText ("", juce::dontSendNotification);
         chaosFilterDisplay.setInterceptsMouseClicks (true, false);
         chaosFilterDisplay.addMouseListener (this, false);
-        chaosFilterDisplay.setTooltip (juce::String (juce::roundToInt (savedAmt)) + "% | " + juce::String (juce::roundToInt (savedSpd)) + " Hz");
+        chaosFilterDisplay.setTooltip (juce::String (juce::roundToInt (savedAmtF)) + "% | " + juce::String (juce::roundToInt (savedSpdF)) + " Hz");
         chaosFilterDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         chaosFilterDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         chaosFilterDisplay.setOpaque (false);
@@ -613,10 +613,12 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     addAndMakeVisible (chaosDelayButton);
     chaosDelayButton.setVisible (false);
     {
+        const float savedAmtD = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosAmt)->load();
+        const float savedSpdD = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosSpd)->load();
         chaosDelayDisplay.setText ("", juce::dontSendNotification);
         chaosDelayDisplay.setInterceptsMouseClicks (true, false);
         chaosDelayDisplay.addMouseListener (this, false);
-        chaosDelayDisplay.setTooltip ("Delay chaos");
+        chaosDelayDisplay.setTooltip (juce::String (juce::roundToInt (savedAmtD)) + "% | " + juce::String (juce::roundToInt (savedSpdD)) + " Hz");
         chaosDelayDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         chaosDelayDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         chaosDelayDisplay.setOpaque (false);
@@ -1912,8 +1914,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         {
             minVal = 0.0;
             maxVal = 100.0;    // user types percent
-            maxDecs = 2;
-            maxLen = 6; // "100.00"
+            maxDecs = 1;
+            maxLen = 5; // "100.0"
         }
 
         // Use special filter for time slider in sync mode
@@ -3534,14 +3536,15 @@ void ECHOTRAudioProcessorEditor::openReverseSmoothPrompt()
 //==============================================================================
 //  CHAOS prompt (AMOUNT + SPEED)
 //==============================================================================
-void ECHOTRAudioProcessorEditor::openChaosPrompt()
+void ECHOTRAudioProcessorEditor::openChaosConfigPrompt (const char* amtParamId, const char* spdParamId, const juce::String& title)
 {
+    juce::ignoreUnused (title);
     using namespace TR;
     lnf.setScheme (activeScheme);
     const auto scheme = activeScheme;
 
-    const float currentAmt = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosAmt)->load();
-    const float currentSpd = audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamChaosSpd)->load();
+    const float currentAmt = audioProcessor.apvts.getRawParameterValue (amtParamId)->load();
+    const float currentSpd = audioProcessor.apvts.getRawParameterValue (spdParamId)->load();
 
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
     aw->setLookAndFeel (&lnf);
@@ -3685,8 +3688,8 @@ void ECHOTRAudioProcessorEditor::openChaosPrompt()
 
     auto syncing = std::make_shared<bool> (false);
 
-    auto* amtApvts = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamChaosAmt);
-    auto* spdApvts = audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamChaosSpd);
+    auto* amtApvts = audioProcessor.apvts.getParameter (amtParamId);
+    auto* spdApvts = audioProcessor.apvts.getParameter (spdParamId);
 
     // Bar → text + APVTS
     auto barToTextAmt = [aw, syncing, amtApvts] (float v01)
@@ -3898,7 +3901,8 @@ void ECHOTRAudioProcessorEditor::openChaosPrompt()
         juce::ModalCallbackFunction::create (
             [safeThis, aw, amtBar, spdBar,
              savedAmt = currentAmt, savedSpd = currentSpd,
-             spdLogMin, spdLogRange] (int result) mutable
+             spdLogMin, spdLogRange,
+             amtParamId, spdParamId] (int result) mutable
         {
             std::unique_ptr<juce::AlertWindow> killer (aw);
 
@@ -3911,9 +3915,9 @@ void ECHOTRAudioProcessorEditor::openChaosPrompt()
             if (result != 1)
             {
                 // CANCEL: revert to original values
-                if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamChaosAmt))
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (amtParamId))
                     p->setValueNotifyingHost (p->convertTo0to1 (savedAmt));
-                if (auto* p = safeThis->audioProcessor.apvts.getParameter (ECHOTRAudioProcessor::kParamChaosSpd))
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (spdParamId))
                     p->setValueNotifyingHost (p->convertTo0to1 (savedSpd));
                 return;
             }
@@ -3929,6 +3933,20 @@ void ECHOTRAudioProcessorEditor::openChaosPrompt()
             safeThis->chaosDelayDisplay.setTooltip (tip);
         }),
         false);
+}
+
+void ECHOTRAudioProcessorEditor::openChaosFilterPrompt()
+{
+    openChaosConfigPrompt (ECHOTRAudioProcessor::kParamChaosAmtFilter,
+                           ECHOTRAudioProcessor::kParamChaosSpdFilter,
+                           "CHS F");
+}
+
+void ECHOTRAudioProcessorEditor::openChaosDelayPrompt()
+{
+    openChaosConfigPrompt (ECHOTRAudioProcessor::kParamChaosAmt,
+                           ECHOTRAudioProcessor::kParamChaosSpd,
+                           "CHS D");
 }
 
 void ECHOTRAudioProcessorEditor::openInfoPopup()
@@ -5025,7 +5043,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     if (getChaosLabelArea().contains (p) || chaosFilterDisplay.getBounds().contains (p))
     {
         if (e.mods.isPopupMenu())
-            openChaosPrompt();
+            openChaosFilterPrompt();
         else
             chaosFilterButton.setToggleState (! chaosFilterButton.getToggleState(), juce::sendNotificationSync);
         return;
@@ -5043,7 +5061,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         if (dLabelArea.contains (p) || chaosDelayDisplay.getBounds().contains (p))
         {
             if (e.mods.isPopupMenu())
-                openChaosPrompt();
+                openChaosDelayPrompt();
             else
                 chaosDelayButton.setToggleState (! chaosDelayButton.getToggleState(), juce::sendNotificationSync);
             return;

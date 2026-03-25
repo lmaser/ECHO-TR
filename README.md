@@ -1,4 +1,4 @@
-# ECHO-TR v1.3
+# ECHO-TR v1.4
 
 <br/><br/>
 
@@ -185,3 +185,10 @@ The taper is **proportional** to chunk length (1/16th × multiplier) so high MID
 - JUCE Framework, C++17, VST3 format.
 - Visual Studio 2022 (MSBuild, x64 Release).
 - Dependencies: JUCE modules only (no third-party libraries).
+
+## Changelog
+
+### v1.4
+- Added safety hard-limiter at +48 dBFS on all output paths (forward and reverse). Catches NaN/Inf runaways without ever engaging during normal operation.
+- INPUT slider now displays "−INF" when set to −80 dB or below.
+- Numeric entry popup for percentage sliders: precision reduced from 2 to 1 decimal place.

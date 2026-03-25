@@ -33,7 +33,9 @@ private:
     void openAutoFbkPrompt();
     void openReverseSmoothPrompt();
     void openFilterPrompt();
-    void openChaosPrompt();
+    void openChaosConfigPrompt (const char* amtParamId, const char* spdParamId, const juce::String& title);
+    void openChaosFilterPrompt();
+    void openChaosDelayPrompt();
     void openInfoPopup();
     void openGraphicsPopup();
     void setPromptOverlayActive (bool shouldBeActive);
@@ -88,6 +90,8 @@ private:
             // For input/output gain
             if (owner != nullptr && (this == &owner->inputSlider || this == &owner->outputSlider))
             {
+                if (this == &owner->inputSlider && v <= -80.0)
+                    return "-INF";
                 const double rounded1 = std::round (v * 10.0) / 10.0;
                 return juce::String (rounded1, 1);
             }
