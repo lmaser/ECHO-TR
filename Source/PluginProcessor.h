@@ -71,7 +71,7 @@ public:
 
 	static constexpr float kFeedbackMin = -1.0f;
 	static constexpr float kFeedbackMax =  1.0f;
-	static constexpr float kFeedbackDefault = 0.5f;
+	static constexpr float kFeedbackDefault = 0.0f;
 
 	static constexpr int kModeMin = 0;
 	static constexpr int kModeMax = 4; // 0=MONO, 1=STEREO, 2=WIDE, 3=DUAL, 4=PING-PONG ("Style" in UI)
@@ -362,21 +362,23 @@ private:
 	// Engine feedback-loop processing state
 	int   engineMode_ = 0;            // 0=CLEAN, 1=ANALOG, 2=BBD
 	int   prevEngineMode_ = 0;        // previous mode for LP state reset on switch
-	float engineLpStateL_ = 0.0f;     // 1-pole LP filter state (left)
-	float engineLpStateR_ = 0.0f;     // 1-pole LP filter state (right)
+	float engineLp1StateL_ = 0.0f;    // 1st-pole LP filter state (left)
+	float engineLp1StateR_ = 0.0f;    // 1st-pole LP filter state (right)
+	float engineLp2StateL_ = 0.0f;    // 2nd-pole LP filter state (left)
+	float engineLp2StateR_ = 0.0f;    // 2nd-pole LP filter state (right)
 	float engineLpCoeff_ = 0.0f;      // 1-pole LP coeff (precomputed per block)
 
 	// Per-sample feedback EMA smoothing
 	float smoothedFeedback_ = 0.0f;
 
-	// Engine micro-oscillation (subtle analog drift)
-	// Slow S&H (~10 Hz) modulating gain ±0.3 dB, simulates real-device
-	// component tolerance drift and power supply ripple. Near-zero CPU.
+	// Engine micro-oscillation — mode-dependent analog drift
+	// ANALOG: Slow wow (~2 Hz) modulating gain ±0.5 dB via sine LFO
+	// BBD:    Faster random clock jitter (~15 Hz S&H) ±0.2 dB
 	float engineDriftPhase_    = 0.0f;
-	float engineDriftPeriod_   = 4800.0f;  // samples per S&H step (~10 Hz @ 48kHz)
-	float engineDriftTarget_   = 1.0f;     // raw S&H target (gain multiplier)
+	float engineDriftPeriod_   = 4800.0f;  // samples per cycle/step
+	float engineDriftTarget_   = 1.0f;     // raw target (gain multiplier)
 	float engineDriftSmoothed_ = 1.0f;     // EMA-smoothed gain multiplier
-	float engineDriftSmoothCoeff_ = 0.9995f; // EMA coeff (~10ms)
+	float engineDriftSmoothCoeff_ = 0.9995f; // EMA coeff
 
 	// Per-sample S&H step for CHS D (delay + gain, 2 independent S&H engines)
 	inline void advanceChaosD() noexcept
@@ -459,71 +461,91 @@ private:
 		wetR *= gainLin;
 	}
 
-	// Engine feedback-loop processing (Airwindows-inspired saturation + LP)
+	// Engine feedback-loop processing
+	// ANALOG: Rational tanh saturation (Padé 3,3) + 2-pole LP @ 5 kHz + slow wow
+	// BBD:    Simplified compander → sin() waveshaper → expander + 2-pole LP @ 3 kHz + clock jitter
 	inline void applyEngineToFeedback (float& fbkL, float& fbkR) noexcept
 	{
 		if (engineMode_ == 0) return; // CLEAN: bypass
 
-		// ── Micro-drift: subtle gain oscillation simulating analog instability ──
+		// ── Mode-dependent drift ──
 		engineDriftPhase_ += 1.0f;
-		if (engineDriftPhase_ >= engineDriftPeriod_)
+		if (engineMode_ == 1)
 		{
-			engineDriftPhase_ -= engineDriftPeriod_;
-			// ±0.3 dB ≈ multiplier range [0.966, 1.035]
-			// nextFloat() → [0,1] → map to [0.966, 1.035]
-			engineDriftTarget_ = 0.966f + chaosDRng_.nextFloat() * 0.069f;
+			// ANALOG wow: smooth sine LFO at ~2 Hz, ±0.5 dB [0.944, 1.059]
+			if (engineDriftPhase_ >= engineDriftPeriod_)
+				engineDriftPhase_ -= engineDriftPeriod_;
+			const float phase = engineDriftPhase_ / engineDriftPeriod_; // [0,1)
+			// Fast sine: Bhaskara approximation, max error ~0.2%
+			const float x = phase * 2.0f - 1.0f; // [-1, 1]
+			const float x2 = x * x;
+			const float sineApprox = x * (1.0f - x2 * (0.16666667f - x2 * 0.00833333f));
+			engineDriftSmoothed_ = 1.0f + sineApprox * 0.057f; // ±0.5 dB
 		}
-		engineDriftSmoothed_ = engineDriftSmoothCoeff_ * engineDriftSmoothed_
-		                     + (1.0f - engineDriftSmoothCoeff_) * engineDriftTarget_;
+		else
+		{
+			// BBD clock jitter: S&H at ~15 Hz, ±0.2 dB [0.977, 1.023]
+			if (engineDriftPhase_ >= engineDriftPeriod_)
+			{
+				engineDriftPhase_ -= engineDriftPeriod_;
+				engineDriftTarget_ = 0.977f + chaosDRng_.nextFloat() * 0.046f;
+			}
+			engineDriftSmoothed_ = engineDriftSmoothCoeff_ * engineDriftSmoothed_
+			                     + (1.0f - engineDriftSmoothCoeff_) * engineDriftTarget_;
+		}
 
-		// Hard-clamp input to waveshaper — prevents Tube formula sign-reversal
-		// and runaway oscillation when switching from CLEAN with hot signals.
+		// Input clamp — prevent runaway oscillation
 		fbkL = juce::jlimit (-1.5f, 1.5f, fbkL);
 		fbkR = juce::jlimit (-1.5f, 1.5f, fbkR);
 
 		if (engineMode_ == 1)
 		{
-			// ANALOG: Airwindows Tube soft-clip with asymmetric even harmonics
-			// Waveshaper FIRST → LP AFTER (natural tube → output-transformer rolloff)
-			//
-			// Tube: (x - x·|x|·0.5) × 2 — smooth 3rd-harmonic saturation, unity at ±1
-			fbkL = (fbkL - fbkL * std::abs (fbkL) * 0.5f) * 2.0f;
-			fbkR = (fbkR - fbkR * std::abs (fbkR) * 0.5f) * 2.0f;
+			// ── ANALOG: LP filter only in feedback loop ──
+			// Saturation is applied on the wet OUTPUT path (applyAnalogOutputSat),
+			// NOT inside the feedback loop.  This ensures the feedback parameter
+			// alone controls sustain time — matching clean & BBD behavior.
+			// The 2-pole LP darkens repeats progressively (core analog character).
 
-			// Asymmetric 2nd harmonic — real tubes clip positive/negative half-cycles
-			// differently. x² is always positive, so subtracting it shifts the waveform
-			// asymmetrically, producing even harmonics (warmth). The existing DC blocker
-			// in the feedback path removes any resulting DC offset.
-			fbkL -= fbkL * fbkL * 0.1f;
-			fbkR -= fbkR * fbkR * 0.1f;
-
-			// Post-waveshaper LP at ~4 kHz (tube output rolloff — harmonics generated
-			// by the waveshaper get smoothed, just like a real analog circuit)
-			engineLpStateL_ += engineLpCoeff_ * (fbkL - engineLpStateL_);
-			engineLpStateR_ += engineLpCoeff_ * (fbkR - engineLpStateR_);
-			fbkL = engineLpStateL_;
-			fbkR = engineLpStateR_;
+			// 2-pole LP at ~5 kHz (tape head + output transformer rolloff)
+			// Two cascaded 1-pole stages = 12 dB/oct Butterworth-like
+			engineLp1StateL_ += engineLpCoeff_ * (fbkL - engineLp1StateL_);
+			engineLp1StateR_ += engineLpCoeff_ * (fbkR - engineLp1StateR_);
+			engineLp2StateL_ += engineLpCoeff_ * (engineLp1StateL_ - engineLp2StateL_);
+			engineLp2StateR_ += engineLpCoeff_ * (engineLp1StateR_ - engineLp2StateR_);
+			fbkL = engineLp2StateL_;
+			fbkR = engineLp2StateR_;
 		}
 		else
 		{
-			// BBD: Pre-clip LP at ~3 kHz (anti-aliasing input filter, then waveshaper)
-			// Real BBD chips filter BEFORE the sample-and-hold stage
-			engineLpStateL_ += engineLpCoeff_ * (fbkL - engineLpStateL_);
-			engineLpStateR_ += engineLpCoeff_ * (fbkR - engineLpStateR_);
-			fbkL = engineLpStateL_;
-			fbkR = engineLpStateR_;
+			// ── BBD: Compander + sin() waveshaper + expander ──
+			// Real BBD chips (MN3005/3207) use NE571 compander for SNR improvement.
+			// Simplified compander: compress → clip → expand
 
-			// Density/IronOxide-style sin() waveshaper with π/2 prescaling
-			// Scale |x| by π/2 first → stronger mid-range saturation (matches
-			// Airwindows convention). Unity at ±1, hard-limits above.
-			// Uses fast 5th-order minimax polynomial instead of std::sin()
-			// for the [0, π/2] range (max error < 0.0002).
+			// Pre-LP at ~3 kHz (anti-aliasing before S&H stage), 2-pole (12 dB/oct)
+			engineLp1StateL_ += engineLpCoeff_ * (fbkL - engineLp1StateL_);
+			engineLp1StateR_ += engineLpCoeff_ * (fbkR - engineLp1StateR_);
+			engineLp2StateL_ += engineLpCoeff_ * (engineLp1StateL_ - engineLp2StateL_);
+			engineLp2StateR_ += engineLpCoeff_ * (engineLp1StateR_ - engineLp2StateR_);
+			fbkL = engineLp2StateL_;
+			fbkR = engineLp2StateR_;
+
+			// Compressor stage: soft-knee RMS-like compression
+			// sign(x) * (2|x| / (1 + |x|)) — fast, no transcendentals
+			// Ratio ~2:1 for |x|>0.5, transparent below.
+			const float aL = std::abs (fbkL);
+			const float aR = std::abs (fbkR);
+			const float cL = (aL + aL) / (1.0f + aL);   // compressed magnitude
+			const float cR = (aR + aR) / (1.0f + aR);
+			fbkL = (fbkL >= 0.0f) ? cL : -cL;
+			fbkR = (fbkR >= 0.0f) ? cR : -cR;
+
+			// sin(π/2·|x|) waveshaper — matches BBD transfer function
+			// Fast 5th-order minimax polynomial (max error < 0.0002)
 			constexpr float kPiHalf = 1.57079633f;
 			float rectL = std::abs (fbkL) * kPiHalf;
 			float rectR = std::abs (fbkR) * kPiHalf;
 			if (rectL > kPiHalf) rectL = kPiHalf;
 			if (rectR > kPiHalf) rectR = kPiHalf;
-			// Minimax poly: sin(x) ≈ x - x³/6 + x⁵/120  (Horner form)
 			{
 				const float x2L = rectL * rectL;
 				rectL = rectL * (1.0f - x2L * (0.16666667f - x2L * 0.00833333f));
@@ -532,15 +554,44 @@ private:
 			}
 			fbkL = (fbkL > 0.0f) ? rectL : -rectL;
 			fbkR = (fbkR > 0.0f) ? rectR : -rectR;
+
+			// Expander stage: inverse of compressor
+			// sign(x) * (|x| / (2 - |x|)) — restores dynamics with BBD coloring
+			const float eL = std::abs (fbkL);
+			const float eR = std::abs (fbkR);
+			const float denom_L = 2.0f - eL;
+			const float denom_R = 2.0f - eR;
+			// Guard against division by zero (only possible if |x| >= 2, shouldn't happen)
+			const float exL = (denom_L > 0.01f) ? (eL / denom_L) : 1.0f;
+			const float exR = (denom_R > 0.01f) ? (eR / denom_R) : 1.0f;
+			fbkL = (fbkL >= 0.0f) ? exL : -exL;
+			fbkR = (fbkR >= 0.0f) ? exR : -exR;
 		}
 
-		// Apply micro-drift gain modulation
+		// Apply mode-dependent drift modulation
 		fbkL *= engineDriftSmoothed_;
 		fbkR *= engineDriftSmoothed_;
 
-		// Final safety clamp — prevent any accumulation beyond ±1.5
+		// Final safety clamp
 		fbkL = juce::jlimit (-1.5f, 1.5f, fbkL);
 		fbkR = juce::jlimit (-1.5f, 1.5f, fbkR);
+	}
+
+	// ── Analog output saturation ──────────────────────────────────────
+	// Applied to the WET output signal (not in the feedback loop).
+	// This preserves loop-gain neutrality while adding warm analog
+	// harmonic character to every repeat.
+	inline void applyAnalogOutputSat (float& L, float& R) noexcept
+	{
+		// Rational tanh (Padé 3,3): adds rich odd harmonics
+		const float x2L = L * L;
+		L = L * (27.0f + x2L) / (27.0f + 9.0f * x2L);
+		const float x2R = R * R;
+		R = R * (27.0f + x2R) / (27.0f + 9.0f * x2R);
+
+		// Asymmetric 2nd harmonic (even-order warmth)
+		L -= L * L * 0.08f;
+		R -= R * R * 0.08f;
 	}
 
 	std::atomic<float> currentMidiFrequency { 0.0f };

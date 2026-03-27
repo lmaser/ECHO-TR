@@ -447,8 +447,8 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	// Reset engine state
 	engineMode_ = 0;
 	prevEngineMode_ = 0;
-	engineLpStateL_ = 0.0f;
-	engineLpStateR_ = 0.0f;
+	engineLp1StateL_ = 0.0f; engineLp1StateR_ = 0.0f;
+	engineLp2StateL_ = 0.0f; engineLp2StateR_ = 0.0f;
 	engineLpCoeff_ = 0.0f;
 	engineDriftPhase_ = 0.0f;
 	engineDriftTarget_ = 1.0f;
@@ -705,6 +705,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				delayR[writePos] = inputR * smoothedInputGain + fbkR;
 
 				float wetL = delayedL, wetR = delayedR;
+				if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 				filterWetSample (wetL, wetR);
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 				channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
@@ -718,6 +719,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				{ float fbkR = fbkL; applyEngineToFeedback (fbkL, fbkR); }
 				delayL[writePos] = inputL * smoothedInputGain + fbkL;
 				float wetL = delayedL, wetR = delayedL;
+				if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 				filterWetSample (wetL, wetR);
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 				channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
@@ -848,6 +850,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		delayR[writePos] = fbkPpR;
 
 		float wetL = delayedL, wetR = delayedR;
+		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 		filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
@@ -933,6 +936,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		delayR[writePos] = inputR * smoothedInputGain + fbkR;
 
 		float wetL = delayedL, wetR = delayedR;
+		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 		filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
@@ -1013,6 +1017,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		delayR[writePos] = inputR * smoothedInputGain + fbkR;
 
 		float wetL = delayedL, wetR = delayedR;
+		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 		filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
@@ -1532,8 +1537,10 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (std::abs (fbkDcStateOutL)  < kDnr) fbkDcStateOutL  = 0.0f;
 		if (std::abs (fbkDcStateInR)   < kDnr) fbkDcStateInR   = 0.0f;
 		if (std::abs (fbkDcStateOutR)  < kDnr) fbkDcStateOutR  = 0.0f;
-		if (std::abs (engineLpStateL_) < kDnr) engineLpStateL_ = 0.0f;
-		if (std::abs (engineLpStateR_) < kDnr) engineLpStateR_ = 0.0f;
+		if (std::abs (engineLp1StateL_) < kDnr) engineLp1StateL_ = 0.0f;
+		if (std::abs (engineLp1StateR_) < kDnr) engineLp1StateR_ = 0.0f;
+		if (std::abs (engineLp2StateL_) < kDnr) engineLp2StateL_ = 0.0f;
+		if (std::abs (engineLp2StateR_) < kDnr) engineLp2StateR_ = 0.0f;
 		if (std::abs (tiltState_[0])   < kDnr) tiltState_[0]   = 0.0f;
 		if (std::abs (tiltState_[1])   < kDnr) tiltState_[1]   = 0.0f;
 		if (std::abs (chaosDSmoothed_) < kDnr) chaosDSmoothed_ = 0.0f;
@@ -1614,18 +1621,29 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (engineMode_ != prevEngineMode_)
 	{
 		// Reset LP filter state on mode change to prevent transient bursts
-		engineLpStateL_ = 0.0f;
-		engineLpStateR_ = 0.0f;
+		engineLp1StateL_ = 0.0f; engineLp1StateR_ = 0.0f;
+		engineLp2StateL_ = 0.0f; engineLp2StateR_ = 0.0f;
 		prevEngineMode_ = engineMode_;
 	}
 	if (engineMode_ > 0)
 	{
-		const float cutoff = (engineMode_ == 1) ? 4000.0f : 3000.0f;
+		// ANALOG: 5 kHz (tape head rolloff), BBD: 3 kHz (anti-alias before S&H)
+		const float cutoff = (engineMode_ == 1) ? 5000.0f : 3000.0f;
 		engineLpCoeff_ = 1.0f - std::exp (-6.2831853f * cutoff / (float) currentSampleRate);
-		// Drift S&H period: ~10 Hz (subtle slow wander)
-		engineDriftPeriod_ = (float) currentSampleRate / 10.0f;
-		// Drift EMA τ ≈ 30ms — slow enough to avoid modulation artifacts
-		engineDriftSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * 0.030f));
+		if (engineMode_ == 1)
+		{
+			// ANALOG wow: sine LFO at ~2 Hz
+			engineDriftPeriod_ = (float) currentSampleRate / 2.0f;
+			// Not used for sine mode, but keep smooth for safety
+			engineDriftSmoothCoeff_ = 0.0f;
+		}
+		else
+		{
+			// BBD clock jitter: S&H at ~15 Hz
+			engineDriftPeriod_ = (float) currentSampleRate / 15.0f;
+			// EMA τ ≈ 15ms — fast enough for jitter, smooth enough to avoid clicks
+			engineDriftSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * 0.015f));
+		}
 	}
 	
 	// Reverse mode: chunk-based backward playback (works with any mode routing)

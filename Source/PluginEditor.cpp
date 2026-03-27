@@ -4630,7 +4630,7 @@ juce::String ECHOTRAudioProcessorEditor::getMixText() const
 juce::String ECHOTRAudioProcessorEditor::getMixTextShort() const
 {
     const int pct = (int) std::lround (mixSlider.getValue() * 100.0);
-    return juce::String (pct) + "%";
+    return juce::String (pct) + "% MX";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getTiltText() const
