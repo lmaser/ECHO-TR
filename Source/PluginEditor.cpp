@@ -554,7 +554,7 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseDoubleClick (const juc
 ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    const std::array<BarSlider*, 9> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider };
+    const std::array<BarSlider*, 10> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider, &duckSlider };
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     crtEnabled = audioProcessor.getUiCrtEnabled();
@@ -614,6 +614,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     outputSlider.setNumDecimalPlacesToDisplay (1);
     mixSlider.setNumDecimalPlacesToDisplay (1);
     tiltSlider.setNumDecimalPlacesToDisplay (1);
+    duckSlider.setNumDecimalPlacesToDisplay (0);
 
     // IO sliders start hidden (collapsible section, collapsed by default)
     inputSlider.setVisible (false);
@@ -743,10 +744,12 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindSlider (outputAttachment, ECHOTRAudioProcessor::kParamOutput, outputSlider, kDefaultOutput);
     bindSlider (tiltAttachment, ECHOTRAudioProcessor::kParamTilt, tiltSlider, kDefaultTilt);
     bindSlider (mixAttachment, ECHOTRAudioProcessor::kParamMix, mixSlider, kDefaultMix);
+    bindSlider (duckAttachment, ECHOTRAudioProcessor::kParamDuck, duckSlider, 0.0);
 
-    // Disable numeric popup for STYLE and ENGINE (slider-only operation)
+    // Disable numeric popup for STYLE, ENGINE, and DUCK (slider-only operation)
     modeSlider.setAllowNumericPopup (false);
     engineSlider.setAllowNumericPopup (false);
+    duckSlider.setAllowNumericPopup (false);
 
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
                            const char* paramId,
@@ -812,7 +815,7 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     dismissEditorOwnedModalPrompts (lnf);
     setPromptOverlayActive (false);
 
-    const std::array<BarSlider*, 9> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider };
+    const std::array<BarSlider*, 10> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider, &duckSlider };
     for (auto* slider : barSliders)
         slider->removeListener (this);
 
@@ -1175,6 +1178,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
     const auto oldMixShort      = cachedMixTextShort;
     const auto oldTiltFull      = cachedTiltTextFull;
     const auto oldTiltShort     = cachedTiltTextShort;
+    const auto oldDuckFull      = cachedDuckTextFull;
+    const auto oldDuckShort     = cachedDuckTextShort;
 
     cachedTimeTextFull = getTimeText();
     cachedTimeTextShort = getTimeTextShort();
@@ -1194,6 +1199,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
     cachedMixTextShort = getMixTextShort();
     cachedTiltTextFull = getTiltText();
     cachedTiltTextShort = getTiltTextShort();
+    cachedDuckTextFull = getDuckText();
+    cachedDuckTextShort = getDuckTextShort();
 
     // Cached int-only representations (avoids per-frame juce::String allocation in paint)
     {
@@ -1218,6 +1225,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
             cachedTiltIntOnly = "0dB";
         else
             cachedTiltIntOnly = juce::String ((int) tiltVal) + "dB";
+
+        cachedDuckIntOnly = juce::String ((int) std::lround (duckSlider.getValue())) + "%";
     }
 
     cachedFilterTextFull  = "FILTER";
@@ -1240,7 +1249,9 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
                       || oldMixFull       != cachedMixTextFull
                       || oldMixShort      != cachedMixTextShort
                       || oldTiltFull      != cachedTiltTextFull
-                      || oldTiltShort     != cachedTiltTextShort;
+                      || oldTiltShort     != cachedTiltTextShort
+                      || oldDuckFull      != cachedDuckTextFull
+                      || oldDuckShort     != cachedDuckTextShort;
 
     return changed;
 }
@@ -4649,6 +4660,18 @@ juce::String ECHOTRAudioProcessorEditor::getTiltTextShort() const
     return juce::String (db, 1) + " dB TLT";
 }
 
+juce::String ECHOTRAudioProcessorEditor::getDuckText() const
+{
+    const int pct = (int) std::lround (duckSlider.getValue());
+    return juce::String (pct) + "% DUCK";
+}
+
+juce::String ECHOTRAudioProcessorEditor::getDuckTextShort() const
+{
+    const int pct = (int) std::lround (duckSlider.getValue());
+    return juce::String (pct) + "%";
+}
+
 namespace
 {
     constexpr const char* kTimeLegendFull  = "5000 ms TIME";
@@ -4682,6 +4705,10 @@ namespace
     constexpr const char* kMixLegendFull  = "100% MIX";
     constexpr const char* kMixLegendShort = "100%";
     constexpr const char* kMixLegendInt   = "100%";
+
+    constexpr const char* kDuckLegendFull  = "100% DUCK";
+    constexpr const char* kDuckLegendShort = "100%";
+    constexpr const char* kDuckLegendInt   = "100%";
 
     constexpr int kValueAreaHeightPx = 44;
     constexpr int kValueAreaRightMarginPx = 24;
@@ -4728,9 +4755,9 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
 
 // Bars below toggle: 6 IO bars when expanded (IN/OUT/TILT/FILTER/MIX + CHAOS row),
-	// 5 main bars when collapsed (TIME/MOD/FBK/ENGINE/STYLE).  Toggle bar stays fixed — only bar/gap sizing adapts.
-	const int numSliders = ioExpanded ? 6 : 5;
-	const int numGaps    = ioExpanded ? 6 : 5;  // (N-1) inter-slider + 1 toggle-to-first
+	// 6 main bars when collapsed (TIME/MOD/FBK/ENGINE/STYLE/DUCK).  Toggle bar stays fixed — only bar/gap sizing adapts.
+	const int numSliders = ioExpanded ? 6 : 6;
+	const int numGaps    = ioExpanded ? 6 : 6;  // (N-1) inter-slider + 1 toggle-to-first
 
     m.toggleBarH = 20;  // fixed visual height for click area
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -4762,10 +4789,10 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
     cachedHLayout_ = buildHorizontalLayout (getWidth(), getTargetValueColumnWidth());
     cachedVLayout_ = buildVerticalLayout (getHeight(), kLayoutVerticalBiasPx, ioSectionExpanded_);
 
-    const juce::Slider* sliders[9] = { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider,
-                                        &inputSlider, &outputSlider, &tiltSlider, &mixSlider };
+    const juce::Slider* sliders[10] = { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider,
+                                        &inputSlider, &outputSlider, &tiltSlider, &mixSlider, &duckSlider };
 
-    for (int i = 0; i < 9; ++i)
+    for (int i = 0; i < 10; ++i)
     {
         if (! sliders[i]->isVisible())
         {
@@ -4870,8 +4897,12 @@ int ECHOTRAudioProcessorEditor::getTargetValueColumnWidth() const
                                     juce::jmax (stringWidth (font, kMixLegendShort),
                                                 stringWidth (font, kMixLegendInt)));
 
+    const int duckMaxW = juce::jmax (stringWidth (font, kDuckLegendFull),
+                                     juce::jmax (stringWidth (font, kDuckLegendShort),
+                                                 stringWidth (font, kDuckLegendInt)));
+
     const int maxW = juce::jmax (juce::jmax (juce::jmax (timeMaxW, feedbackMaxW), juce::jmax (modeMaxW, modMaxW)),
-                                 juce::jmax (juce::jmax (inputMaxW, outputMaxW), juce::jmax (mixMaxW, engineMaxW)));
+                                 juce::jmax (juce::jmax (inputMaxW, outputMaxW), juce::jmax (juce::jmax (mixMaxW, engineMaxW), duckMaxW)));
 
     const int desired = maxW + 16;
     const int minW = 90;
@@ -5298,11 +5329,11 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (scheme.text);
 
     {
-        const juce::String* fullTexts[9]  = { &cachedTimeTextFull, &cachedModTextFull, &cachedFeedbackTextFull,
-                                               &cachedEngineTextFull, &cachedModeTextFull, &cachedInputTextFull, &cachedOutputTextFull, &cachedTiltTextFull, &cachedMixTextFull };
-        const juce::String* shortTexts[9] = { &cachedTimeTextShort, &cachedModTextShort, &cachedFeedbackTextShort,
-                                               &cachedEngineTextShort, &cachedModeTextShort, &cachedInputTextShort, &cachedOutputTextShort, &cachedTiltTextShort, &cachedMixTextShort };
-        const juce::String* intTexts[9] = {
+        const juce::String* fullTexts[10]  = { &cachedTimeTextFull, &cachedModTextFull, &cachedFeedbackTextFull,
+                                               &cachedEngineTextFull, &cachedModeTextFull, &cachedInputTextFull, &cachedOutputTextFull, &cachedTiltTextFull, &cachedMixTextFull, &cachedDuckTextFull };
+        const juce::String* shortTexts[10] = { &cachedTimeTextShort, &cachedModTextShort, &cachedFeedbackTextShort,
+                                               &cachedEngineTextShort, &cachedModeTextShort, &cachedInputTextShort, &cachedOutputTextShort, &cachedTiltTextShort, &cachedMixTextShort, &cachedDuckTextShort };
+        const juce::String* intTexts[10] = {
             &cachedTimeIntOnly,
             &cachedModIntOnly,
             &cachedFeedbackIntOnly,
@@ -5311,10 +5342,11 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
             &cachedInputIntOnly,
             &cachedOutputIntOnly,
             &cachedTiltIntOnly,
-            &cachedMixIntOnly
+            &cachedMixIntOnly,
+            &cachedDuckIntOnly
         };
 
-        for (int i = 0; i < 9; ++i)
+        for (int i = 0; i < 10; ++i)
             drawLegendForMode (cachedValueAreas_[(size_t) i], *fullTexts[i], *shortTexts[i], *intTexts[i]);
 
         // Tilt legend (when IO section is expanded)
@@ -5517,12 +5549,14 @@ void ECHOTRAudioProcessorEditor::resized()
         feedbackSlider.setBounds (0, 0, 0, 0);
         engineSlider.setBounds (0, 0, 0, 0);
         modeSlider.setBounds (0, 0, 0, 0);
+        duckSlider.setBounds (0, 0, 0, 0);
 
         timeSlider.setVisible (false);
         modSlider.setVisible (false);
         feedbackSlider.setVisible (false);
         engineSlider.setVisible (false);
         modeSlider.setVisible (false);
+        duckSlider.setVisible (false);
     }
     else
     {
@@ -5532,12 +5566,14 @@ void ECHOTRAudioProcessorEditor::resized()
         feedbackSlider.setBounds (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
         engineSlider.setBounds   (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
         modeSlider.setBounds     (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
+        duckSlider.setBounds     (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
 
         timeSlider.setVisible (true);
         modSlider.setVisible (true);
         feedbackSlider.setVisible (true);
         engineSlider.setVisible (true);
         modeSlider.setVisible (true);
+        duckSlider.setVisible (true);
 
         inputSlider.setBounds (0, 0, 0, 0);
         outputSlider.setBounds (0, 0, 0, 0);

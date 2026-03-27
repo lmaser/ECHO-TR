@@ -109,6 +109,7 @@ private:
     BarSlider outputSlider;
     BarSlider tiltSlider;
     BarSlider mixSlider;
+    BarSlider duckSlider;
 
     juce::ToggleButton syncButton;
     juce::ToggleButton midiButton;
@@ -136,6 +137,7 @@ private:
     std::unique_ptr<SliderAttachment> outputAttachment;
     std::unique_ptr<SliderAttachment> tiltAttachment;
     std::unique_ptr<SliderAttachment> mixAttachment;
+    std::unique_ptr<SliderAttachment> duckAttachment;
 
     std::unique_ptr<ButtonAttachment> syncAttachment;
     std::unique_ptr<ButtonAttachment> midiAttachment;
@@ -335,6 +337,9 @@ private:
     juce::String getTiltText() const;
     juce::String getTiltTextShort() const;
 
+    juce::String getDuckText() const;
+    juce::String getDuckTextShort() const;
+
     int getTargetValueColumnWidth() const;
 
     void sliderValueChanged (juce::Slider* slider) override;
@@ -384,6 +389,8 @@ private:
     juce::String cachedMixTextShort;
     juce::String cachedTiltTextFull;
     juce::String cachedTiltTextShort;
+    juce::String cachedDuckTextFull;
+    juce::String cachedDuckTextShort;
 
     juce::String cachedTimeIntOnly;
     juce::String cachedFeedbackIntOnly;
@@ -394,6 +401,7 @@ private:
     juce::String cachedOutputIntOnly;
     juce::String cachedMixIntOnly;
     juce::String cachedTiltIntOnly;
+    juce::String cachedDuckIntOnly;
 
     juce::String cachedFilterTextFull;
     juce::String cachedFilterTextShort;
@@ -406,7 +414,7 @@ private:
 
     HorizontalLayoutMetrics cachedHLayout_;
     VerticalLayoutMetrics cachedVLayout_;
-    std::array<juce::Rectangle<int>, 9> cachedValueAreas_;
+    std::array<juce::Rectangle<int>, 10> cachedValueAreas_;
     juce::Rectangle<int> cachedFilterValueArea_;
     juce::Rectangle<int> cachedTiltValueArea_;
     juce::Rectangle<int> cachedToggleBarArea_;

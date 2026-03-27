@@ -235,6 +235,7 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	chaosAmtFilterParam = apvts.getRawParameterValue (kParamChaosAmtFilter);
 	chaosSpdFilterParam = apvts.getRawParameterValue (kParamChaosSpdFilter);
 	engineParam    = apvts.getRawParameterValue (kParamEngine);
+	duckParam      = apvts.getRawParameterValue (kParamDuck);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
@@ -454,6 +455,14 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	engineDriftTarget_ = 1.0f;
 	engineDriftSmoothed_ = 1.0f;
 	smoothedFeedback_ = 0.0f;
+	smoothedDuck_ = 0.0f;
+	duckEnvelope_ = 0.0f;
+	duckAmount_ = 0.0f;
+	{
+		const double sr = getSampleRate();
+		duckAttackCoeff_  = static_cast<float> (1.0 - std::exp (-1.0 / (sr * 0.0005)));  // ~0.5 ms
+		duckReleaseCoeff_ = static_cast<float> (1.0 - std::exp (-1.0 / (sr * 0.250)));   // ~250 ms
+	}
 	smoothedChaosFilterMaxOct_ = 0.0f;
 	smoothedChaosDelayMaxSamples_ = 0.0f;
 	chaosParamSmoothCoeff_ = 0.999f;
@@ -692,6 +701,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 			{
 				const float inputR = channelR[i];
 				const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
+				const float duckGain = advanceDuck (inputL, inputR);
 				float fbkL = delayedL * smoothedFeedback_;
 				float fbkR = delayedR * smoothedFeedback_;
 
@@ -700,6 +710,8 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
 
 				applyEngineToFeedback (fbkL, fbkR);
+				fbkL *= duckGain;
+				fbkR *= duckGain;
 
 				delayL[writePos] = inputL * smoothedInputGain + fbkL;
 				delayR[writePos] = inputR * smoothedInputGain + fbkR;
@@ -708,21 +720,23 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 				filterWetSample (wetL, wetR);
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
-				channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
-				channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
+				channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain * duckGain;
+				channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain * duckGain;
 			}
 			else
 			{
+				const float duckGain = advanceDuck (inputL, inputL);
 				float fbkL = delayedL * smoothedFeedback_;
 				// DC blocker (transparent feedback path)
 				fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
 				{ float fbkR = fbkL; applyEngineToFeedback (fbkL, fbkR); }
+				fbkL *= duckGain;
 				delayL[writePos] = inputL * smoothedInputGain + fbkL;
 				float wetL = delayedL, wetR = delayedL;
 				if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 				filterWetSample (wetL, wetR);
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
-				channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
+				channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain * duckGain;
 			}
 		}
 		
@@ -772,12 +786,14 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : inputL;
 		const float inputMid = (inputL + inputR) * 0.5f;
+		const float duckGain = advanceDuck (inputL, inputR);
 		
 		float fbkMono = delayed * smoothedFeedback_;
 
 		// DC blocker (transparent feedback path)
 		fbkMono = dcBlockTick (fbkMono, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
 		{ float fbkR = fbkMono; applyEngineToFeedback (fbkMono, fbkR); }
+		fbkMono *= duckGain;
 
 		const float toWrite = inputMid * smoothedInputGain + fbkMono;
 		delayL[writePos] = toWrite;
@@ -786,8 +802,8 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		float wetL = delayed, wetR = delayed;
 		filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain * duckGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain * duckGain;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -836,6 +852,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 		const float inputMono = (inputL + inputR) * 0.5f;
+		const float duckGain = advanceDuck (inputL, inputR);
 		
 		float fbkPpL = delayedR * smoothedFeedback_;
 		float fbkPpR = delayedL * smoothedFeedback_;
@@ -845,6 +862,8 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		fbkPpR = dcBlockTick (fbkPpR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
 
 		applyEngineToFeedback (fbkPpL, fbkPpR);
+		fbkPpL *= duckGain;
+		fbkPpR *= duckGain;
 
 		delayL[writePos] = inputMono * smoothedInputGain + fbkPpL;
 		delayR[writePos] = fbkPpR;
@@ -853,8 +872,8 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 		filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain * duckGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain * duckGain;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -921,6 +940,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
+		const float duckGain = advanceDuck (inputL, inputR);
 
 		// Cross-feedback: L reads from R delay, R reads from L delay
 		// Both channels receive their own stereo input
@@ -931,6 +951,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
 
 		applyEngineToFeedback (fbkL, fbkR);
+		fbkL *= duckGain;
+		fbkR *= duckGain;
 
 		delayL[writePos] = inputL * smoothedInputGain + fbkL;
 		delayR[writePos] = inputR * smoothedInputGain + fbkR;
@@ -939,8 +961,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 		filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain * duckGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain * duckGain;
 
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -1003,6 +1025,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
+		const float duckGain = advanceDuck (inputL, inputR);
 
 		// Independent feedback: no cross-feedback between L and R
 		float fbkL = delayedL * smoothedFeedback_;
@@ -1012,6 +1035,8 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
 
 		applyEngineToFeedback (fbkL, fbkR);
+		fbkL *= duckGain;
+		fbkR *= duckGain;
 
 		delayL[writePos] = inputL * smoothedInputGain + fbkL;
 		delayR[writePos] = inputR * smoothedInputGain + fbkR;
@@ -1020,8 +1045,8 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
 		filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
+		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain * duckGain;
+		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain * duckGain;
 
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -1095,6 +1120,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
+		const float duckGain = advanceDuck (inputL, inputR);
 
 		// ════════════════════════════════════════════════════════════
 		// FEEDBACK PATH: forward read (style-aware per-channel delays)
@@ -1141,6 +1167,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
 
 		applyEngineToFeedback (fbkL, fbkR);
+		fbkL *= duckGain;
+		fbkR *= duckGain;
 
 		// Write to buffer (style-aware input routing)
 		if (monoInput)
@@ -1200,13 +1228,13 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 		if (monoInput)
 		{
-			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
-			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
+			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain * duckGain;
+			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain * duckGain;
 		}
 		else
 		{
-			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain;
-			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain;
+			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wetL * smoothedMix * smoothedOutputGain * duckGain;
+			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wetR * smoothedMix * smoothedOutputGain * duckGain;
 		}
 
 		// Advance write position
@@ -1329,6 +1357,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float outputGainDb= loadAtomicOrDefault (outputParam, kOutputDefault);
 	const float mixValue    = loadAtomicOrDefault (mixParam, kMixDefault);
 	const float modValue    = loadAtomicOrDefault (modParam, kModDefault);
+	duckAmount_             = loadAtomicOrDefault (duckParam, kDuckDefault) * 0.01f;  // 0-100 → 0-1
 	
 	// Fast dB→linear (std::exp2 instead of std::pow via Decibels::decibelsToGain)
 	const float inputGain  = fastDecibelsToGain (inputGainDb);
@@ -1894,6 +1923,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamEngine, "Engine",
 		juce::NormalisableRange<float> ((float) kEngineMin, (float) kEngineMax, 1.0f, 1.0f), (float) kEngineDefault));
+
+	// Duck (Valhalla-style 1-knob ducking: 0-100%)
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamDuck, "Duck",
+		juce::NormalisableRange<float> (kDuckMin, kDuckMax, 1.0f), kDuckDefault));
 
 	// UI state (hidden from automation)
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));

@@ -50,6 +50,7 @@ public:
 	static constexpr const char* kParamChaosSpd  = "chaos_spd";
 	static constexpr const char* kParamChaosAmtFilter = "chaos_amt_filter";
 	static constexpr const char* kParamChaosSpdFilter = "chaos_spd_filter";
+	static constexpr const char* kParamDuck           = "duck";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -130,6 +131,11 @@ public:
 	static constexpr int kEngineMin     = 0;       // 0=CLEAN
 	static constexpr int kEngineMax     = 2;       // 2=BBD
 	static constexpr int kEngineDefault = 0;       // CLEAN
+
+	// Duck ranges and defaults
+	static constexpr float kDuckMin     = 0.0f;
+	static constexpr float kDuckMax     = 100.0f;
+	static constexpr float kDuckDefault = 0.0f;    // off by default
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -371,6 +377,13 @@ private:
 	// Per-sample feedback EMA smoothing
 	float smoothedFeedback_ = 0.0f;
 
+	// Duck envelope follower (Valhalla-style 1-knob ducking)
+	float smoothedDuck_     = 0.0f;   // EMA-smoothed duck amount (0-1)
+	float duckEnvelope_     = 0.0f;   // peak envelope of input signal
+	float duckAttackCoeff_  = 0.0f;   // ~0.5 ms attack
+	float duckReleaseCoeff_ = 0.0f;   // ~250 ms release
+	float duckAmount_       = 0.0f;   // target duck depth (0-1, set per block)
+
 	// Engine micro-oscillation — mode-dependent analog drift
 	// ANALOG: Slow wow (~2 Hz) modulating gain ±0.5 dB via sine LFO
 	// BBD:    Faster random clock jitter (~15 Hz S&H) ±0.2 dB
@@ -379,6 +392,17 @@ private:
 	float engineDriftTarget_   = 1.0f;     // raw target (gain multiplier)
 	float engineDriftSmoothed_ = 1.0f;     // EMA-smoothed gain multiplier
 	float engineDriftSmoothCoeff_ = 0.9995f; // EMA coeff
+
+	// Per-sample duck envelope follower — returns duck gain [0,1]
+	static constexpr float kDuckSmoothCoeff_ = 0.9955f; // same as kGainSmoothCoeff (~5 ms @ 44.1 kHz)
+	inline float advanceDuck (float inL, float inR) noexcept
+	{
+		smoothedDuck_ = smoothedDuck_ * kDuckSmoothCoeff_ + duckAmount_ * (1.0f - kDuckSmoothCoeff_);
+		const float peakIn = juce::jmax (std::abs (inL), std::abs (inR));
+		const float dCoeff = (peakIn > duckEnvelope_) ? duckAttackCoeff_ : duckReleaseCoeff_;
+		duckEnvelope_ += dCoeff * (peakIn - duckEnvelope_);
+		return juce::jmax (0.0f, 1.0f - smoothedDuck_ * duckEnvelope_);
+	}
 
 	// Per-sample S&H step for CHS D (delay + gain, 2 independent S&H engines)
 	inline void advanceChaosD() noexcept
@@ -630,6 +654,7 @@ private:
 	std::atomic<float>* chaosAmtFilterParam = nullptr;
 	std::atomic<float>* chaosSpdFilterParam = nullptr;
 	std::atomic<float>* engineParam     = nullptr;
+	std::atomic<float>* duckParam       = nullptr;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;
