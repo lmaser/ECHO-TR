@@ -52,6 +52,11 @@ public:
 	static constexpr const char* kParamChaosAmtFilter = "chaos_amt_filter";
 	static constexpr const char* kParamChaosSpdFilter = "chaos_spd_filter";
 	static constexpr const char* kParamDuck           = "duck";
+
+	// Mode In / Mode Out / Sum Bus parameter IDs
+	static constexpr const char* kParamModeIn  = "mode_in";
+	static constexpr const char* kParamModeOut = "mode_out";
+	static constexpr const char* kParamSumBus  = "sum_bus";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -141,6 +146,11 @@ public:
 	static constexpr float kDuckMin     = 0.0f;
 	static constexpr float kDuckMax     = 100.0f;
 	static constexpr float kDuckDefault = 0.0f;    // off by default
+
+	// Mode In / Mode Out / Sum Bus defaults
+	static constexpr int   kModeInOutDefault = 0;   // 0=L+R  1=MID  2=SIDE
+	static constexpr int   kSumBusDefault    = 0;   // 0=ST   1=→M   2=→S
+	static constexpr float kSqrt2Over2       = 0.707106781f;
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -660,6 +670,10 @@ private:
 	std::atomic<float>* chaosSpdFilterParam = nullptr;
 	std::atomic<float>* engineParam     = nullptr;
 	std::atomic<float>* duckParam       = nullptr;
+
+	std::atomic<float>* modeInParam   = nullptr;
+	std::atomic<float>* modeOutParam  = nullptr;
+	std::atomic<float>* sumBusParam   = nullptr;
 
 	std::atomic<float>* panParam       = nullptr;
 	float lastPan_      = -1.0f;

@@ -237,6 +237,9 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	chaosSpdFilterParam = apvts.getRawParameterValue (kParamChaosSpdFilter);
 	engineParam    = apvts.getRawParameterValue (kParamEngine);
 	duckParam      = apvts.getRawParameterValue (kParamDuck);
+	modeInParam    = apvts.getRawParameterValue (kParamModeIn);
+	modeOutParam   = apvts.getRawParameterValue (kParamModeOut);
+	sumBusParam    = apvts.getRawParameterValue (kParamSumBus);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
@@ -1676,6 +1679,31 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 	}
 	
+	// ── Mode In / Mode Out / Sum Bus ──
+	const int modeInVal  = loadIntParamOrDefault (modeInParam,  kModeInOutDefault);
+	const int modeOutVal = loadIntParamOrDefault (modeOutParam, kModeInOutDefault);
+	const int sumBusVal  = loadIntParamOrDefault (sumBusParam,  kSumBusDefault);
+
+	// Save original dry signal for Sum Bus reconstruction
+	juce::AudioBuffer<float> dryBuffer;
+	if (sumBusVal != 0 && numChannels >= 2)
+	{
+		dryBuffer.makeCopyOf (buffer);
+	}
+
+	// Mode In: M/S encode input buffer before delay processing
+	if (numChannels >= 2 && modeInVal != 0)
+	{
+		auto* chL = buffer.getWritePointer (0);
+		auto* chR = buffer.getWritePointer (1);
+		for (int i = 0; i < numSamples; ++i)
+		{
+			const float l = chL[i], r = chR[i];
+			if (modeInVal == 1)      { const float mid = (l + r) * kSqrt2Over2; chL[i] = chR[i] = mid; }
+			else /* modeInVal==2 */   { const float side = (l - r) * kSqrt2Over2; chL[i] = chR[i] = side; }
+		}
+	}
+
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
 	if (reverseEnabled)
 	{
@@ -1684,20 +1712,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		processReverseDelay (buffer, numSamples, numChannels, delaySamples,
 		                     targetFeedback, inputGain, outputGain, mixValue, revDelaySmoothCoeff,
 		                     smoothMult, mode);
-		// Safety hard-limiter (same as main path)
-		{
-			constexpr float kSafetyLimit = 251.19f;
-			for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-			{
-				auto* data = buffer.getWritePointer (ch);
-				juce::FloatVectorOperations::clip (data, data, -kSafetyLimit, kSafetyLimit, numSamples);
-			}
-		}
-		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
-		return;
 	}
-
-	if (mode == 0)
+	else if (mode == 0)
 	{
 		processMonoDelay (buffer, numSamples, numChannels, delaySamples, 
 		                  targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
@@ -1721,6 +1737,58 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		processStereoDelay (buffer, numSamples, numChannels, delaySamples,
 		                    targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+	}
+
+	// Mode Out: M/S encode output after delay processing
+	if (numChannels >= 2 && modeOutVal != 0)
+	{
+		auto* chL = buffer.getWritePointer (0);
+		auto* chR = buffer.getWritePointer (1);
+		for (int i = 0; i < numSamples; ++i)
+		{
+			const float l = chL[i], r = chR[i];
+			if (modeOutVal == 1)      { const float mid = (l + r) * kSqrt2Over2; chL[i] = chR[i] = mid; }
+			else /* modeOutVal==2 */   { const float side = (l - r) * kSqrt2Over2; chL[i] = chR[i] = side; }
+		}
+	}
+
+	// Sum Bus: separate dry/wet, route only wet through M/S bus, preserve dry stereo image
+	if (numChannels >= 2 && sumBusVal != 0)
+	{
+		auto* chL = buffer.getWritePointer (0);
+		auto* chR = buffer.getWritePointer (1);
+		const auto* dL = dryBuffer.getReadPointer (0);
+		const auto* dR = dryBuffer.getReadPointer (1);
+
+		for (int i = 0; i < numSamples; ++i)
+		{
+			// Recompute Mode-In-encoded dry to accurately extract wet portion
+			float encL = dL[i], encR = dR[i];
+			if (modeInVal == 1)      { const float m = (encL + encR) * kSqrt2Over2; encL = encR = m; }
+			else if (modeInVal == 2) { const float s = (encL - encR) * kSqrt2Over2; encL = encR = s; }
+
+			const float dryContribL = encL * (1.0f - mixValue);
+			const float dryContribR = encR * (1.0f - mixValue);
+			const float wetL = chL[i] - dryContribL;
+			const float wetR = chR[i] - dryContribR;
+
+			// Original dry pass-through (pre-Mode-In, preserves stereo image)
+			const float origDryL = dL[i] * (1.0f - mixValue);
+			const float origDryR = dR[i] * (1.0f - mixValue);
+
+			if (sumBusVal == 1) // →M: wet collapsed to mono mid
+			{
+				const float midBus = (wetL + wetR) * 0.5f;
+				chL[i] = origDryL + midBus;
+				chR[i] = origDryR + midBus;
+			}
+			else // →S: wet to side
+			{
+				const float sideBus = (wetL - wetR) * 0.5f;
+				chL[i] = origDryL + sideBus;
+				chR[i] = origDryR - sideBus;
+			}
+		}
 	}
 
 	// ── Pan (equal-power, stereo only) ──
@@ -1951,6 +2019,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamDuck, "Duck",
 		juce::NormalisableRange<float> (kDuckMin, kDuckMax, 1.0f), kDuckDefault));
+
+	// Mode In / Mode Out / Sum Bus
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamModeIn, "Mode In", juce::StringArray { "L+R", "MID", "SIDE" }, kModeInOutDefault));
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamModeOut, "Mode Out", juce::StringArray { "L+R", "MID", "SIDE" }, kModeInOutDefault));
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamSumBus, "Sum Bus", juce::StringArray { "ST", u8"\u2192M", u8"\u2192S" }, kSumBusDefault));
 
 	// UI state (hidden from automation)
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));

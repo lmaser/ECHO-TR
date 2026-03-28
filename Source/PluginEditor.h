@@ -127,6 +127,10 @@ private:
     juce::ToggleButton chaosFilterButton;
     juce::ToggleButton chaosDelayButton;
 
+    juce::ComboBox modeInCombo;
+    juce::ComboBox modeOutCombo;
+    juce::ComboBox sumBusCombo;
+
     juce::Label midiChannelDisplay;
     juce::Label autoFbkDisplay;
     juce::Label reverseDisplay;
@@ -135,6 +139,7 @@ private:
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     std::unique_ptr<SliderAttachment> timeAttachment;
     std::unique_ptr<SliderAttachment> timeSyncAttachment;  // For tempo sync mode
@@ -155,6 +160,10 @@ private:
     std::unique_ptr<ButtonAttachment> reverseAttachment;
     std::unique_ptr<ButtonAttachment> chaosFilterAttachment;
     std::unique_ptr<ButtonAttachment> chaosDelayAttachment;
+
+    std::unique_ptr<ComboBoxAttachment> modeInAttachment;
+    std::unique_ptr<ComboBoxAttachment> modeOutAttachment;
+    std::unique_ptr<ComboBoxAttachment> sumBusAttachment;
 
     juce::ComponentBoundsConstrainer resizeConstrainer;
     std::unique_ptr<juce::ResizableCornerComponent> resizerCorner;
@@ -182,6 +191,7 @@ private:
         int betweenSlidersAndButtons = 0;
         int bottomMargin = 0;
         int box = 0;
+        int chaosRowY = 0;
         int btnRow1Y = 0;
         int btnRow2Y = 0;
         int btnRowGap = 0;
@@ -240,6 +250,19 @@ private:
                     int x, int y, int width, int height,
                     bool isScrollbarVertical, int thumbStartPosition, int thumbSize,
                     bool isMouseOver, bool isMouseDown) override;
+
+        void drawComboBox (juce::Graphics&, int width, int height, bool isButtonDown,
+                           int, int, int, int, juce::ComboBox&) override;
+
+        void drawPopupMenuBackground (juce::Graphics&, int width, int height) override;
+
+        juce::Font getComboBoxFont (juce::ComboBox& box) override;
+
+        void positionComboBoxText (juce::ComboBox& box, juce::Label& label) override
+        {
+            label.setBounds (0, 0, box.getWidth(), box.getHeight());
+            label.setJustificationType (juce::Justification::centred);
+        }
 
         int getMinimumScrollbarThumbSize (juce::ScrollBar&) override { return 16; }
         int getScrollbarButtonSize (juce::ScrollBar&) override      { return 0; }  // no arrow buttons
@@ -445,9 +468,9 @@ private:
     static constexpr double kDefaultTilt = (double) ECHOTRAudioProcessor::kTiltDefault;
 
     static constexpr int kMinW = 360;
-    static constexpr int kMinH = 540;
+    static constexpr int kMinH = 660;
     static constexpr int kMaxW = 800;
-    static constexpr int kMaxH = 640;
+    static constexpr int kMaxH = 760;
 
     static constexpr int kLayoutVerticalBiasPx = 10;
 
