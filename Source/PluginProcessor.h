@@ -39,6 +39,7 @@ public:
 
 	// Tilt parameter ID
 	static constexpr const char* kParamTilt = "tilt";
+	static constexpr const char* kParamPan  = "pan";
 
 	// Engine parameter ID
 	static constexpr const char* kParamEngine    = "engine";
@@ -118,6 +119,10 @@ public:
 	static constexpr float kTiltMin     = -6.0f;
 	static constexpr float kTiltMax     =  6.0f;
 	static constexpr float kTiltDefault =  0.0f;
+
+	static constexpr float kPanMin     = 0.0f;
+	static constexpr float kPanMax     = 1.0f;
+	static constexpr float kPanDefault = 0.5f;
 
 	// Chaos ranges and defaults
 	static constexpr float kChaosAmtMin     = 0.0f;
@@ -655,6 +660,11 @@ private:
 	std::atomic<float>* chaosSpdFilterParam = nullptr;
 	std::atomic<float>* engineParam     = nullptr;
 	std::atomic<float>* duckParam       = nullptr;
+
+	std::atomic<float>* panParam       = nullptr;
+	float lastPan_      = -1.0f;
+	float lastPanLeft_  = 1.0f;
+	float lastPanRight_ = 1.0f;
 	
 	std::atomic<float>* uiWidthParam = nullptr;
 	std::atomic<float>* uiHeightParam = nullptr;

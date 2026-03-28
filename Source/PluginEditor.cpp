@@ -554,7 +554,7 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseDoubleClick (const juc
 ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    const std::array<BarSlider*, 10> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider, &duckSlider };
+    const std::array<BarSlider*, 11> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &duckSlider };
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     crtEnabled = audioProcessor.getUiCrtEnabled();
@@ -614,12 +614,14 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     outputSlider.setNumDecimalPlacesToDisplay (1);
     mixSlider.setNumDecimalPlacesToDisplay (1);
     tiltSlider.setNumDecimalPlacesToDisplay (1);
+    panSlider.setNumDecimalPlacesToDisplay (1);
     duckSlider.setNumDecimalPlacesToDisplay (0);
 
     // IO sliders start hidden (collapsible section, collapsed by default)
     inputSlider.setVisible (false);
     outputSlider.setVisible (false);
     tiltSlider.setVisible (false);
+    panSlider.setVisible (false);
     mixSlider.setVisible (false);
 
     filterBar_.setOwner (this);
@@ -743,6 +745,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindSlider (inputAttachment, ECHOTRAudioProcessor::kParamInput, inputSlider, kDefaultInput);
     bindSlider (outputAttachment, ECHOTRAudioProcessor::kParamOutput, outputSlider, kDefaultOutput);
     bindSlider (tiltAttachment, ECHOTRAudioProcessor::kParamTilt, tiltSlider, kDefaultTilt);
+    bindSlider (panAttachment,  ECHOTRAudioProcessor::kParamPan,  panSlider,  0.5);
     bindSlider (mixAttachment, ECHOTRAudioProcessor::kParamMix, mixSlider, kDefaultMix);
     bindSlider (duckAttachment, ECHOTRAudioProcessor::kParamDuck, duckSlider, 0.0);
 
@@ -815,7 +818,7 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     dismissEditorOwnedModalPrompts (lnf);
     setPromptOverlayActive (false);
 
-    const std::array<BarSlider*, 10> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider, &duckSlider };
+    const std::array<BarSlider*, 11> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &duckSlider };
     for (auto* slider : barSliders)
         slider->removeListener (this);
 
@@ -1180,6 +1183,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
     const auto oldTiltShort     = cachedTiltTextShort;
     const auto oldDuckFull      = cachedDuckTextFull;
     const auto oldDuckShort     = cachedDuckTextShort;
+    const auto oldPanFull       = cachedPanTextFull;
+    const auto oldPanShort      = cachedPanTextShort;
 
     cachedTimeTextFull = getTimeText();
     cachedTimeTextShort = getTimeTextShort();
@@ -1232,6 +1237,9 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
     cachedFilterTextFull  = "FILTER";
     cachedFilterTextShort = "FLTR";
 
+    cachedPanTextFull  = getPanText();
+    cachedPanTextShort = getPanTextShort();
+
     const bool changed = oldTimeFull      != cachedTimeTextFull
                       || oldTimeShort     != cachedTimeTextShort
                       || oldFeedbackFull  != cachedFeedbackTextFull
@@ -1251,7 +1259,9 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
                       || oldTiltFull      != cachedTiltTextFull
                       || oldTiltShort     != cachedTiltTextShort
                       || oldDuckFull      != cachedDuckTextFull
-                      || oldDuckShort     != cachedDuckTextShort;
+                      || oldDuckShort     != cachedDuckTextShort
+                      || oldPanFull       != cachedPanTextFull
+                      || oldPanShort      != cachedPanTextShort;
 
     return changed;
 }
@@ -1725,9 +1735,10 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     else if (&s == &inputSlider)     { suffix = " DB INPUT";   suffixShort = " DB IN"; }
     else if (&s == &outputSlider)    { suffix = " DB OUTPUT";  suffixShort = " DB OUT"; }
     else if (&s == &mixSlider)       { suffix = " % MIX";      suffixShort = " % MIX"; }
+    else if (&s == &panSlider)       { suffix = " % PAN";      suffixShort = " %"; }
     const juce::String suffixText = suffix.trimStart();
     const juce::String suffixTextShort = suffixShort.trimStart();
-    const bool isPercentPrompt = (&s == &feedbackSlider || &s == &mixSlider);
+    const bool isPercentPrompt = (&s == &feedbackSlider || &s == &mixSlider || &s == &panSlider);
 
     // Sin texto de prompt: solo input + OK/Cancel
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
@@ -1740,6 +1751,10 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     if (&s == &modSlider)
     {
         currentDisplay = juce::String (modSliderToMultiplier (s.getValue()), 2);
+    }
+    else if (&s == &panSlider)
+    {
+        currentDisplay = juce::String (juce::jlimit (0.0, 100.0, s.getValue() * 100.0), 0);
     }
     else
     {
@@ -1823,6 +1838,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             worstCaseText = "-100.0";
         else if (&s == &mixSlider)
             worstCaseText = "100.00";
+        else if (&s == &panSlider)
+            worstCaseText = "100";
         else
             worstCaseText = "999.99";
 
@@ -1964,6 +1981,13 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             maxVal = 100.0;    // user types percent
             maxDecs = 1;
             maxLen = 5; // "100.0"
+        }
+        else if (&s == &panSlider)
+        {
+            minVal = 0.0;
+            maxVal = 100.0;
+            maxDecs = 0;
+            maxLen = 3;
         }
 
         // Use special filter for time slider in sync mode
@@ -2145,7 +2169,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
                 // user typed percent for feedback/mix; convert to slider's [0,1] range
                 if (safeThis != nullptr && (sliderPtr == &safeThis->feedbackSlider
-                                         || sliderPtr == &safeThis->mixSlider))
+                                         || sliderPtr == &safeThis->mixSlider
+                                         || sliderPtr == &safeThis->panSlider))
                     v *= 0.01;
 
                 // user typed multiplier for MOD; convert to slider's [0,1] range
@@ -4660,6 +4685,24 @@ juce::String ECHOTRAudioProcessorEditor::getTiltTextShort() const
     return juce::String (db, 1) + " dB TLT";
 }
 
+juce::String ECHOTRAudioProcessorEditor::getPanText() const
+{
+    const float v = (float) panSlider.getValue();
+    const int pct = juce::roundToInt ((v - 0.5f) * 200.0f);
+    if (pct == 0) return "C PAN";
+    if (pct < 0)  return "L" + juce::String (-pct) + " PAN";
+    return "R" + juce::String (pct) + " PAN";
+}
+
+juce::String ECHOTRAudioProcessorEditor::getPanTextShort() const
+{
+    const float v = (float) panSlider.getValue();
+    const int pct = juce::roundToInt ((v - 0.5f) * 200.0f);
+    if (pct == 0) return "C";
+    if (pct < 0)  return "L" + juce::String (-pct);
+    return "R" + juce::String (pct);
+}
+
 juce::String ECHOTRAudioProcessorEditor::getDuckText() const
 {
     const int pct = (int) std::lround (duckSlider.getValue());
@@ -4754,10 +4797,10 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
     m.availableForSliders = juce::jmax (40, m.btnRow1Y - m.betweenSlidersAndButtons - m.topMargin);
 
-// Bars below toggle: 6 IO bars when expanded (IN/OUT/TILT/FILTER/MIX + CHAOS row),
+// Bars below toggle: 7 IO bars when expanded (IN/OUT/TILT/FILTER/PAN/MIX + CHAOS row),
 	// 6 main bars when collapsed (TIME/MOD/FBK/ENGINE/STYLE/DUCK).  Toggle bar stays fixed — only bar/gap sizing adapts.
-	const int numSliders = ioExpanded ? 6 : 6;
-	const int numGaps    = ioExpanded ? 6 : 6;  // (N-1) inter-slider + 1 toggle-to-first
+	const int numSliders = ioExpanded ? 7 : 6;
+	const int numGaps    = ioExpanded ? 7 : 6;  // (N-1) inter-slider + 1 toggle-to-first
 
     m.toggleBarH = 20;  // fixed visual height for click area
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -4836,6 +4879,21 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
     else
     {
         cachedTiltValueArea_ = {};
+    }
+
+    // Cache pan slider value area
+    if (panSlider.isVisible())
+    {
+        const auto& bb = panSlider.getBounds();
+        const int valueX = bb.getRight() + cachedHLayout_.valuePad;
+        const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
+        const int vw   = juce::jmin (cachedHLayout_.valueW, maxW);
+        const int y    = bb.getCentreY() - (kValueAreaHeightPx / 2);
+        cachedPanValueArea_ = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
+    }
+    else
+    {
+        cachedPanValueArea_ = {};
     }
 
     // Cache chaos checkbox area
@@ -5357,6 +5415,10 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         if (filterBar_.isVisible() && cachedFilterValueArea_.getWidth() > 0)
             drawLegendForMode (cachedFilterValueArea_, cachedFilterTextFull, cachedFilterTextShort, cachedFilterTextShort);
 
+        // Pan legend (when IO section is expanded)
+        if (panSlider.isVisible() && cachedPanValueArea_.getWidth() > 0)
+            drawLegendForMode (cachedPanValueArea_, cachedPanTextFull, cachedPanTextShort, cachedPanTextShort);
+
         // Chaos checkbox legends (when IO section is expanded)
         if (chaosFilterButton.isVisible())
         {
@@ -5517,15 +5579,16 @@ void ECHOTRAudioProcessorEditor::resized()
 
     if (ioSectionExpanded_)
     {
-        // Expanded: [toggle bar] → INPUT, OUTPUT, TILT, FILTER, MIX, CHAOS; main params hidden
+        // Expanded: [toggle bar] → INPUT, OUTPUT, TILT, FILTER, PAN, MIX, CHAOS; main params hidden
         inputSlider.setBounds  (horizontalLayout.leftX, mainTop + 0 * step, horizontalLayout.barW, verticalLayout.barH);
         outputSlider.setBounds (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
         tiltSlider.setBounds   (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
         filterBar_.setBounds   (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
-        mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
+        panSlider.setBounds    (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
+        mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
 
         // CHAOS checkboxes — CHS F (left-aligned with REVERSE/SYNC), CHS D (right-aligned with ENV FBK/MIDI)
-        const int chaosY = mainTop + 5 * step;
+        const int chaosY = mainTop + 6 * step;
         const int chaosRightX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
         const int chaosLeftW  = chaosRightX - horizontalLayout.leftX;
         const int chaosRightW = horizontalLayout.leftX + horizontalLayout.contentW - chaosRightX;
@@ -5538,6 +5601,7 @@ void ECHOTRAudioProcessorEditor::resized()
         outputSlider.setVisible (true);
         tiltSlider.setVisible (true);
         filterBar_.setVisible (true);
+        panSlider.setVisible (true);
         mixSlider.setVisible (true);
         chaosFilterButton.setVisible (true);
         chaosFilterDisplay.setVisible (true);
@@ -5579,12 +5643,14 @@ void ECHOTRAudioProcessorEditor::resized()
         outputSlider.setBounds (0, 0, 0, 0);
         tiltSlider.setBounds (0, 0, 0, 0);
         mixSlider.setBounds (0, 0, 0, 0);
+        panSlider.setBounds (0, 0, 0, 0);
         filterBar_.setBounds (0, 0, 0, 0);
 
         inputSlider.setVisible (false);
         outputSlider.setVisible (false);
         tiltSlider.setVisible (false);
         mixSlider.setVisible (false);
+        panSlider.setVisible (false);
         filterBar_.setVisible (false);
         chaosFilterButton.setVisible (false);
         chaosFilterDisplay.setVisible (false);

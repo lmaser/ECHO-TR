@@ -228,6 +228,7 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	filterLpOnParam    = apvts.getRawParameterValue (kParamFilterLpOn);
 
 	tiltParam      = apvts.getRawParameterValue (kParamTilt);
+	panParam       = apvts.getRawParameterValue (kParamPan);
 	chaosParam     = apvts.getRawParameterValue (kParamChaos);
 	chaosDelayParam= apvts.getRawParameterValue (kParamChaosD);
 	chaosAmtParam  = apvts.getRawParameterValue (kParamChaosAmt);
@@ -1722,6 +1723,24 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		                    targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 
+	// ── Pan (equal-power, stereo only) ──
+	if (numChannels >= 2)
+	{
+		const float pan = panParam->load();
+		if (std::abs (pan - lastPan_) > 0.001f)
+		{
+			lastPan_ = pan;
+			const float angle = pan * 1.5707963f; // π/2
+			lastPanLeft_  = std::cos (angle);
+			lastPanRight_ = std::sin (angle);
+		}
+		if (std::abs (lastPan_ - 0.5f) > 0.001f)
+		{
+			juce::FloatVectorOperations::multiply (buffer.getWritePointer (0), lastPanLeft_,  numSamples);
+			juce::FloatVectorOperations::multiply (buffer.getWritePointer (1), lastPanRight_, numSamples);
+		}
+	}
+
 	// Safety hard-limiter: prevent catastrophic output only (NaN/Inf runaway).
 	// Set very high (+48 dBFS) so it never engages during normal operation.
 	{
@@ -1902,6 +1921,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamTilt, "Tilt",
 		juce::NormalisableRange<float> (kTiltMin, kTiltMax, 0.01f), kTiltDefault));
+
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamPan, "Pan",
+		juce::NormalisableRange<float> (kPanMin, kPanMax, 0.01f), kPanDefault));
 
 	// Chaos
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamChaos, "Chaos Filter", false));

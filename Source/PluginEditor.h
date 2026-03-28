@@ -88,6 +88,14 @@ private:
                 return juce::String (rounded1, 1);
             }
 
+            if (owner != nullptr && this == &owner->panSlider)
+            {
+                double percent = v * 100.0;
+                if (std::abs (percent - 50.0) < 1.0) return "C";
+                if (percent < 50.0) return "L" + juce::String (50.0 - percent, 0);
+                return "R" + juce::String (percent - 50.0, 0);
+            }
+
             juce::String t = juce::Slider::getTextFromValue (v);
             int dot = t.indexOfChar ('.');
             if (dot >= 0)
@@ -108,6 +116,7 @@ private:
     BarSlider inputSlider;
     BarSlider outputSlider;
     BarSlider tiltSlider;
+    BarSlider panSlider;
     BarSlider mixSlider;
     BarSlider duckSlider;
 
@@ -136,6 +145,7 @@ private:
     std::unique_ptr<SliderAttachment> inputAttachment;
     std::unique_ptr<SliderAttachment> outputAttachment;
     std::unique_ptr<SliderAttachment> tiltAttachment;
+    std::unique_ptr<SliderAttachment> panAttachment;
     std::unique_ptr<SliderAttachment> mixAttachment;
     std::unique_ptr<SliderAttachment> duckAttachment;
 
@@ -337,6 +347,9 @@ private:
     juce::String getTiltText() const;
     juce::String getTiltTextShort() const;
 
+    juce::String getPanText() const;
+    juce::String getPanTextShort() const;
+
     juce::String getDuckText() const;
     juce::String getDuckTextShort() const;
 
@@ -405,6 +418,8 @@ private:
 
     juce::String cachedFilterTextFull;
     juce::String cachedFilterTextShort;
+    juce::String cachedPanTextFull;
+    juce::String cachedPanTextShort;
     
     juce::String cachedMidiDisplay;
     bool cachedTimeSliderHeld = false;
@@ -416,6 +431,7 @@ private:
     VerticalLayoutMetrics cachedVLayout_;
     std::array<juce::Rectangle<int>, 10> cachedValueAreas_;
     juce::Rectangle<int> cachedFilterValueArea_;
+    juce::Rectangle<int> cachedPanValueArea_;
     juce::Rectangle<int> cachedTiltValueArea_;
     juce::Rectangle<int> cachedToggleBarArea_;
     juce::Rectangle<int> cachedChaosArea_;
