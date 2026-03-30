@@ -470,6 +470,12 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedChaosFilterMaxOct_ = 0.0f;
 	smoothedChaosDelayMaxSamples_ = 0.0f;
 	chaosParamSmoothCoeff_ = 0.999f;
+
+	// Precompute sampleRate-dependent smooth coefficients
+	cachedChaosDSmoothCoeff_     = std::exp (-1.0f / ((float) currentSampleRate * 0.030f));
+	cachedChaosGSmoothCoeff_     = std::exp (-1.0f / ((float) currentSampleRate * 0.015f));
+	cachedChaosFSmoothCoeff_     = std::exp (-1.0f / ((float) currentSampleRate * 0.060f));
+	cachedChaosParamSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * 0.010f));
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -1612,9 +1618,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			chaosDelayMaxSamples_ = amtNormD * 0.005f * (float) currentSampleRate;  // ±5ms at 100%
 			chaosGainMaxDb_       = amtNormD * 1.0f;                                // ±1dB at 100%
 			constexpr float kChaosDTau = 0.030f;
-			chaosDSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosDTau));
-			constexpr float kChaosGTau = 0.015f;
-			chaosGSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosGTau));
+			chaosDSmoothCoeff_ = cachedChaosDSmoothCoeff_;
+			chaosGSmoothCoeff_ = cachedChaosGSmoothCoeff_;
 		}
 		else
 		{
@@ -1630,16 +1635,14 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			chaosShPeriodF_  = (float) currentSampleRate / rawSpdF;
 			const float amtNormF = rawAmtF * 0.01f;
 			chaosFilterMaxOct_ = amtNormF * 2.0f;  // ±2 oct at 100%
-			constexpr float kChaosFTau = 0.060f;
-			chaosFSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosFTau));
+			chaosFSmoothCoeff_ = cachedChaosFSmoothCoeff_;
 		}
 		else
 		{
 			chaosFilterMaxOct_ = 0.0f;
 		}
 
-		constexpr float kChaosParamTau = 0.010f;
-		chaosParamSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * kChaosParamTau));
+		chaosParamSmoothCoeff_ = cachedChaosParamSmoothCoeff_;
 	}
 	else
 	{
@@ -1926,7 +1929,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamTimeMs, "Time",
-		juce::NormalisableRange<float> (kTimeMsMin, kTimeMsMax, 0.0f, 0.35f), kTimeMsDefault));
+		juce::NormalisableRange<float> (kTimeMsMin, kTimeMsMax, 0.0f, 0.25f), kTimeMsDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
 		kParamTimeSync, "Time Sync", getTimeSyncChoices(), kTimeSyncDefault));
@@ -2033,7 +2036,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiHeight, "UI Height", 240, 1200, 480));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiPalette, "UI Palette", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiCrt, "UI CRT", false));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor0, "UI Color 0", 0, 0xFFFFFF, 0xFFFFFF));
+	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor0, "UI Color 0", 0, 0xFFFFFF, 0x00FF00));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor1, "UI Color 1", 0, 0xFFFFFF, 0x000000));
 	// Legacy params kept for backward compatibility with saved presets
 	params.push_back (std::make_unique<juce::AudioParameterInt> ("ui_color2", "UI Color 2", 0, 0xFFFFFF, 0xFFFFFF));

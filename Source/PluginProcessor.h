@@ -375,6 +375,12 @@ private:
 	// Chaos per-sample param smoothing
 	float chaosParamSmoothCoeff_ = 0.999f;
 
+	// Precomputed sampleRate-dependent smooth coefficients (set in prepareToPlay)
+	float cachedChaosDSmoothCoeff_       = 0.999f;
+	float cachedChaosGSmoothCoeff_       = 0.999f;
+	float cachedChaosFSmoothCoeff_       = 0.999f;
+	float cachedChaosParamSmoothCoeff_   = 0.999f;
+
 	// Chaos micro-delay buffer (post-wet, CAB-TR style)
 	static constexpr int kChaosDelayBufLen = 1024;
 	float chaosDelayBuf_[2][kChaosDelayBufLen] = {};
