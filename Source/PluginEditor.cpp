@@ -580,7 +580,7 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseDoubleClick (const juc
 ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    const std::array<BarSlider*, 11> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &duckSlider };
+    const std::array<BarSlider*, 12> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &duckSlider, &limThresholdSlider };
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     crtEnabled = audioProcessor.getUiCrtEnabled();
@@ -642,6 +642,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     tiltSlider.setNumDecimalPlacesToDisplay (1);
     panSlider.setNumDecimalPlacesToDisplay (1);
     duckSlider.setNumDecimalPlacesToDisplay (0);
+    limThresholdSlider.setNumDecimalPlacesToDisplay (1);
 
     // IO sliders start hidden (collapsible section, collapsed by default)
     inputSlider.setVisible (false);
@@ -649,6 +650,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     tiltSlider.setVisible (false);
     panSlider.setVisible (false);
     mixSlider.setVisible (false);
+    limThresholdSlider.setVisible (false);
 
     filterBar_.setOwner (this);
     filterBar_.setScheme (activeScheme);
@@ -714,6 +716,14 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         sumBusCombo.setJustificationType (juce::Justification::centred);
         sumBusCombo.setLookAndFeel (&lnf);
         sumBusCombo.setVisible (false);
+
+        addAndMakeVisible (limModeCombo);
+        limModeCombo.addItem ("NONE",   1);
+        limModeCombo.addItem ("WET",    2);
+        limModeCombo.addItem ("GLOBAL", 3);
+        limModeCombo.setJustificationType (juce::Justification::centred);
+        limModeCombo.setLookAndFeel (&lnf);
+        limModeCombo.setVisible (false);
     }
 
     syncButton.setButtonText ("");
@@ -798,11 +808,13 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindSlider (panAttachment,  ECHOTRAudioProcessor::kParamPan,  panSlider,  0.5);
     bindSlider (mixAttachment, ECHOTRAudioProcessor::kParamMix, mixSlider, kDefaultMix);
     bindSlider (duckAttachment, ECHOTRAudioProcessor::kParamDuck, duckSlider, 0.0);
+    bindSlider (limThresholdAttachment, ECHOTRAudioProcessor::kParamLimThreshold, limThresholdSlider, kDefaultLimThreshold);
 
     // Disable numeric popup for STYLE, ENGINE, and DUCK (slider-only operation)
     modeSlider.setAllowNumericPopup (false);
     engineSlider.setAllowNumericPopup (false);
     duckSlider.setAllowNumericPopup (false);
+    limThresholdSlider.setAllowNumericPopup (false);
 
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
                            const char* paramId,
@@ -821,6 +833,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     modeInAttachment  = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamModeIn,  modeInCombo);
     modeOutAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamModeOut, modeOutCombo);
     sumBusAttachment  = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamSumBus,  sumBusCombo);
+    limModeAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamLimMode, limModeCombo);
 
     for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.addParameterListener (paramId, this);
@@ -872,7 +885,7 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     dismissEditorOwnedModalPrompts (lnf);
     setPromptOverlayActive (false);
 
-    const std::array<BarSlider*, 11> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &duckSlider };
+    const std::array<BarSlider*, 12> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &duckSlider, &limThresholdSlider };
     for (auto* slider : barSliders)
         slider->removeListener (this);
 
@@ -882,6 +895,7 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     modeInCombo.setLookAndFeel (nullptr);
     modeOutCombo.setLookAndFeel (nullptr);
     sumBusCombo.setLookAndFeel (nullptr);
+    limModeCombo.setLookAndFeel (nullptr);
 
     setLookAndFeel (nullptr);
 }
@@ -1297,6 +1311,16 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
 
     cachedPanTextFull  = getPanText();
     cachedPanTextShort = getPanTextShort();
+
+    cachedLimThresholdTextFull  = getLimThresholdText();
+    cachedLimThresholdTextShort = getLimThresholdTextShort();
+    {
+        const float limVal = (float) limThresholdSlider.getValue();
+        if (std::abs (limVal) < 0.05f)
+            cachedLimThresholdIntOnly = "0dB";
+        else
+            cachedLimThresholdIntOnly = juce::String ((int) limVal) + "dB";
+    }
 
     const bool changed = oldTimeFull      != cachedTimeTextFull
                       || oldTimeShort     != cachedTimeTextShort
@@ -4773,6 +4797,22 @@ juce::String ECHOTRAudioProcessorEditor::getDuckTextShort() const
     return juce::String (pct) + "%";
 }
 
+juce::String ECHOTRAudioProcessorEditor::getLimThresholdText() const
+{
+    const float db = (float) limThresholdSlider.getValue();
+    if (std::abs (db) < 0.05f)
+        return "0 dB LIMIT";
+    return juce::String (db, 1) + " dB LIMIT";
+}
+
+juce::String ECHOTRAudioProcessorEditor::getLimThresholdTextShort() const
+{
+    const float db = (float) limThresholdSlider.getValue();
+    if (std::abs (db) < 0.05f)
+        return "0 dB LIM";
+    return juce::String (db, 1) + " dB LIM";
+}
+
 namespace
 {
     constexpr const char* kTimeLegendFull  = "5000 ms TIME";
@@ -4854,16 +4894,18 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.btnRow2Y = editorH - m.bottomMargin - m.box;
     m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
 
-    // When IO is expanded, chaos checkboxes sit as a 3rd button row above btnRow1
-    m.chaosRowY = ioExpanded ? (m.btnRow1Y - m.btnRowGap - m.box) : 0;
+    // When expanded, buttons are hidden — chaos sits at the very bottom row.
+    // When collapsed, buttons occupy btnRow1/btnRow2 and chaos is hidden.
+    m.chaosRowY = ioExpanded ? (editorH - m.bottomMargin - m.box) : 0;
 
-    const int sliderBottomRef = ioExpanded ? m.chaosRowY : m.btnRow1Y;
+    const int sliderBottomRef = ioExpanded ? m.chaosRowY
+                                           : m.btnRow1Y;
     m.availableForSliders = juce::jmax (40, sliderBottomRef - m.betweenSlidersAndButtons - m.topMargin);
 
-    // Bars below toggle: 7 IO bars when expanded (IN/OUT/TILT/FILTER/PAN/MIX/MODE_ROW),
+    // Bars below toggle: 8 IO bars when expanded (IN/OUT/TILT/FILTER/PAN/MIX/LIM_THRESHOLD/MODE_ROW),
     // 6 main bars when collapsed (TIME/MOD/FBK/ENGINE/STYLE/DUCK).
-    const int numSliders = ioExpanded ? 7 : 6;
-    const int numGaps    = ioExpanded ? 7 : 6;
+    const int numSliders = ioExpanded ? 8 : 6;
+    const int numGaps    = ioExpanded ? 8 : 6;
 
     m.toggleBarH = 20;  // fixed visual height for click area
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -4957,6 +4999,21 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
     else
     {
         cachedPanValueArea_ = {};
+    }
+
+    // Cache limiter threshold slider value area
+    if (limThresholdSlider.isVisible())
+    {
+        const auto& bb = limThresholdSlider.getBounds();
+        const int valueX = bb.getRight() + cachedHLayout_.valuePad;
+        const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
+        const int vw   = juce::jmin (cachedHLayout_.valueW, maxW);
+        const int y    = bb.getCentreY() - (kValueAreaHeightPx / 2);
+        cachedLimThresholdValueArea_ = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
+    }
+    else
+    {
+        cachedLimThresholdValueArea_ = {};
     }
 
     // Cache chaos checkbox area
@@ -5479,7 +5536,11 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         if (panSlider.isVisible() && cachedPanValueArea_.getWidth() > 0)
             drawLegendForMode (cachedPanValueArea_, cachedPanTextFull, cachedPanTextShort, cachedPanTextShort);
 
-        // Mode In / Mode Out / Sum Bus labels above combos
+        // Limiter threshold legend (when IO section is expanded)
+        if (limThresholdSlider.isVisible() && cachedLimThresholdValueArea_.getWidth() > 0)
+            drawLegendForMode (cachedLimThresholdValueArea_, cachedLimThresholdTextFull, cachedLimThresholdTextShort, cachedLimThresholdIntOnly);
+
+        // Mode In / Mode Out / Sum Bus / Limiter Mode labels above combos
         if (modeInCombo.isVisible())
         {
             const auto font = juce::Font (juce::FontOptions (11.0f).withStyle ("Bold"));
@@ -5496,6 +5557,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
             drawComboLabel (modeInCombo,  "MODE IN",  "IN");
             drawComboLabel (modeOutCombo, "MODE OUT", "OUT");
             drawComboLabel (sumBusCombo,  "SUM BUS",  "SUM");
+            drawComboLabel (limModeCombo, "LIMIT",    "LIM");
         }
 
         // Chaos checkbox legends (when IO section is expanded)
@@ -5516,6 +5578,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         }
     }
 
+    if (!ioSectionExpanded_)
     {
         // Determine which labels to use based on available space INCLUDING collision bounds
         const auto& labelFont = kBoldFont40();
@@ -5656,25 +5719,27 @@ void ECHOTRAudioProcessorEditor::resized()
 
     if (ioSectionExpanded_)
     {
-        // Expanded: [toggle bar] → INPUT, OUTPUT, TILT, FILTER, PAN, MIX, MODE combos, CHAOS; main params hidden
+        // Expanded: [toggle bar] → INPUT, OUTPUT, TILT, FILTER, PAN, MIX, LIM THRESHOLD, MODE combos, CHAOS; main params hidden
         inputSlider.setBounds  (horizontalLayout.leftX, mainTop + 0 * step, horizontalLayout.barW, verticalLayout.barH);
         outputSlider.setBounds (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
         tiltSlider.setBounds   (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
         filterBar_.setBounds   (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
         panSlider.setBounds    (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
         mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
+        limThresholdSlider.setBounds (horizontalLayout.leftX, mainTop + 6 * step, horizontalLayout.barW, verticalLayout.barH);
 
-        // Mode In / Mode Out / Sum Bus — 3 combos on row 6
+        // Mode In / Mode Out / Sum Bus / Limiter Mode — 4 combos on row 7
         {
             const int modeRowPad = 10;
-            const int modeY = mainTop + 6 * step + modeRowPad;
+            const int modeY = mainTop + 7 * step + modeRowPad;
             const int comboGap = 4;
             const int totalW = horizontalLayout.barW + horizontalLayout.valuePad + horizontalLayout.valueW;
-            const int comboW = (totalW - comboGap * 2) / 3;
+            const int comboW = (totalW - comboGap * 3) / 4;
             const int comboH = juce::jmax (24, verticalLayout.barH);
             modeInCombo.setBounds  (horizontalLayout.leftX,                           modeY, comboW, comboH);
-            modeOutCombo.setBounds (horizontalLayout.leftX + comboW + comboGap,        modeY, comboW, comboH);
+            modeOutCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap),      modeY, comboW, comboH);
             sumBusCombo.setBounds  (horizontalLayout.leftX + (comboW + comboGap) * 2,  modeY, comboW, comboH);
+            limModeCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap) * 3,  modeY, comboW, comboH);
         }
 
         // CHAOS checkboxes at chaosRowY (3rd button row above btnRow1)
@@ -5694,9 +5759,11 @@ void ECHOTRAudioProcessorEditor::resized()
         filterBar_.setVisible (true);
         panSlider.setVisible (true);
         mixSlider.setVisible (true);
+        limThresholdSlider.setVisible (true);
         modeInCombo.setVisible (true);
         modeOutCombo.setVisible (true);
         sumBusCombo.setVisible (true);
+        limModeCombo.setVisible (true);
         chaosFilterButton.setVisible (true);
         chaosFilterDisplay.setVisible (true);
         chaosDelayButton.setVisible (true);
@@ -5715,6 +5782,14 @@ void ECHOTRAudioProcessorEditor::resized()
         engineSlider.setVisible (false);
         modeSlider.setVisible (false);
         duckSlider.setVisible (false);
+
+        reverseButton.setVisible (false);
+        autoFbkButton.setVisible (false);
+        syncButton.setVisible (false);
+        midiButton.setVisible (false);
+        midiChannelDisplay.setVisible (false);
+        autoFbkDisplay.setVisible (false);
+        reverseDisplay.setVisible (false);
     }
     else
     {
@@ -5739,6 +5814,7 @@ void ECHOTRAudioProcessorEditor::resized()
         mixSlider.setBounds (0, 0, 0, 0);
         panSlider.setBounds (0, 0, 0, 0);
         filterBar_.setBounds (0, 0, 0, 0);
+        limThresholdSlider.setBounds (0, 0, 0, 0);
 
         inputSlider.setVisible (false);
         outputSlider.setVisible (false);
@@ -5746,6 +5822,7 @@ void ECHOTRAudioProcessorEditor::resized()
         mixSlider.setVisible (false);
         panSlider.setVisible (false);
         filterBar_.setVisible (false);
+        limThresholdSlider.setVisible (false);
         chaosFilterButton.setVisible (false);
         chaosFilterDisplay.setVisible (false);
         chaosDelayButton.setVisible (false);
@@ -5753,26 +5830,35 @@ void ECHOTRAudioProcessorEditor::resized()
         modeInCombo.setVisible (false);
         modeOutCombo.setVisible (false);
         sumBusCombo.setVisible (false);
+        limModeCombo.setVisible (false);
+
+        reverseButton.setVisible (true);
+        autoFbkButton.setVisible (true);
+        syncButton.setVisible (true);
+        midiButton.setVisible (true);
+        midiChannelDisplay.setVisible (true);
+        autoFbkDisplay.setVisible (true);
+        reverseDisplay.setVisible (true);
     }
 
     // Button area: 2x2 grid — Row 1: RVS + AUTO FBK, Row 2: SYNC + MIDI
-    const int buttonAreaX = horizontalLayout.leftX;
+    // Always visible in both collapsed and expanded modes
+    {
+        const int buttonAreaX = horizontalLayout.leftX;
 
-    const int toggleVisualSide = juce::jlimit (14,
-                                               juce::jmax (14, verticalLayout.box - 2),
-                                               (int) std::lround ((double) verticalLayout.box * 0.65));
-    const int toggleHitW = toggleVisualSide + 6;
+        const int toggleVisualSide = juce::jlimit (14,
+                                                   juce::jmax (14, verticalLayout.box - 2),
+                                                   (int) std::lround ((double) verticalLayout.box * 0.65));
+        const int toggleHitW = toggleVisualSide + 6;
 
-    // Each row has 2 buttons: left-anchored + right-anchored
-    // Row 1: RVS (left) + AUTO FBK (right)
-    // Row 2: SYNC (left) + MIDI (right)
-    const int leftBlockX = buttonAreaX;
-    const int rightBlockX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
+        const int leftBlockX = buttonAreaX;
+        const int rightBlockX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
 
-    reverseButton.setBounds (leftBlockX,  verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
-    autoFbkButton.setBounds (rightBlockX, verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
-    syncButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
-    midiButton.setBounds    (rightBlockX, verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
+        reverseButton.setBounds (leftBlockX,  verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
+        autoFbkButton.setBounds (rightBlockX, verticalLayout.btnRow1Y, toggleHitW, verticalLayout.box);
+        syncButton.setBounds    (leftBlockX,  verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
+        midiButton.setBounds    (rightBlockX, verticalLayout.btnRow2Y, toggleHitW, verticalLayout.box);
+    }
     
     // Position invisible tooltip overlay on the MIDI label area
     {

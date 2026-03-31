@@ -5,6 +5,7 @@
 #include <atomic>
 #include <vector>
 #include "PerfTrace.h"
+#include "DspDebugLog.h"
 
 class ECHOTRAudioProcessor : public juce::AudioProcessor
 {
@@ -57,6 +58,10 @@ public:
 	static constexpr const char* kParamModeIn  = "mode_in";
 	static constexpr const char* kParamModeOut = "mode_out";
 	static constexpr const char* kParamSumBus  = "sum_bus";
+
+	// Limiter parameter IDs
+	static constexpr const char* kParamLimThreshold = "lim_threshold";
+	static constexpr const char* kParamLimMode      = "lim_mode";
 	
 	// UI state parameters (hidden from DAW automation)
 	static constexpr const char* kParamUiWidth    = "ui_width";
@@ -152,6 +157,12 @@ public:
 	static constexpr int   kSumBusDefault    = 0;   // 0=ST   1=→M   2=→S
 	static constexpr float kSqrt2Over2       = 0.707106781f;
 
+	// Limiter ranges and defaults
+	static constexpr float kLimThresholdMin     = -36.0f;
+	static constexpr float kLimThresholdMax     = 0.0f;
+	static constexpr float kLimThresholdDefault = 0.0f;
+	static constexpr int   kLimModeDefault      = 0;   // 0=NONE  1=WET  2=GLOBAL
+
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
 	float tempoSyncToMs (int syncIndex, double bpm) const;
@@ -242,6 +253,10 @@ public:
 
 	// Performance tracing (enable with ECHOTR_PERF_TRACE=1)
 	PerfTrace perfTrace;
+
+	// DSP debug logger (enable with ECHOTR_DSP_DEBUG_LOG=1)
+	// Auto-dumps to Desktop/echotr_dsp_debug.csv on plugin destruction.
+	DspDebugLog dspLog;
 
 private:
 	struct UiStateKeys
@@ -386,6 +401,16 @@ private:
 	float chaosDelayBuf_[2][kChaosDelayBufLen] = {};
 	int   chaosDelayWritePos_ = 0;
 
+	// Dual-stage transparent limiter state (stereo-linked)
+	static constexpr float kLimFloor = 1.0e-12f;
+	float limEnv1_[2] = { kLimFloor, kLimFloor };
+	float limEnv2_[2] = { kLimFloor, kLimFloor };
+	float limAtt1_ = 0.0f;     // Stage 1 attack coefficient (~2 ms)
+	float limRel1_ = 0.0f;     // Stage 1 release coefficient (~10 ms)
+	float limRel2_ = 0.0f;     // Stage 2 release coefficient (~100 ms)
+	bool  wetLimiterActive_ = false;  // true when limMode == WET (set per-block)
+	float limThreshLin_     = 1.0f;   // linear threshold (set per-block)
+
 	// Engine feedback-loop processing state
 	int   engineMode_ = 0;            // 0=CLEAN, 1=ANALOG, 2=BBD
 	int   prevEngineMode_ = 0;        // previous mode for LP state reset on switch
@@ -413,6 +438,49 @@ private:
 	float engineDriftTarget_   = 1.0f;     // raw target (gain multiplier)
 	float engineDriftSmoothed_ = 1.0f;     // EMA-smoothed gain multiplier
 	float engineDriftSmoothCoeff_ = 0.9995f; // EMA coeff
+
+	// Per-sample dual-stage transparent limiter (stereo-linked)
+	// Stage 1: Leveler (2ms att, 10ms rel) — gradual gain reduction
+	// Stage 2: Brickwall (instant att, 100ms rel) — catches transients
+	inline void applyLimiter (float& sampleL, float& sampleR, float threshLin) noexcept
+	{
+		const float peakL = std::abs (sampleL);
+		const float peakR = std::abs (sampleR);
+
+		// Stage 1 — leveler (2 ms attack, 10 ms release)
+		for (int ch = 0; ch < 2; ++ch)
+		{
+			const float p = (ch == 0) ? peakL : peakR;
+			if (p > limEnv1_[ch])
+				limEnv1_[ch] = limAtt1_ * limEnv1_[ch] + (1.0f - limAtt1_) * p;
+			else
+				limEnv1_[ch] = limRel1_ * limEnv1_[ch] + (1.0f - limRel1_) * p;
+			if (limEnv1_[ch] < kLimFloor) limEnv1_[ch] = kLimFloor;
+		}
+
+		// Stage 2 — brickwall (instant attack, 100 ms release)
+		for (int ch = 0; ch < 2; ++ch)
+		{
+			const float p = (ch == 0) ? peakL : peakR;
+			if (p > limEnv2_[ch])
+				limEnv2_[ch] = p;
+			else
+				limEnv2_[ch] = limRel2_ * limEnv2_[ch] + (1.0f - limRel2_) * p;
+			if (limEnv2_[ch] < kLimFloor) limEnv2_[ch] = kLimFloor;
+		}
+
+		// Stereo-linked gain reduction
+		float gr = 1.0f;
+		const float maxEnv1 = juce::jmax (limEnv1_[0], limEnv1_[1]);
+		const float maxEnv2 = juce::jmax (limEnv2_[0], limEnv2_[1]);
+		if (maxEnv1 > threshLin)
+			gr = juce::jmin (gr, threshLin / maxEnv1);
+		if (maxEnv2 > threshLin)
+			gr = juce::jmin (gr, threshLin / maxEnv2);
+
+		sampleL *= gr;
+		sampleR *= gr;
+	}
 
 	// Per-sample duck envelope follower — returns duck gain [0,1]
 	static constexpr float kDuckSmoothCoeff_ = 0.9955f; // same as kGainSmoothCoeff (~5 ms @ 44.1 kHz)
@@ -680,6 +748,9 @@ private:
 	std::atomic<float>* modeInParam   = nullptr;
 	std::atomic<float>* modeOutParam  = nullptr;
 	std::atomic<float>* sumBusParam   = nullptr;
+
+	std::atomic<float>* limThresholdParam = nullptr;
+	std::atomic<float>* limModeParam      = nullptr;
 
 	std::atomic<float>* panParam       = nullptr;
 	float lastPan_      = -1.0f;

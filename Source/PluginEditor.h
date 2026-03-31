@@ -79,8 +79,8 @@ private:
                 return juce::String (rounded2, 2);
             }
 
-            // For input/output gain
-            if (owner != nullptr && (this == &owner->inputSlider || this == &owner->outputSlider))
+            // For input/output gain / limiter threshold
+            if (owner != nullptr && (this == &owner->inputSlider || this == &owner->outputSlider || this == &owner->limThresholdSlider))
             {
                 if (this == &owner->inputSlider && v <= -80.0)
                     return "-INF";
@@ -119,6 +119,7 @@ private:
     BarSlider panSlider;
     BarSlider mixSlider;
     BarSlider duckSlider;
+    BarSlider limThresholdSlider;
 
     juce::ToggleButton syncButton;
     juce::ToggleButton midiButton;
@@ -130,6 +131,7 @@ private:
     juce::ComboBox modeInCombo;
     juce::ComboBox modeOutCombo;
     juce::ComboBox sumBusCombo;
+    juce::ComboBox limModeCombo;
 
     juce::Label midiChannelDisplay;
     juce::Label autoFbkDisplay;
@@ -153,6 +155,7 @@ private:
     std::unique_ptr<SliderAttachment> panAttachment;
     std::unique_ptr<SliderAttachment> mixAttachment;
     std::unique_ptr<SliderAttachment> duckAttachment;
+    std::unique_ptr<SliderAttachment> limThresholdAttachment;
 
     std::unique_ptr<ButtonAttachment> syncAttachment;
     std::unique_ptr<ButtonAttachment> midiAttachment;
@@ -164,6 +167,7 @@ private:
     std::unique_ptr<ComboBoxAttachment> modeInAttachment;
     std::unique_ptr<ComboBoxAttachment> modeOutAttachment;
     std::unique_ptr<ComboBoxAttachment> sumBusAttachment;
+    std::unique_ptr<ComboBoxAttachment> limModeAttachment;
 
     juce::ComponentBoundsConstrainer resizeConstrainer;
     std::unique_ptr<juce::ResizableCornerComponent> resizerCorner;
@@ -376,6 +380,9 @@ private:
     juce::String getDuckText() const;
     juce::String getDuckTextShort() const;
 
+    juce::String getLimThresholdText() const;
+    juce::String getLimThresholdTextShort() const;
+
     int getTargetValueColumnWidth() const;
 
     void sliderValueChanged (juce::Slider* slider) override;
@@ -428,6 +435,10 @@ private:
     juce::String cachedDuckTextFull;
     juce::String cachedDuckTextShort;
 
+    juce::String cachedLimThresholdTextFull;
+    juce::String cachedLimThresholdTextShort;
+    juce::String cachedLimThresholdIntOnly;
+
     juce::String cachedTimeIntOnly;
     juce::String cachedFeedbackIntOnly;
     juce::String cachedModeIntOnly;
@@ -456,6 +467,7 @@ private:
     juce::Rectangle<int> cachedFilterValueArea_;
     juce::Rectangle<int> cachedPanValueArea_;
     juce::Rectangle<int> cachedTiltValueArea_;
+    juce::Rectangle<int> cachedLimThresholdValueArea_;
     juce::Rectangle<int> cachedToggleBarArea_;
     juce::Rectangle<int> cachedChaosArea_;
     bool ioSectionExpanded_ = false;
@@ -466,6 +478,7 @@ private:
     static constexpr double kDefaultInput = (double) ECHOTRAudioProcessor::kInputDefault;
     static constexpr double kDefaultOutput = (double) ECHOTRAudioProcessor::kOutputDefault;
     static constexpr double kDefaultTilt = (double) ECHOTRAudioProcessor::kTiltDefault;
+    static constexpr double kDefaultLimThreshold = (double) ECHOTRAudioProcessor::kLimThresholdDefault;
 
     static constexpr int kMinW = 360;
     static constexpr int kMinH = 660;
