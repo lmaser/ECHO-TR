@@ -253,6 +253,8 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	sumBusParam    = apvts.getRawParameterValue (kParamSumBus);
 	limThresholdParam = apvts.getRawParameterValue (kParamLimThreshold);
 	limModeParam      = apvts.getRawParameterValue (kParamLimMode);
+	invPolParam        = apvts.getRawParameterValue (kParamInvPol);
+	invStrParam        = apvts.getRawParameterValue (kParamInvStr);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
@@ -1817,6 +1819,22 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		                    targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 
+	// ── Invert Polarity / Stereo (WET mode: after delay processing, before Mode Out) ──
+	{
+		const int invPol = loadIntParamOrDefault (invPolParam, kInvPolDefault);
+		const int invStr = loadIntParamOrDefault (invStrParam, kInvStrDefault);
+		if (invPol == 1)
+			for (int ch = 0; ch < numChannels; ++ch)
+				juce::FloatVectorOperations::multiply (buffer.getWritePointer (ch), -1.0f, numSamples);
+		if (invStr == 1 && numChannels >= 2)
+		{
+			float* sL = buffer.getWritePointer (0);
+			float* sR = buffer.getWritePointer (1);
+			for (int n = 0; n < numSamples; ++n)
+				std::swap (sL[n], sR[n]);
+		}
+	}
+
 	// ── Mode Out: M/S encode output after delay processing ──
 	if (numChannels >= 2 && modeOutVal != 0)
 	{
@@ -1894,6 +1912,22 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		auto* chR = (numChannels >= 2) ? buffer.getWritePointer (1) : chL;
 		for (int i = 0; i < numSamples; ++i)
 			applyLimiter (chL[i], chR[i], limThreshLin);
+	}
+
+	// ── Invert Polarity / Stereo (GLOBAL mode: after Limiter GLOBAL, before safety clip) ──
+	{
+		const int invPol = loadIntParamOrDefault (invPolParam, kInvPolDefault);
+		const int invStr = loadIntParamOrDefault (invStrParam, kInvStrDefault);
+		if (invPol == 2)
+			for (int ch = 0; ch < numChannels; ++ch)
+				juce::FloatVectorOperations::multiply (buffer.getWritePointer (ch), -1.0f, numSamples);
+		if (invStr == 2 && numChannels >= 2)
+		{
+			float* sL = buffer.getWritePointer (0);
+			float* sR = buffer.getWritePointer (1);
+			for (int n = 0; n < numSamples; ++n)
+				std::swap (sL[n], sR[n]);
+		}
 	}
 
 	// Safety hard-limiter: prevent catastrophic output only (NaN/Inf runaway).
@@ -2121,6 +2155,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		juce::NormalisableRange<float> (kLimThresholdMin, kLimThresholdMax, 0.1f), kLimThresholdDefault));
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
 		kParamLimMode, "Limiter Mode", juce::StringArray { "NONE", "WET", "GLOBAL" }, kLimModeDefault));
+
+	// Invert Polarity / Invert Stereo
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamInvPol, "Invert Polarity",
+		juce::StringArray { "NONE", "WET", "GLOBAL" }, kInvPolDefault));
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamInvStr, "Invert Stereo",
+		juce::StringArray { "NONE", "WET", "GLOBAL" }, kInvStrDefault));
 
 	// UI state (hidden from automation)
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));

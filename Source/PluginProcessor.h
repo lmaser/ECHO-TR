@@ -59,6 +59,10 @@ public:
 	static constexpr const char* kParamModeOut = "mode_out";
 	static constexpr const char* kParamSumBus  = "sum_bus";
 
+	// Invert Polarity / Invert Stereo
+	static constexpr const char* kParamInvPol  = "inv_pol";
+	static constexpr const char* kParamInvStr  = "inv_str";
+
 	// Limiter parameter IDs
 	static constexpr const char* kParamLimThreshold = "lim_threshold";
 	static constexpr const char* kParamLimMode      = "lim_mode";
@@ -162,6 +166,10 @@ public:
 	static constexpr float kLimThresholdMax     = 0.0f;
 	static constexpr float kLimThresholdDefault = 0.0f;
 	static constexpr int   kLimModeDefault      = 0;   // 0=NONE  1=WET  2=GLOBAL
+
+	// Invert Polarity / Invert Stereo defaults
+	static constexpr int   kInvPolDefault       = 0;   // 0=NONE  1=WET  2=GLOBAL
+	static constexpr int   kInvStrDefault       = 0;   // 0=NONE  1=WET  2=GLOBAL
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -751,6 +759,8 @@ private:
 
 	std::atomic<float>* limThresholdParam = nullptr;
 	std::atomic<float>* limModeParam      = nullptr;
+	std::atomic<float>* invPolParam       = nullptr;
+	std::atomic<float>* invStrParam       = nullptr;
 
 	std::atomic<float>* panParam       = nullptr;
 	float lastPan_      = -1.0f;

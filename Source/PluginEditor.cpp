@@ -724,6 +724,22 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         limModeCombo.setJustificationType (juce::Justification::centred);
         limModeCombo.setLookAndFeel (&lnf);
         limModeCombo.setVisible (false);
+
+        addAndMakeVisible (invPolCombo);
+        invPolCombo.addItem ("NONE",   1);
+        invPolCombo.addItem ("WET",    2);
+        invPolCombo.addItem ("GLOBAL", 3);
+        invPolCombo.setJustificationType (juce::Justification::centred);
+        invPolCombo.setLookAndFeel (&lnf);
+        invPolCombo.setVisible (false);
+
+        addAndMakeVisible (invStrCombo);
+        invStrCombo.addItem ("NONE",   1);
+        invStrCombo.addItem ("WET",    2);
+        invStrCombo.addItem ("GLOBAL", 3);
+        invStrCombo.setJustificationType (juce::Justification::centred);
+        invStrCombo.setLookAndFeel (&lnf);
+        invStrCombo.setVisible (false);
     }
 
     syncButton.setButtonText ("");
@@ -834,6 +850,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     modeOutAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamModeOut, modeOutCombo);
     sumBusAttachment  = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamSumBus,  sumBusCombo);
     limModeAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamLimMode, limModeCombo);
+    invPolAttachment  = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamInvPol,  invPolCombo);
+    invStrAttachment  = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamInvStr,  invStrCombo);
 
     for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.addParameterListener (paramId, this);
@@ -896,6 +914,8 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     modeOutCombo.setLookAndFeel (nullptr);
     sumBusCombo.setLookAndFeel (nullptr);
     limModeCombo.setLookAndFeel (nullptr);
+    invPolCombo.setLookAndFeel (nullptr);
+    invStrCombo.setLookAndFeel (nullptr);
 
     setLookAndFeel (nullptr);
 }
@@ -913,6 +933,14 @@ void ECHOTRAudioProcessorEditor::applyActivePalette()
     activeScheme = scheme;
     lnf.setScheme (activeScheme);
     filterBar_.setScheme (activeScheme);
+
+    for (auto* combo : { &modeInCombo, &modeOutCombo, &sumBusCombo, &limModeCombo, &invPolCombo, &invStrCombo })
+    {
+        combo->setColour (juce::ComboBox::backgroundColourId, scheme.bg);
+        combo->setColour (juce::ComboBox::textColourId,       scheme.text);
+        combo->setColour (juce::ComboBox::outlineColourId,    scheme.outline);
+        combo->setColour (juce::ComboBox::arrowColourId,      scheme.text);
+    }
 }
 
 void ECHOTRAudioProcessorEditor::applyCrtState (bool enabled)
@@ -4904,8 +4932,8 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
 
     // Bars below toggle: 8 IO bars when expanded (IN/OUT/TILT/FILTER/PAN/MIX/LIM_THRESHOLD/MODE_ROW),
     // 6 main bars when collapsed (TIME/MOD/FBK/ENGINE/STYLE/DUCK).
-    const int numSliders = ioExpanded ? 8 : 6;
-    const int numGaps    = ioExpanded ? 8 : 6;
+    const int numSliders = ioExpanded ? 9 : 6;
+    const int numGaps    = ioExpanded ? 9 : 6;
 
     m.toggleBarH = 20;  // fixed visual height for click area
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -5554,10 +5582,13 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
                 const bool useShort = ga.getBoundingBox (0, -1, false).getWidth() > comboW;
                 g.drawText (useShort ? shortTxt : full, area, juce::Justification::centred);
             };
+            g.setColour (activeScheme.text);
             drawComboLabel (modeInCombo,  "MODE IN",  "IN");
             drawComboLabel (modeOutCombo, "MODE OUT", "OUT");
             drawComboLabel (sumBusCombo,  "SUM BUS",  "SUM");
             drawComboLabel (limModeCombo, "LIMIT",    "LIM");
+            drawComboLabel (invPolCombo,  "INV POL",  "POL");
+            drawComboLabel (invStrCombo,  "INV STR",  "STR");
         }
 
         // Chaos checkbox legends (when IO section is expanded)
@@ -5728,7 +5759,7 @@ void ECHOTRAudioProcessorEditor::resized()
         mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
         limThresholdSlider.setBounds (horizontalLayout.leftX, mainTop + 6 * step, horizontalLayout.barW, verticalLayout.barH);
 
-        // Mode In / Mode Out / Sum Bus / Limiter Mode — 4 combos on row 7
+        // Mode In / Mode Out / Sum Bus / Limiter Mode / INV POL / INV STR — 6 combos on row 7-8
         {
             const int modeRowPad = 10;
             const int modeY = mainTop + 7 * step + modeRowPad;
@@ -5740,6 +5771,11 @@ void ECHOTRAudioProcessorEditor::resized()
             modeOutCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap),      modeY, comboW, comboH);
             sumBusCombo.setBounds  (horizontalLayout.leftX + (comboW + comboGap) * 2,  modeY, comboW, comboH);
             limModeCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap) * 3,  modeY, comboW, comboH);
+
+            const int invY = modeY + comboH + comboGap;
+            const int invW = (totalW - comboGap) / 2;
+            invPolCombo.setBounds (horizontalLayout.leftX,                    invY, invW, comboH);
+            invStrCombo.setBounds (horizontalLayout.leftX + invW + comboGap,  invY, invW, comboH);
         }
 
         // CHAOS checkboxes at chaosRowY (3rd button row above btnRow1)
@@ -5764,6 +5800,8 @@ void ECHOTRAudioProcessorEditor::resized()
         modeOutCombo.setVisible (true);
         sumBusCombo.setVisible (true);
         limModeCombo.setVisible (true);
+        invPolCombo.setVisible (true);
+        invStrCombo.setVisible (true);
         chaosFilterButton.setVisible (true);
         chaosFilterDisplay.setVisible (true);
         chaosDelayButton.setVisible (true);
@@ -5831,6 +5869,8 @@ void ECHOTRAudioProcessorEditor::resized()
         modeOutCombo.setVisible (false);
         sumBusCombo.setVisible (false);
         limModeCombo.setVisible (false);
+        invPolCombo.setVisible (false);
+        invStrCombo.setVisible (false);
 
         reverseButton.setVisible (true);
         autoFbkButton.setVisible (true);
