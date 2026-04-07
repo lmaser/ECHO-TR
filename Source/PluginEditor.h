@@ -33,6 +33,8 @@ private:
     void openAutoFbkPrompt();
     void openReverseSmoothPrompt();
     void openFilterPrompt();
+    void openMixSendPrompt();
+    void openEnginePrompt();
     void openChaosConfigPrompt (const char* amtParamId, const char* spdParamId, const juce::String& title);
     void openChaosFilterPrompt();
     void openChaosDelayPrompt();
@@ -51,13 +53,22 @@ private:
         
         void setAllowNumericPopup (bool allow) { allowNumericPopup = allow; }
 
+        std::function<void()> onRightClick;
+
         void mouseDown (const juce::MouseEvent& e) override
         {
-            if (e.mods.isPopupMenu() && allowNumericPopup)
+            if (e.mods.isPopupMenu())
             {
-                if (owner != nullptr)
+                if (onRightClick)
+                {
+                    onRightClick();
+                    return;
+                }
+                if (allowNumericPopup && owner != nullptr)
+                {
                     owner->openNumericEntryPopupForSlider (*this);
-                return;
+                    return;
+                }
             }
 
             juce::Slider::mouseDown (e);
@@ -134,6 +145,8 @@ private:
     juce::ComboBox limModeCombo;
     juce::ComboBox invPolCombo;
     juce::ComboBox invStrCombo;
+    juce::ComboBox mixModeCombo;
+    juce::ComboBox filterPosCombo;
 
     juce::Label midiChannelDisplay;
     juce::Label autoFbkDisplay;
@@ -172,6 +185,8 @@ private:
     std::unique_ptr<ComboBoxAttachment> limModeAttachment;
     std::unique_ptr<ComboBoxAttachment> invPolAttachment;
     std::unique_ptr<ComboBoxAttachment> invStrAttachment;
+    std::unique_ptr<ComboBoxAttachment> mixModeAttachment;
+    std::unique_ptr<ComboBoxAttachment> filterPosAttachment;
 
     juce::ComponentBoundsConstrainer resizeConstrainer;
     std::unique_ptr<juce::ResizableCornerComponent> resizerCorner;
@@ -292,6 +307,51 @@ private:
             juce::Colours::white
         };
     };
+
+    // ── Dual dry/wet level bar (SEND mix mode) ──
+    class DualMixBarComponent : public juce::Component,
+                                public juce::SettableTooltipClient
+    {
+    public:
+        DualMixBarComponent() = default;
+        void setOwner (ECHOTRAudioProcessorEditor* o) { owner = o; }
+        void setScheme (const ECHOScheme& s) { scheme = s; repaint(); }
+
+        void paint (juce::Graphics& g) override;
+        void mouseDown (const juce::MouseEvent& e) override;
+        void mouseDrag (const juce::MouseEvent& e) override;
+        void mouseUp (const juce::MouseEvent& e) override;
+        void mouseMove (const juce::MouseEvent& e) override;
+
+        void updateFromProcessor();
+
+        float getDryLevel() const { return dryLevel_; }
+        float getWetLevel() const { return wetLevel_; }
+
+        enum DragTarget { None, DRY, WET };
+        DragTarget getLastTouched() const { return lastTouched_; }
+
+    private:
+        ECHOTRAudioProcessorEditor* owner = nullptr;
+        ECHOScheme scheme {};
+
+        float dryLevel_ = 0.0f;
+        float wetLevel_ = 1.0f;
+
+        DragTarget currentDrag_ = None;
+        DragTarget lastTouched_ = WET;
+
+        static constexpr float kPad = 7.0f;
+        static constexpr int   kMarkerHitPx = 14;
+
+        juce::Rectangle<float> getInnerArea() const;
+        float levelToScreenX (float level) const;
+        float screenXToLevel (float x) const;
+        DragTarget hitTestMarker (juce::Point<float> p) const;
+        void  setLevelFromMouseX (float mouseX, DragTarget target);
+    };
+
+    DualMixBarComponent dualMixBar_;
 
     // ── Wet-signal filter frequency bar component ──
     class FilterBarComponent : public juce::Component,

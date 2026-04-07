@@ -27,6 +27,11 @@ namespace
 	// Shared by all delay modes (Stereo, Mono, PingPong, Reverse, bypass).
 	constexpr float kGainSmoothCoeff = 0.9955f;
 
+	// SAT2 feedback release EMA: same as kGainSmoothCoeff now that the
+	// compander is gain-neutral (waveshaper gain correction in expander).
+	// No longer needs slow release to protect self-oscillation.
+	constexpr float kSat2FbkReleaseCoeff = kGainSmoothCoeff;
+
 	// ---- Precomputed Tukey (raised-cosine) taper table for reverse mode ----
 	// Avoids per-sample std::cos() in the inner loop.
 	constexpr int kTaperTableSize = 129; // 128 samples + endpoint
@@ -246,7 +251,11 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	chaosSpdParam  = apvts.getRawParameterValue (kParamChaosSpd);
 	chaosAmtFilterParam = apvts.getRawParameterValue (kParamChaosAmtFilter);
 	chaosSpdFilterParam = apvts.getRawParameterValue (kParamChaosSpdFilter);
-	engineParam    = apvts.getRawParameterValue (kParamEngine);
+	engineParam     = apvts.getRawParameterValue (kParamEngine);
+	sat1DriveParam  = apvts.getRawParameterValue (kParamSat1Drive);
+	sat1GritParam   = apvts.getRawParameterValue (kParamSat1Grit);
+	sat2DriveParam  = apvts.getRawParameterValue (kParamSat2Drive);
+	sat2GritParam   = apvts.getRawParameterValue (kParamSat2Grit);
 	duckParam      = apvts.getRawParameterValue (kParamDuck);
 	modeInParam    = apvts.getRawParameterValue (kParamModeIn);
 	modeOutParam   = apvts.getRawParameterValue (kParamModeOut);
@@ -255,6 +264,10 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	limModeParam      = apvts.getRawParameterValue (kParamLimMode);
 	invPolParam        = apvts.getRawParameterValue (kParamInvPol);
 	invStrParam        = apvts.getRawParameterValue (kParamInvStr);
+	mixModeParam       = apvts.getRawParameterValue (kParamMixMode);
+	dryLevelParam      = apvts.getRawParameterValue (kParamDryLevel);
+	wetLevelParam      = apvts.getRawParameterValue (kParamWetLevel);
+	filterPosParam     = apvts.getRawParameterValue (kParamFilterPos);
 	
 	uiWidthParam = apvts.getRawParameterValue (kParamUiWidth);
 	uiHeightParam = apvts.getRawParameterValue (kParamUiHeight);
@@ -278,6 +291,13 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 
 ECHOTRAudioProcessor::~ECHOTRAudioProcessor()
 {
+#ifdef ECHOTR_FBK_DUMP
+	if (fbkDumpFile_ != nullptr)
+	{
+		std::fclose (fbkDumpFile_);
+		fbkDumpFile_ = nullptr;
+	}
+#endif
 }
 
 //==============================================================================
@@ -322,11 +342,6 @@ double ECHOTRAudioProcessor::getTailLengthSeconds() const
 	const int timeSyncValue = loadIntParamOrDefault (timeSyncParam, kTimeSyncDefault);
 	float feedback = loadAtomicOrDefault (feedbackParam, kFeedbackDefault);
 	feedback = juce::jlimit (kFeedbackMin, kFeedbackMax, feedback);
-	{
-		const float sign = feedback < 0.0f ? -1.0f : 1.0f;
-		const float af   = std::abs (feedback);
-		feedback         = sign * af * af * (3.0f - 2.0f * af);
-	}
 	
 	// Get delay time
 	float delayMs = timeMsValue;
@@ -417,6 +432,8 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedInputGain = 1.0f;
 	smoothedOutputGain = 1.0f;
 	smoothedMix = 0.5f;
+	smoothedDryLevel = 1.0f;
+	smoothedWetLevel = 1.0f;
 
 	// Reset reverse delay state
 	reverseAnchor      = 0;
@@ -455,28 +472,87 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	// Reset chaos state
 	chaosFilterEnabled_ = false;
 	chaosDelayEnabled_  = false;
+	chaosStereo_ = false;
 	chaosAmtD_ = 0.0f; chaosAmtF_ = 0.0f;
+	chaosAmtNormD_ = 0.0f;
 	chaosShPeriodD_ = 8820.0f; smoothedChaosShPeriodD_ = 8820.0f;
 	chaosShPeriodF_ = 8820.0f; smoothedChaosShPeriodF_ = 8820.0f;
 	chaosDelayMaxSamples_ = 0.0f; smoothedChaosDelayMaxSamples_ = 0.0f;
 	chaosGainMaxDb_ = 0.0f; smoothedChaosGainMaxDb_ = 0.0f;
 	chaosFilterMaxOct_ = 0.0f; smoothedChaosFilterMaxOct_ = 0.0f;
-	chaosDPhase_ = 0.0f; chaosDTarget_ = 0.0f; chaosDSmoothed_ = 0.0f;
-	chaosGPhase_ = 0.0f; chaosGTarget_ = 0.0f; chaosGSmoothed_ = 0.0f;
-	chaosFPhase_ = 0.0f; chaosFTarget_ = 0.0f; chaosFSmoothed_ = 0.0f;
+	for (int c = 0; c < 2; ++c)
+	{
+		chaosDPrev_[c] = 0.0f; chaosDCurr_[c] = 0.0f; chaosDNext_[c] = 0.0f;
+		chaosDPhase_[c] = 0.0f; chaosDDriftPhase_[c] = 0.0f; chaosDDriftFreqHz_[c] = 0.0f;
+		chaosDOut_[c] = 0.0f;
+		chaosGPrev_[c] = 0.0f; chaosGCurr_[c] = 0.0f; chaosGNext_[c] = 0.0f;
+		chaosGPhase_[c] = 0.0f; chaosGDriftPhase_[c] = 0.0f; chaosGDriftFreqHz_[c] = 0.0f;
+		chaosGOut_[c] = 0.0f;
+	}
+	chaosFPrev_ = 0.0f; chaosFCurr_ = 0.0f; chaosFNext_ = 0.0f;
+	chaosFPhase_ = 0.0f; chaosFDriftPhase_ = 0.0f; chaosFDriftFreqHz_ = 0.0f;
+	chaosFOut_[0] = chaosFOut_[1] = 0.0f;
 	std::memset (chaosDelayBuf_, 0, sizeof (chaosDelayBuf_));
 	chaosDelayWritePos_ = 0;
 
 	// Reset engine state
 	engineMode_ = 0;
 	prevEngineMode_ = 0;
+	smoothedSatDrive_ = kSatDriveDefault * 0.01f;
+	smoothedSatGrit_  = kSatGritDefault  * 0.01f;
 	engineLp1StateL_ = 0.0f; engineLp1StateR_ = 0.0f;
 	engineLp2StateL_ = 0.0f; engineLp2StateR_ = 0.0f;
 	engineLpCoeff_ = 0.0f;
+	engineHpStateL_ = 0.0f; engineHpStateR_ = 0.0f;
+	engineHpCoeff_ = 0.0f;
+	engineHbZL_[0] = engineHbZL_[1] = 0.0f;
+	engineHbZR_[0] = engineHbZR_[1] = 0.0f;
+	enginePreSatLpL_ = 0.0f; enginePreSatLpR_ = 0.0f;
+	enginePreSatLpCoeff_ = 0.0f;
+	engineOutAaLpL_ = 0.0f; engineOutAaLpR_ = 0.0f;
+	engineOutAaLpCoeff_ = 0.0f;
+	enginePostWsB0_ = 1.0f; enginePostWsB1_ = 0.0f; enginePostWsB2_ = 0.0f;
+	enginePostWsA1_ = 0.0f; enginePostWsA2_ = 0.0f;
+	enginePostWsZL_[0] = enginePostWsZL_[1] = 0.0f;
+	enginePostWsZR_[0] = enginePostWsZR_[1] = 0.0f;
+	adaaTanhPrevL_ = 0.0f; adaaTanhPrevR_ = 0.0f;
+	adaaTanhAd1PrevL_ = 0.0f; adaaTanhAd1PrevR_ = 0.0f;
+	adaaSinFbkPrevL_ = 0.0f; adaaSinFbkPrevR_ = 0.0f;
+	adaaSinFbkAd1PrevL_ = 0.0f; adaaSinFbkAd1PrevR_ = 0.0f;
+	adaaFoldPrevL_ = 0.0f; adaaFoldPrevR_ = 0.0f;
+	adaaFoldAd1PrevL_ = 0.0f; adaaFoldAd1PrevR_ = 0.0f;
+	engineSatModPhase_ = 0.0f;
+	engineSatModTarget_ = 1.0f;
+	engineSatModSmoothed_ = 1.0f;
+	engineFlutter2Phase_ = 0.0f;
+	engineCompEnv_ = 0.0f;
+	engineGainJitterPhase_ = 0.0f;
+	engineGainJitterTarget_ = 1.0f;
+	engineGainJitterSmoothed_ = 1.0f;
 	engineDriftPhase_ = 0.0f;
 	engineDriftTarget_ = 1.0f;
 	engineDriftSmoothed_ = 1.0f;
 	smoothedFeedback_ = 0.0f;
+
+	// Open feedback diagnostic dump file
+#ifdef ECHOTR_FBK_DUMP
+	if (fbkDumpFile_ != nullptr)
+		std::fclose (fbkDumpFile_);
+	auto dumpPath = juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
+	                    .getChildFile ("echotr_fbk_dump.csv");
+	fbkDumpFile_ = std::fopen (dumpPath.getFullPathName().toRawUTF8(), "w");
+	if (fbkDumpFile_ != nullptr)
+	{
+		std::fprintf (fbkDumpFile_,
+		              "time_s,raw_fbk,target_fbk,smoothed_fbk,delay_ms,delay_smp,"
+		              "passes_per_sec,effective_gain_per_sec,coeff_type,engine,peak_L,peak_R,"
+		              "comp_env,post_engine_pk,post_fbkmag_pk,fbk_mag,delay_buf_pk,env_mix\n");
+		std::fflush (fbkDumpFile_);
+	}
+	fbkDumpT0_ = juce::Time::getMillisecondCounterHiRes();
+	fbkDumpBlockCount_ = 0;
+#endif
+
 	smoothedDuck_ = 0.0f;
 	duckEnvelope_ = 0.0f;
 	duckAmount_ = 0.0f;
@@ -490,9 +566,6 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	chaosParamSmoothCoeff_ = 0.999f;
 
 	// Precompute sampleRate-dependent smooth coefficients
-	cachedChaosDSmoothCoeff_     = std::exp (-1.0f / ((float) currentSampleRate * 0.030f));
-	cachedChaosGSmoothCoeff_     = std::exp (-1.0f / ((float) currentSampleRate * 0.015f));
-	cachedChaosFSmoothCoeff_     = std::exp (-1.0f / ((float) currentSampleRate * 0.060f));
 	cachedChaosParamSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * 0.010f));
 
 	// Reset limiter state and precompute coefficients
@@ -599,27 +672,60 @@ void ECHOTRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 	float hpTarget = wetFilterTargetHpFreq_;
 	float lpTarget = wetFilterTargetLpFreq_;
 
-	// ── CHAOS filter modulation (S&H already advanced in delay loop) ──
-	if (chaosFilterEnabled_ && chaosAmtF_ > 0.01f)
-	{
-		const float octaveShift = chaosFSmoothed_ * smoothedChaosFilterMaxOct_;
-		const float freqMult = std::exp2 (octaveShift);
-		// When HP/LP knobs are off, chaos sweeps the full 20–20k range
-		const float hpBase = wetFilterHpOn_ ? hpTarget : kFilterFreqMin;
-		const float lpBase = wetFilterLpOn_ ? lpTarget : kFilterFreqMax;
-		hpTarget = juce::jlimit (kFilterFreqMin, kFilterFreqMax, hpBase * freqMult);
-		lpTarget = juce::jlimit (kFilterFreqMin, kFilterFreqMax, lpBase * freqMult);
-	}
-
-	// EMA frequency smoothing
+	// EMA frequency smoothing (base, no chaos)
 	smoothedFilterHpFreq_ += (hpTarget - smoothedFilterHpFreq_) * (1.0f - kGainSmoothCoeff);
 	smoothedFilterLpFreq_ += (lpTarget - smoothedFilterLpFreq_) * (1.0f - kGainSmoothCoeff);
 
-	// Batched coefficient update
+	// Batched coefficient update (with per-channel chaos overlay)
 	if (--filterCoeffCountdown_ <= 0)
 	{
 		filterCoeffCountdown_ = kFilterCoeffUpdateInterval;
-		updateFilterCoeffs (false, false);
+		const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmtF_ > 0.01f;
+		if (chaosFilterActive)
+		{
+			const float sHp = smoothedFilterHpFreq_;
+			const float sLp = smoothedFilterLpFreq_;
+
+			// L channel coefficients
+			const float octL = chaosFOut_[0] * smoothedChaosFilterMaxOct_;
+			const float freqMultL = std::exp2 (octL);
+			const float hpBaseL = wetFilterHpOn_ ? sHp : kFilterFreqMin;
+			const float lpBaseL = wetFilterLpOn_ ? sLp : kFilterFreqMax;
+			smoothedFilterHpFreq_ = juce::jlimit (kFilterFreqMin, kFilterFreqMax, hpBaseL * freqMultL);
+			smoothedFilterLpFreq_ = juce::jlimit (kFilterFreqMin, kFilterFreqMax, lpBaseL * freqMultL);
+			updateFilterCoeffs (true, true);
+
+			if (chaosStereo_)
+			{
+				auto hpL0 = hpCoeffs_[0]; auto hpL1 = hpCoeffs_[1];
+				auto lpL0 = lpCoeffs_[0]; auto lpL1 = lpCoeffs_[1];
+
+				const float octR = chaosFOut_[1] * smoothedChaosFilterMaxOct_;
+				const float freqMultR = std::exp2 (octR);
+				smoothedFilterHpFreq_ = juce::jlimit (kFilterFreqMin, kFilterFreqMax, hpBaseL * freqMultR);
+				smoothedFilterLpFreq_ = juce::jlimit (kFilterFreqMin, kFilterFreqMax, lpBaseL * freqMultR);
+				updateFilterCoeffs (true, true);
+
+				hpCoeffsR_[0] = hpCoeffs_[0]; hpCoeffsR_[1] = hpCoeffs_[1];
+				lpCoeffsR_[0] = lpCoeffs_[0]; lpCoeffsR_[1] = lpCoeffs_[1];
+				hpCoeffs_[0] = hpL0; hpCoeffs_[1] = hpL1;
+				lpCoeffs_[0] = lpL0; lpCoeffs_[1] = lpL1;
+			}
+			else
+			{
+				hpCoeffsR_[0] = hpCoeffs_[0]; hpCoeffsR_[1] = hpCoeffs_[1];
+				lpCoeffsR_[0] = lpCoeffs_[0]; lpCoeffsR_[1] = lpCoeffs_[1];
+			}
+
+			smoothedFilterHpFreq_ = sHp;
+			smoothedFilterLpFreq_ = sLp;
+		}
+		else
+		{
+			updateFilterCoeffs (false, false);
+			hpCoeffsR_[0] = hpCoeffs_[0]; hpCoeffsR_[1] = hpCoeffs_[1];
+			lpCoeffsR_[0] = lpCoeffs_[0]; lpCoeffsR_[1] = lpCoeffs_[1];
+		}
 	}
 
 	// Apply HP cascade (also when chaos modulates frequency)
@@ -629,7 +735,7 @@ void ECHOTRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 		for (int s = 0; s < wetFilterNumSectionsHp_; ++s)
 		{
 			wetL = processBiquad (wetL, hpCoeffs_[s], wetFilterState_[0].hp[s]);
-			wetR = processBiquad (wetR, hpCoeffs_[s], wetFilterState_[1].hp[s]);
+			wetR = processBiquad (wetR, hpCoeffsR_[s], wetFilterState_[1].hp[s]);
 		}
 	}
 
@@ -639,11 +745,15 @@ void ECHOTRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 		for (int s = 0; s < wetFilterNumSectionsLp_; ++s)
 		{
 			wetL = processBiquad (wetL, lpCoeffs_[s], wetFilterState_[0].lp[s]);
-			wetR = processBiquad (wetR, lpCoeffs_[s], wetFilterState_[1].lp[s]);
+			wetR = processBiquad (wetR, lpCoeffsR_[s], wetFilterState_[1].lp[s]);
 		}
 	}
 
-	// ── TILT filter ──
+	// ── TILT filter — now handled by tiltWetSample() ──
+}
+
+void ECHOTRAudioProcessor::tiltWetSample (float& wetL, float& wetR)
+{
 	if (std::abs (tiltDb_) > 0.05f)
 	{
 		if (std::abs (tiltDb_ - lastTiltDb_) > 0.02f)
@@ -709,7 +819,9 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 	
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
-	
+	const float absFbk  = std::abs (feedback);
+	const float fbkSign = (feedback >= 0.0f) ? 1.0f : -1.0f;
+
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
@@ -718,8 +830,19 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
-		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
-		smoothedFeedback_  = smoothedFeedback_  * kGainSmoothCoeff + feedback   * (1.0f - kGainSmoothCoeff);
+		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
+		smoothedWetLevel   = smoothedWetLevel   * kGainSmoothCoeff + wetGainTarget_ * (1.0f - kGainSmoothCoeff);
+		{
+			if (absFbk >= 0.999f)
+				smoothedFeedback_ = absFbk;
+			else
+			{
+				const float c = (engineMode_ == 2 && absFbk < smoothedFeedback_)
+				              ? kSat2FbkReleaseCoeff : kGainSmoothCoeff;
+				smoothedFeedback_ = smoothedFeedback_ * c + absFbk * (1.0f - c);
+			}
+		}
+		const float fbkMag  = smoothedFeedback_;
 		
 		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
@@ -741,29 +864,43 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				const float inputR = channelR[i];
 				const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
 				const float duckGain = advanceDuck (inputL, inputR);
-				float fbkL = delayedL * smoothedFeedback_;
-				float fbkR = delayedR * smoothedFeedback_;
-
-				// DC blocker (transparent feedback path)
-				fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
-				fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+				float fbkL = delayedL * fbkSign;
+				float fbkR = delayedR * fbkSign;
 
 				applyEngineToFeedback (fbkL, fbkR);
+#ifdef ECHOTR_FBK_DUMP
+				dbgPostEnginePk_ = juce::jmax (std::abs (fbkL), std::abs (fbkR));
+				dbgFbkMag_       = fbkMag;
+#endif
+				fbkL *= fbkMag;
+				fbkR *= fbkMag;
+#ifdef ECHOTR_FBK_DUMP
+				dbgPostFbkMagPk_ = juce::jmax (std::abs (fbkL), std::abs (fbkR));
+#endif
 				fbkL *= duckGain;
 				fbkR *= duckGain;
 
-				delayL[writePos] = sanitiseDelay (inputL * smoothedInputGain + fbkL);
-				delayR[writePos] = sanitiseDelay (inputR * smoothedInputGain + fbkR);
+				const float wrL = sanitiseDelay (inputL * smoothedInputGain + fbkL);
+				const float wrR = sanitiseDelay (inputR * smoothedInputGain + fbkR);
+#ifdef ECHOTR_FBK_DUMP
+				dbgDelayBufPk_   = juce::jmax (std::abs (wrL), std::abs (wrR));
+				dbgCompEnv_      = engineCompEnv_;
+#endif
+				delayL[writePos] = wrL;
+				delayR[writePos] = wrR;
 
 				float wetL = delayedL, wetR = delayedR;
-				if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
-				filterWetSample (wetL, wetR);
+				if (filterPre_) filterWetSample (wetL, wetR);
+				if (tiltPre_)   tiltWetSample (wetL, wetR);
+				if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
+				if (!tiltPre_)  tiltWetSample (wetL, wetR);
+				if (!filterPre_) filterWetSample (wetL, wetR);
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 				float wL = wetL * smoothedOutputGain * duckGain;
 				float wR = wetR * smoothedOutputGain * duckGain;
 				if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
-				channelL[i] = inputL * (1.0f - smoothedMix) + wL * smoothedMix;
-				channelR[i] = inputR * (1.0f - smoothedMix) + wR * smoothedMix;
+				channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
+				channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 
 				ECHOTR_DSP_LOG (dspLog, targetDelay, smoothedDelaySamples, smoothedFeedback_,
 				                channelL[i], channelR[i], delayedL, delayedR, fbkL, fbkR,
@@ -773,20 +910,22 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 			else
 			{
 				const float duckGain = advanceDuck (inputL, inputL);
-				float fbkL = delayedL * smoothedFeedback_;
-				// DC blocker (transparent feedback path)
-				fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+				float fbkL = delayedL * fbkSign;
 				{ float fbkR = fbkL; applyEngineToFeedback (fbkL, fbkR); }
+				fbkL *= fbkMag;
 				fbkL *= duckGain;
 				delayL[writePos] = sanitiseDelay (inputL * smoothedInputGain + fbkL);
 				float wetL = delayedL, wetR = delayedL;
-				if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
-				filterWetSample (wetL, wetR);
+				if (filterPre_) filterWetSample (wetL, wetR);
+				if (tiltPre_)   tiltWetSample (wetL, wetR);
+				if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
+				if (!tiltPre_)  tiltWetSample (wetL, wetR);
+				if (!filterPre_) filterWetSample (wetL, wetR);
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 				float wL = wetL * smoothedOutputGain * duckGain;
 				float wR = wL;
 				if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
-				channelL[i] = inputL * (1.0f - smoothedMix) + wL * smoothedMix;
+				channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 			}
 		}
 		
@@ -811,7 +950,9 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 	
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
-	
+	const float absFbk  = std::abs (feedback);
+	const float fbkSign = (feedback >= 0.0f) ? 1.0f : -1.0f;
+
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
@@ -820,8 +961,19 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
-		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
-		smoothedFeedback_  = smoothedFeedback_  * kGainSmoothCoeff + feedback   * (1.0f - kGainSmoothCoeff);
+		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
+		smoothedWetLevel   = smoothedWetLevel   * kGainSmoothCoeff + wetGainTarget_ * (1.0f - kGainSmoothCoeff);
+		{
+			if (absFbk >= 0.999f)
+				smoothedFeedback_ = absFbk;
+			else
+			{
+				const float c = (engineMode_ == 2 && absFbk < smoothedFeedback_)
+				              ? kSat2FbkReleaseCoeff : kGainSmoothCoeff;
+				smoothedFeedback_ = smoothedFeedback_ * c + absFbk * (1.0f - c);
+			}
+		}
+		const float fbkMag  = smoothedFeedback_;
 		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
@@ -839,11 +991,10 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		const float inputMid = (inputL + inputR) * 0.5f;
 		const float duckGain = advanceDuck (inputL, inputR);
 		
-		float fbkMono = delayed * smoothedFeedback_;
+		float fbkMono = delayed * fbkSign;
 
-		// DC blocker (transparent feedback path)
-		fbkMono = dcBlockTick (fbkMono, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
 		{ float fbkR = fbkMono; applyEngineToFeedback (fbkMono, fbkR); }
+		fbkMono *= fbkMag;
 		fbkMono *= duckGain;
 
 		const float toWrite = sanitiseDelay (inputMid * smoothedInputGain + fbkMono);
@@ -851,13 +1002,17 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		delayR[writePos] = toWrite;
 
 		float wetL = delayed, wetR = delayed;
-		filterWetSample (wetL, wetR);
+		if (filterPre_) filterWetSample (wetL, wetR);
+		if (tiltPre_)   tiltWetSample (wetL, wetR);
+		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
+		if (!tiltPre_)  tiltWetSample (wetL, wetR);
+		if (!filterPre_) filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
 		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wL * smoothedMix;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wR * smoothedMix;
+		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
+		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -880,7 +1035,9 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelay = delaySamples;
-	
+	const float absFbk  = std::abs (feedback);
+	const float fbkSign = (feedback >= 0.0f) ? 1.0f : -1.0f;
+
 	for (int i = 0; i < numSamples; ++i)
 	{
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
@@ -889,8 +1046,18 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
-		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
-		smoothedFeedback_  = smoothedFeedback_  * kGainSmoothCoeff + feedback   * (1.0f - kGainSmoothCoeff);
+		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
+		smoothedWetLevel   = smoothedWetLevel   * kGainSmoothCoeff + wetGainTarget_ * (1.0f - kGainSmoothCoeff);
+		{
+			if (absFbk >= 0.999f)
+				smoothedFeedback_ = absFbk;
+			else
+			{
+				const float c = (engineMode_ == 2 && absFbk < smoothedFeedback_)
+				              ? kSat2FbkReleaseCoeff : kGainSmoothCoeff;
+				smoothedFeedback_ = smoothedFeedback_ * c + absFbk * (1.0f - c);
+			}
+		}
 		float readPosF = (float) writePos - smoothedDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
@@ -908,15 +1075,14 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 		const float inputMono = (inputL + inputR) * 0.5f;
 		const float duckGain = advanceDuck (inputL, inputR);
+		const float fbkMag  = smoothedFeedback_;
 		
-		float fbkPpL = delayedR * smoothedFeedback_;
-		float fbkPpR = delayedL * smoothedFeedback_;
-
-		// DC blocker (transparent feedback path)
-		fbkPpL = dcBlockTick (fbkPpL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
-		fbkPpR = dcBlockTick (fbkPpR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+		float fbkPpL = delayedR * fbkSign;
+		float fbkPpR = delayedL * fbkSign;
 
 		applyEngineToFeedback (fbkPpL, fbkPpR);
+		fbkPpL *= fbkMag;
+		fbkPpR *= fbkMag;
 		fbkPpL *= duckGain;
 		fbkPpR *= duckGain;
 
@@ -924,14 +1090,17 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		delayR[writePos] = sanitiseDelay (fbkPpR);
 
 		float wetL = delayedL, wetR = delayedR;
-		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
-		filterWetSample (wetL, wetR);
+		if (filterPre_) filterWetSample (wetL, wetR);
+		if (tiltPre_)   tiltWetSample (wetL, wetR);
+		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
+		if (!tiltPre_)  tiltWetSample (wetL, wetR);
+		if (!filterPre_) filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
 		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wL * smoothedMix;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wR * smoothedMix;
+		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
+		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 		
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -959,6 +1128,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 	// Ratio 2:1 (octave between channels) ⇒ T_L = 2T/3, T_R = T/3.
 	const float targetDelayL = delaySamples * (2.0f / 3.0f);
 	const float targetDelayR = delaySamples * (1.0f / 3.0f);
+	const float absFbk  = std::abs (feedback);
+	const float fbkSign = (feedback >= 0.0f) ? 1.0f : -1.0f;
 
 	for (int i = 0; i < numSamples; ++i)
 	{
@@ -970,8 +1141,18 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
-		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
-		smoothedFeedback_  = smoothedFeedback_  * kGainSmoothCoeff + feedback   * (1.0f - kGainSmoothCoeff);
+		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
+		smoothedWetLevel   = smoothedWetLevel   * kGainSmoothCoeff + wetGainTarget_ * (1.0f - kGainSmoothCoeff);
+		{
+			if (absFbk >= 0.999f)
+				smoothedFeedback_ = absFbk;
+			else
+			{
+				const float c = (engineMode_ == 2 && absFbk < smoothedFeedback_)
+				              ? kSat2FbkReleaseCoeff : kGainSmoothCoeff;
+				smoothedFeedback_ = smoothedFeedback_ * c + absFbk * (1.0f - c);
+			}
+		}
 
 		// L channel read position
 		float readPosL = (float) writePos - smoothedDelaySamples;
@@ -1004,13 +1185,13 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 
 		// Cross-feedback: L reads from R delay, R reads from L delay
 		// Both channels receive their own stereo input
-		float fbkL = delayedR * smoothedFeedback_;
-		float fbkR = delayedL * smoothedFeedback_;
-
-		fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
-		fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+		const float fbkMag  = smoothedFeedback_;
+		float fbkL = delayedR * fbkSign;
+		float fbkR = delayedL * fbkSign;
 
 		applyEngineToFeedback (fbkL, fbkR);
+		fbkL *= fbkMag;
+		fbkR *= fbkMag;
 		fbkL *= duckGain;
 		fbkR *= duckGain;
 
@@ -1018,14 +1199,17 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		delayR[writePos] = sanitiseDelay (inputR * smoothedInputGain + fbkR);
 
 		float wetL = delayedL, wetR = delayedR;
-		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
-		filterWetSample (wetL, wetR);
+		if (filterPre_) filterWetSample (wetL, wetR);
+		if (tiltPre_)   tiltWetSample (wetL, wetR);
+		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
+		if (!tiltPre_)  tiltWetSample (wetL, wetR);
+		if (!filterPre_) filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
 		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wL * smoothedMix;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wR * smoothedMix;
+		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
+		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -1049,6 +1233,8 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelayL = delaySamples;
 	const float targetDelayR = delaySamples * 0.5f; // Half-time offset for R channel
+	const float absFbk  = std::abs (feedback);
+	const float fbkSign = (feedback >= 0.0f) ? 1.0f : -1.0f;
 
 	for (int i = 0; i < numSamples; ++i)
 	{
@@ -1060,8 +1246,18 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
-		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
-		smoothedFeedback_  = smoothedFeedback_  * kGainSmoothCoeff + feedback   * (1.0f - kGainSmoothCoeff);
+		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
+		smoothedWetLevel   = smoothedWetLevel   * kGainSmoothCoeff + wetGainTarget_ * (1.0f - kGainSmoothCoeff);
+		{
+			if (absFbk >= 0.999f)
+				smoothedFeedback_ = absFbk;
+			else
+			{
+				const float c = (engineMode_ == 2 && absFbk < smoothedFeedback_)
+				              ? kSat2FbkReleaseCoeff : kGainSmoothCoeff;
+				smoothedFeedback_ = smoothedFeedback_ * c + absFbk * (1.0f - c);
+			}
+		}
 
 		// L channel read position
 		float readPosL = (float) writePos - smoothedDelaySamples;
@@ -1093,13 +1289,13 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		const float duckGain = advanceDuck (inputL, inputR);
 
 		// Independent feedback: no cross-feedback between L and R
-		float fbkL = delayedL * smoothedFeedback_;
-		float fbkR = delayedR * smoothedFeedback_;
-
-		fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
-		fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+		const float fbkMag  = smoothedFeedback_;
+		float fbkL = delayedL * fbkSign;
+		float fbkR = delayedR * fbkSign;
 
 		applyEngineToFeedback (fbkL, fbkR);
+		fbkL *= fbkMag;
+		fbkR *= fbkMag;
 		fbkL *= duckGain;
 		fbkR *= duckGain;
 
@@ -1107,14 +1303,17 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		delayR[writePos] = sanitiseDelay (inputR * smoothedInputGain + fbkR);
 
 		float wetL = delayedL, wetR = delayedR;
-		if (engineMode_ == 1) applyAnalogOutputSat (wetL, wetR);
-		filterWetSample (wetL, wetR);
+		if (filterPre_) filterWetSample (wetL, wetR);
+		if (tiltPre_)   tiltWetSample (wetL, wetR);
+		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
+		if (!tiltPre_)  tiltWetSample (wetL, wetR);
+		if (!filterPre_) filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
 		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
-		if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wL * smoothedMix;
-		if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wR * smoothedMix;
+		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
+		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 
 		writePos = (writePos + 1) & wrapMask;
 	}
@@ -1162,6 +1361,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 	constexpr float kMinChunkLen = 4.0f;
 	const float maxSafe = static_cast<float>(delayBufferLength >> 1);
+	const float absFbk  = std::abs (feedback);
+	const float fbkSign = (feedback >= 0.0f) ? 1.0f : -1.0f;
 
 	for (int i = 0; i < numSamples; ++i)
 	{
@@ -1172,8 +1373,18 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		if (chaosFilterEnabled_) advanceChaosF();
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
-		smoothedMix        = smoothedMix        * kGainSmoothCoeff + mix        * (1.0f - kGainSmoothCoeff);
-		smoothedFeedback_  = smoothedFeedback_  * kGainSmoothCoeff + feedback   * (1.0f - kGainSmoothCoeff);
+		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
+		smoothedWetLevel   = smoothedWetLevel   * kGainSmoothCoeff + wetGainTarget_ * (1.0f - kGainSmoothCoeff);
+		{
+			if (absFbk >= 0.999f)
+				smoothedFeedback_ = absFbk;
+			else
+			{
+				const float c = (engineMode_ == 2 && absFbk < smoothedFeedback_)
+				              ? kSat2FbkReleaseCoeff : kGainSmoothCoeff;
+				smoothedFeedback_ = smoothedFeedback_ * c + absFbk * (1.0f - c);
+			}
+		}
 
 		// ── Chunk init / boundary ──
 		if (reverseNeedsInit)
@@ -1220,22 +1431,22 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		const float fwdDelayedR = hermite4pt (delayR[fRIdxM1], delayR[fRIdx0], delayR[fRIdx1], delayR[fRIdx2], fRFrac);
 
 		// Feedback routing (mirrors forward-mode functions)
+		const float fbkMag  = smoothedFeedback_;
 		float fbkL, fbkR;
 		if (crossFeedback)
 		{
-			fbkL = fwdDelayedR * smoothedFeedback_;
-			fbkR = fwdDelayedL * smoothedFeedback_;
+			fbkL = fwdDelayedR * fbkSign;
+			fbkR = fwdDelayedL * fbkSign;
 		}
 		else
 		{
-			fbkL = fwdDelayedL * smoothedFeedback_;
-			fbkR = fwdDelayedR * smoothedFeedback_;
+			fbkL = fwdDelayedL * fbkSign;
+			fbkR = fwdDelayedR * fbkSign;
 		}
 
-		fbkL = dcBlockTick (fbkL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
-		fbkR = dcBlockTick (fbkR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
-
 		applyEngineToFeedback (fbkL, fbkR);
+		fbkL *= fbkMag;
+		fbkR *= fbkMag;
 		fbkL *= duckGain;
 		fbkR *= duckGain;
 
@@ -1292,7 +1503,11 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		const float outRevR = rawRevR * outTaper;
 
 		float wetL = outRevL, wetR = outRevR;
-		filterWetSample (wetL, wetR);
+		if (filterPre_) filterWetSample (wetL, wetR);
+		if (tiltPre_)   tiltWetSample (wetL, wetR);
+		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
+		if (!tiltPre_)  tiltWetSample (wetL, wetR);
+		if (!filterPre_) filterWetSample (wetL, wetR);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 
 		float wL = wetL * smoothedOutputGain * duckGain;
@@ -1301,13 +1516,13 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 		if (monoInput)
 		{
-			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wL * smoothedMix;
-			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wR * smoothedMix;
+			if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
+			if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 		}
 		else
 		{
-			if (channelL != nullptr) channelL[i] = inputL * (1.0f - smoothedMix) + wL * smoothedMix;
-			if (channelR != nullptr) channelR[i] = inputR * (1.0f - smoothedMix) + wR * smoothedMix;
+			if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
+			if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 		}
 
 		// Advance write position
@@ -1397,6 +1612,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const bool midiNoteActive = midiEnabled && (midiNote >= 0);
 	const float timeMsValue   = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
 	const int   mode          = loadIntParamOrDefault (modeParam, 1);
+	chaosStereo_ = (mode >= 1);  // stereo chaos for all non-mono modes
 	
 	float targetDelayMs = timeMsValue;
 	
@@ -1429,6 +1645,9 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float inputGainDb = loadAtomicOrDefault (inputParam, kInputDefault);
 	const float outputGainDb= loadAtomicOrDefault (outputParam, kOutputDefault);
 	const float mixValue    = loadAtomicOrDefault (mixParam, kMixDefault);
+	const int   mixMode     = loadIntParamOrDefault (mixModeParam, kMixModeDefault);
+	const float dryLevel    = (mixMode == 1) ? loadAtomicOrDefault (dryLevelParam, kDryLevelDefault) : 0.0f;
+	const float wetLevel    = (mixMode == 1) ? loadAtomicOrDefault (wetLevelParam, kWetLevelDefault) : 0.0f;
 	const float modValue    = loadAtomicOrDefault (modParam, kModDefault);
 	duckAmount_             = loadAtomicOrDefault (duckParam, kDuckDefault) * 0.01f;  // 0-100 → 0-1
 	
@@ -1436,14 +1655,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float inputGain  = fastDecibelsToGain (inputGainDb);
 	const float outputGain = fastDecibelsToGain (outputGainDb);
 	targetFeedback = juce::jlimit (kFeedbackMin, kFeedbackMax, targetFeedback);
-
-	// Smoothstep mapping on |feedback|, sign preserved
-	// Positive = additive comb (all harmonics, sawtooth), negative = subtractive comb (odd harmonics, square)
-	{
-		const float sign = targetFeedback < 0.0f ? -1.0f : 1.0f;
-		const float af   = std::abs (targetFeedback);
-		targetFeedback   = sign * af * af * (3.0f - 2.0f * af);
-	}
+	const float rawFeedback = targetFeedback; // save pre-smoothstep value for diagnostic dump
 
 	// MOD frequency multiplier (hyperbolic below centre, linear above)
 	float freqMultiplier;
@@ -1462,6 +1674,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Detection runs on the FINAL delaySamples (post-MOD) so MOD tweaks also
 	// trigger the reset.
 	const bool autoFbkEnabled = loadBoolParamOrDefault (autoFbkParam, false);
+	float autoFbkEnvMix = 1.0f;    // env follower mix — applied AFTER pow() compensation
 
 	// When ENABLING auto-feedback: launch the envelope (reset to 0) so
 	// it fades in — same effect as hitting a new MIDI note.  Do NOT
@@ -1477,7 +1690,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 	}
 
-	if (autoFbkEnabled && targetFeedback > 0.001f)
+	if (autoFbkEnabled && std::abs (targetFeedback) > 0.001f)
 	{
 		// ── Detection: reset envelope when delay changes significantly ──
 		// Threshold 2 % — industry standard tolerance for pitch-change
@@ -1529,9 +1742,9 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const float tau = kTauFloor + (tauBase - kTauFloor) * pitchScale;
 
 		const float envCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
-		for (int i = 0; i < numSamples; ++i)
-			autoFbkEnvelope = envCoeff * autoFbkEnvelope + (1.0f - envCoeff) * 1.0f;
-
+		// Closed-form geometric series: env approaches 1.0 exponentially.
+		// env_N = 1 - (1 - env_0) * coeff^N  — replaces N per-sample iterations.
+		autoFbkEnvelope = 1.0f - (1.0f - autoFbkEnvelope) * std::pow (envCoeff, (float) numSamples);
 		autoFbkEnvelope = juce::jlimit (0.0f, 1.0f, autoFbkEnvelope);
 
 		// ATT = modulation depth only (cubic curve for gradual onset).
@@ -1543,7 +1756,10 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const float attScaled = attPct * 0.75f;
 		const float attCurved = attScaled * attScaled * attScaled;
 		const float envMix = 1.0f - attCurved * (1.0f - autoFbkEnvelope);
-		targetFeedback *= envMix;
+		// Don't apply envMix here — pow(target*envMix, ppsRatio) with
+		// ppsRatio→0 maps everything to 1.0, neutralizing the modulation.
+		// Instead, save envMix and apply it AFTER pow() compensation.
+		autoFbkEnvMix = envMix;
 	}
 	else
 	{
@@ -1626,7 +1842,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	constexpr float kSnapEpsilon = 1e-5f;
 	if (std::abs (smoothedInputGain  - inputGain)  < kSnapEpsilon) smoothedInputGain  = inputGain;
 	if (std::abs (smoothedOutputGain - outputGain) < kSnapEpsilon) smoothedOutputGain = outputGain;
-	if (std::abs (smoothedMix        - mixValue)   < kSnapEpsilon) smoothedMix        = mixValue;
+	if (std::abs (smoothedDryLevel   - dryGainTarget_) < kSnapEpsilon) smoothedDryLevel   = dryGainTarget_;
+	if (std::abs (smoothedWetLevel   - wetGainTarget_) < kSnapEpsilon) smoothedWetLevel   = wetGainTarget_;
 
 	// ── Feedback loop coefficients (used by all delay modes) ──
 	// DC blocker only — maximally transparent path.
@@ -1648,9 +1865,6 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (std::abs (engineLp2StateR_) < kDnr) engineLp2StateR_ = 0.0f;
 		if (std::abs (tiltState_[0])   < kDnr) tiltState_[0]   = 0.0f;
 		if (std::abs (tiltState_[1])   < kDnr) tiltState_[1]   = 0.0f;
-		if (std::abs (chaosDSmoothed_) < kDnr) chaosDSmoothed_ = 0.0f;
-		if (std::abs (chaosGSmoothed_) < kDnr) chaosGSmoothed_ = 0.0f;
-		if (std::abs (chaosFSmoothed_) < kDnr) chaosFSmoothed_ = 0.0f;
 	}
 
 	// ── Load wet-signal filter targets for process*Delay functions ──
@@ -1658,6 +1872,12 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	wetFilterLpOn_ = loadBoolParamOrDefault (filterLpOnParam, false);
 	wetFilterTargetHpFreq_ = loadAtomicOrDefault (filterHpFreqParam, kFilterHpFreqDefault);
 	wetFilterTargetLpFreq_ = loadAtomicOrDefault (filterLpFreqParam, kFilterLpFreqDefault);
+	{
+		const int fltPos = loadIntParamOrDefault (filterPosParam, kFilterPosDefault);
+		// 0=F▼T▼  1=F▲T▲  2=F▲T▼  3=F▼T▲
+		filterPre_ = (fltPos == 1 || fltPos == 2);
+		tiltPre_   = (fltPos == 1 || fltPos == 3);
+	}
 	{
 		const int hpSlope = juce::roundToInt (loadAtomicOrDefault (filterHpSlopeParam, (float) kFilterSlopeDefault));
 		const int lpSlope = juce::roundToInt (loadAtomicOrDefault (filterLpSlopeParam, (float) kFilterSlopeDefault));
@@ -1681,11 +1901,9 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			chaosAmtD_       = rawAmtD;
 			chaosShPeriodD_  = (float) currentSampleRate / rawSpdD;
 			const float amtNormD = rawAmtD * 0.01f;
+			chaosAmtNormD_        = amtNormD;
 			chaosDelayMaxSamples_ = amtNormD * 0.005f * (float) currentSampleRate;  // ±5ms at 100%
 			chaosGainMaxDb_       = amtNormD * 1.0f;                                // ±1dB at 100%
-			constexpr float kChaosDTau = 0.030f;
-			chaosDSmoothCoeff_ = cachedChaosDSmoothCoeff_;
-			chaosGSmoothCoeff_ = cachedChaosGSmoothCoeff_;
 		}
 		else
 		{
@@ -1701,7 +1919,6 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			chaosShPeriodF_  = (float) currentSampleRate / rawSpdF;
 			const float amtNormF = rawAmtF * 0.01f;
 			chaosFilterMaxOct_ = amtNormF * 2.0f;  // ±2 oct at 100%
-			chaosFSmoothCoeff_ = cachedChaosFSmoothCoeff_;
 		}
 		else
 		{
@@ -1718,34 +1935,164 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		chaosFilterMaxOct_ = 0.0f;
 	}
 
-	// ── Load engine mode and precompute feedback-loop LP coefficient ──
+	// ── Load engine mode and precompute feedback-loop coefficients ──
 	engineMode_ = loadIntParamOrDefault (engineParam, kEngineDefault);
 	if (engineMode_ != prevEngineMode_)
 	{
-		// Reset LP filter state on mode change to prevent transient bursts
+		// Reset all engine filter state on mode change to prevent transient bursts
 		engineLp1StateL_ = 0.0f; engineLp1StateR_ = 0.0f;
 		engineLp2StateL_ = 0.0f; engineLp2StateR_ = 0.0f;
+		engineHpStateL_  = 0.0f; engineHpStateR_  = 0.0f;
+		engineHbZL_[0] = engineHbZL_[1] = 0.0f;
+		engineHbZR_[0] = engineHbZR_[1] = 0.0f;
+		enginePreSatLpL_ = 0.0f; enginePreSatLpR_ = 0.0f;
+		engineOutAaLpL_  = 0.0f; engineOutAaLpR_  = 0.0f;
+		engineSatModPhase_ = 0.0f;
+		engineSatModTarget_ = 1.0f;
+		engineSatModSmoothed_ = 1.0f;
+		engineCompEnv_   = 0.0f;
+		engineFlutter2Phase_ = 0.0f;
 		prevEngineMode_ = engineMode_;
+
+		// Crossfade from dry→processed over 30 ms when entering a SAT
+		// mode.  Prevents transient pops from zeroed filter states
+		// (biquad head bump, compander, etc).  Not needed for →CLEAN
+		// since CLEAN is pass-through (target state = no processing).
+		if (engineMode_ > 0)
+		{
+			engineXfadeLen_ = (int) ((float) currentSampleRate * 0.030f);
+			engineXfadePos_ = 0;
+		}
 	}
 	if (engineMode_ > 0)
 	{
-		// ANALOG: 5 kHz (tape head rolloff), BBD: 3 kHz (anti-alias before S&H)
-		const float cutoff = (engineMode_ == 1) ? 5000.0f : 3000.0f;
-		engineLpCoeff_ = 1.0f - std::exp (-6.2831853f * cutoff / (float) currentSampleRate);
+		const float sr = (float) currentSampleRate;
+
+		// In-loop LP: SAT1 ~10 kHz (tape head spacing loss, no compander),
+		// SAT2 ~5 kHz (BBD anti-alias before S&H, compander compensates).
+		if (engineMode_ == 2)
+			engineLpCoeff_ = 1.0f - std::exp (-6.2831853f * 5000.0f / sr);
+		else
+			engineLpCoeff_ = 1.0f - std::exp (-6.2831853f * 10000.0f / sr);
+
+		// AC-coupling HP: SAT1 ~5 Hz, SAT2 ~5 Hz (low enough for eternal tail at short delays)
+		const float hpCutoff = 5.0f;
+		engineHpCoeff_ = 1.0f - std::exp (-6.2831853f * hpCutoff / sr);
+
 		if (engineMode_ == 1)
 		{
-			// ANALOG wow: sine LFO at ~2 Hz
-			engineDriftPeriod_ = (float) currentSampleRate / 2.0f;
-			// Not used for sine mode, but keep smooth for safety
+			// SAT1 wow: sine LFO at ~0.8 Hz
+			engineDriftPeriod_ = sr / 0.8f;
 			engineDriftSmoothCoeff_ = 0.0f;
+
+			// SAT1 secondary flutter: ~0.15 Hz slow drift
+			engineFlutter2Period_ = sr / 0.15f;
+
+			// SAT1 pre-sat LP not used (no in-loop saturation)
+			enginePreSatLpCoeff_ = 0.0f;
+			// SAT1 output AA LP at ~16 kHz (gentle, mojo is already smooth)
+			engineOutAaLpCoeff_  = 1.0f - std::exp (-6.2831853f * 16000.0f / sr);
+
+			// SAT1 post-WS 2-pole Butterworth LP at ~16 kHz (catches mojo harmonics)
+			{
+				constexpr float kPi = 3.14159265f;
+				const float wc = std::tan (kPi * 16000.0f / sr);
+				const float wc2 = wc * wc;
+				const float k = 1.41421356f; // sqrt(2) for Butterworth Q
+				const float a0inv = 1.0f / (1.0f + k * wc + wc2);
+				enginePostWsB0_ = wc2 * a0inv;
+				enginePostWsB1_ = 2.0f * enginePostWsB0_;
+				enginePostWsB2_ = enginePostWsB0_;
+				enginePostWsA1_ = 2.0f * (wc2 - 1.0f) * a0inv;
+				enginePostWsA2_ = (1.0f - k * wc + wc2) * a0inv;
+			}
+
+			// SAT1 drive modulation: S&H at ~1.5 Hz, EMA ~120 ms
+			// Simulates slow tape bias drift — each moment of
+			// saturation has slightly different intensity.
+			engineSatModPeriod_ = sr / 1.5f;
+			engineSatModSmoothCoeff_ = std::exp (-1.0f / (sr * 0.120f));
+
+			// SAT1 gain jitter: S&H at ~1.5 Hz, EMA ~50 ms
+			// Tape bias voltage drift → ±1.5 dB volume variation at max drive.
+			engineGainJitterPeriod_ = sr / 1.5f;
+			engineGainJitterSmoothCoeff_ = std::exp (-1.0f / (sr * 0.050f));
+
+			// Head bump peaking EQ: ~80 Hz, +0.15 dB, Q≈0.8
+			// Mild boost — accumulates inside feedback loop.  Kept at
+			// +0.15 dB so self-oscillation threshold is ~97% knob
+			// (virtually at max).  Prevents the abrupt tail cutoff that
+			// occurred at +0.5 dB where the 80 Hz threshold was at ~89%.
+			// Still audible cumulative warmth: 10 reps = +1.5 dB at 80 Hz.
+			const float f0 = 80.0f;
+			const float gainDb = 0.15f;
+			const float Q = 0.8f;
+			const float A = std::pow (10.0f, gainDb / 40.0f);
+			const float w0 = 6.2831853f * f0 / sr;
+			const float sinw = std::sin (w0);
+			const float cosw = std::cos (w0);
+			const float alpha = sinw / (2.0f * Q);
+			const float a0inv = 1.0f / (1.0f + alpha / A);
+			engineHbB0_ = (1.0f + alpha * A) * a0inv;
+			engineHbB1_ = (-2.0f * cosw) * a0inv;
+			engineHbB2_ = (1.0f - alpha * A) * a0inv;
+			engineHbA1_ = engineHbB1_;
+			engineHbA2_ = (1.0f - alpha / A) * a0inv;
 		}
 		else
 		{
-			// BBD clock jitter: S&H at ~15 Hz
-			engineDriftPeriod_ = (float) currentSampleRate / 15.0f;
-			// EMA τ ≈ 15ms — fast enough for jitter, smooth enough to avoid clicks
-			engineDriftSmoothCoeff_ = std::exp (-1.0f / ((float) currentSampleRate * 0.015f));
+			// SAT2 clock jitter: S&H at ~4 Hz
+			engineDriftPeriod_ = sr / 4.0f;
+			engineDriftSmoothCoeff_ = std::exp (-1.0f / (sr * 0.080f));
+
+			// SAT2 pre-saturation AA not needed (3 kHz LP already pre-sat)
+			enginePreSatLpCoeff_ = 0.0f;
+			// SAT2 output AA LP at ~10 kHz
+			engineOutAaLpCoeff_  = 1.0f - std::exp (-6.2831853f * 10000.0f / sr);
+
+			// SAT2 post-WS 2-pole Butterworth LP at ~12 kHz (catches cubic fold harmonics)
+			{
+				constexpr float kPi = 3.14159265f;
+				const float wc = std::tan (kPi * 12000.0f / sr);
+				const float wc2 = wc * wc;
+				const float k = 1.41421356f; // sqrt(2) for Butterworth Q
+				const float a0inv = 1.0f / (1.0f + k * wc + wc2);
+				enginePostWsB0_ = wc2 * a0inv;
+				enginePostWsB1_ = 2.0f * enginePostWsB0_;
+				enginePostWsB2_ = enginePostWsB0_;
+				enginePostWsA1_ = 2.0f * (wc2 - 1.0f) * a0inv;
+				enginePostWsA2_ = (1.0f - k * wc + wc2) * a0inv;
+			}
+
+			// SAT2 drive modulation: S&H at ~3 Hz, EMA ~60 ms
+			// Simulates BBD clock instability — harmonic content
+			// shifts subtly with each sample-and-hold step.
+			engineSatModPeriod_ = sr / 3.0f;
+			engineSatModSmoothCoeff_ = std::exp (-1.0f / (sr * 0.060f));
+
+			// SAT2 gain jitter: S&H at ~8 Hz, EMA ~20 ms
+			// BBD clock instability → ±1.0 dB volume variation at max drive.
+			engineGainJitterPeriod_ = sr / 8.0f;
+			engineGainJitterSmoothCoeff_ = std::exp (-1.0f / (sr * 0.020f));
+
+			// SAT2 compander timing: ~1 ms attack, ~80 ms release
+			// Slower release follows program envelope rather than individual
+			// wave cycles — prevents AM-induced detune perception.
+			engineCompAttack_  = std::exp (-1.0f / (sr * 0.001f));
+			engineCompRelease_ = std::exp (-1.0f / (sr * 0.080f));
 		}
+	}
+
+	// ── Saturation Drive / Grit (smoothed once per block, mode-specific) ──
+	if (engineMode_ > 0)
+	{
+		auto* driveP = (engineMode_ == 1) ? sat1DriveParam : sat2DriveParam;
+		auto* gritP  = (engineMode_ == 1) ? sat1GritParam  : sat2GritParam;
+		const float driveTarget = loadAtomicOrDefault (driveP, kSatDriveDefault) * 0.01f;   // 0..1
+		const float gritTarget  = loadAtomicOrDefault (gritP,  kSatGritDefault)  * 0.01f;   // 0..1
+		constexpr float kSatParamSmooth = 0.05f; // ~50 ms at block rate
+		smoothedSatDrive_ += kSatParamSmooth * (driveTarget - smoothedSatDrive_);
+		smoothedSatGrit_  += kSatParamSmooth * (gritTarget  - smoothedSatGrit_);
 	}
 	
 	// ── Mode In / Mode Out / Sum Bus ──
@@ -1784,40 +2131,125 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 	}
 
+	// ── Delay-time compensated feedback ──────────────────────────
+	// pow(fbk, T/Tref) keeps the audible decay rate (dB/s) constant
+	// regardless of delay time.  At the reference delay (500 ms) the
+	// coefficient equals the raw knob position.  At shorter delays the
+	// per-pass gain is compressed toward 1.0; at longer delays it's
+	// expanded so tails don't linger.
+	// The ratio is clamped to kMinPpsRatio (0.5 ≈ 250 ms) so that at
+	// very short delays the compensation doesn't compress the full knob
+	// range into a near-unity sliver — keeping the control usable and
+	// the 0%→1% transition smooth.
+	constexpr float kRefDelayMs  = 500.0f;
+	constexpr float kMinPpsRatio = 0.5f;
+	const float refDelaySamples = static_cast<float> (currentSampleRate) * kRefDelayMs * 0.001f;
+	const float ppsRatio = (delaySamples > 0.0f)
+	                     ? juce::jmax (kMinPpsRatio, delaySamples / refDelaySamples)
+	                     : 1.0f;
+
+	const float absFbk = std::abs (targetFeedback);
+	// Threshold 0.005 (0.5%) — any value that rounds to "0%" in the UI
+	// produces exactly zero feedback.  Without this, residual slider
+	// values like 0.003 get amplified by pow(x, small_exponent) at short
+	// delays (e.g. pow(0.003, 0.02) ≈ 0.88 → 88% effective feedback).
+	const float absEff = (absFbk > 0.005f) ? std::pow (absFbk, ppsRatio) : 0.0f;
+	float effFbk = (targetFeedback < 0.0f) ? -absEff : absEff;
+
+	// Apply env follower mix AFTER pow() so the modulation affects the
+	// per-pass gain directly instead of being neutralized by pow(x, ~0).
+	effFbk *= autoFbkEnvMix;
+
+	// All engines now use pure delay-time compensation.
+	// The compander is gain-neutral, and fbkMag is applied as an
+	// external multiplier — matching CLEAN/SAT1 architecture.
+	const float delayFeedback = effFbk;
+
+	// Scale SAT2 BBD noise injection by raw knob position so near-zero
+	// feedback doesn't accumulate phantom noise through the compensated
+	// loop gain.  At high feedback the noise level is unchanged.
+	engineNoiseScale_ = std::abs (rawFeedback);
+
+	// Sign is applied instantly in each delay function (no smoothing through
+	// zero).  smoothedFeedback_ only tracks the magnitude (always >= 0).
+
+	// ── Dry/Wet gain targets (unified for INSERT and SEND modes) ──
+	if (mixMode == 0) // INSERT: classic crossfade
+	{
+		dryGainTarget_ = 1.0f - mixValue;
+		wetGainTarget_ = mixValue;
+	}
+	else // SEND: independent dry + wet levels
+	{
+		dryGainTarget_ = dryLevel;
+		wetGainTarget_ = wetLevel;
+	}
+
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
 	if (reverseEnabled)
 	{
 		const float smoothVal  = loadAtomicOrDefault (reverseSmoothParam, kReverseSmoothDefault);
 		const float smoothMult = std::exp2 (smoothVal);
 		processReverseDelay (buffer, numSamples, numChannels, delaySamples,
-		                     targetFeedback, inputGain, outputGain, mixValue, revDelaySmoothCoeff,
+		                     delayFeedback, inputGain, outputGain, mixValue, revDelaySmoothCoeff,
 		                     smoothMult, mode);
 	}
 	else if (mode == 0)
 	{
 		processMonoDelay (buffer, numSamples, numChannels, delaySamples, 
-		                  targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+		                  delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 	else if (mode == 2) // WIDE
 	{
 		processWideDelay (buffer, numSamples, numChannels, delaySamples,
-		                  targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+		                  delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 	else if (mode == 3) // DUAL
 	{
 		processDualDelay (buffer, numSamples, numChannels, delaySamples,
-		                  targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+		                  delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 	else if (mode == 4) // PING-PONG
 	{
 		processPingPongDelay (buffer, numSamples, numChannels, delaySamples,
-		                      targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+		                      delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
 	else // STEREO (default)
 	{
 		processStereoDelay (buffer, numSamples, numChannels, delaySamples,
-		                    targetFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+		                    delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
 	}
+
+	// ── Feedback diagnostic dump (1 line per block) ──
+#ifdef ECHOTR_FBK_DUMP
+	if (fbkDumpFile_ != nullptr)
+	{
+		const double now = (juce::Time::getMillisecondCounterHiRes() - fbkDumpT0_) * 0.001;
+		const float delayMs = (delaySamples / (float) currentSampleRate) * 1000.0f;
+		const float passesPerSec = (delaySamples > 0.0f) ? ((float) currentSampleRate / delaySamples) : 0.0f;
+		const float sf = smoothedFeedback_;
+		const float normFbk = effFbk;
+		const char* coeffType = "COMP";
+		// Peak signal in output buffer
+		float peakL = 0.0f, peakR = 0.0f;
+		if (numChannels > 0)
+			peakL = buffer.getMagnitude (0, 0, numSamples);
+		if (numChannels > 1)
+			peakR = buffer.getMagnitude (1, 0, numSamples);
+
+		std::fprintf (fbkDumpFile_,
+		              "%.4f,%.6f,%.6f,%.6f,%.2f,%.1f,%.1f,%.8f,%s,%d,%.8f,%.8f,%.6f,%.8f,%.8f,%.6f,%.8f,%.6f\n",
+		              now, rawFeedback, targetFeedback, sf,
+		              delayMs, delaySamples, passesPerSec, normFbk,
+		              coeffType, engineMode_, peakL, peakR,
+		              dbgCompEnv_, dbgPostEnginePk_, dbgPostFbkMagPk_,
+		              dbgFbkMag_, dbgDelayBufPk_, autoFbkEnvMix);
+
+		// Flush every 100 blocks (~0.6s) to avoid data loss
+		if (++fbkDumpBlockCount_ % 10 == 0)
+			std::fflush (fbkDumpFile_);
+	}
+#endif
 
 	// ── Invert Polarity / Stereo (WET mode: after delay processing, before Mode Out) ──
 	{
@@ -1863,14 +2295,14 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			if (modeInVal == 1)      { const float m = (encL + encR) * kSqrt2Over2; encL = encR = m; }
 			else if (modeInVal == 2) { const float s = (encL - encR) * kSqrt2Over2; encL = encR = s; }
 
-			const float dryContribL = encL * (1.0f - mixValue);
-			const float dryContribR = encR * (1.0f - mixValue);
+			const float dryContribL = encL * dryGainTarget_;
+			const float dryContribR = encR * dryGainTarget_;
 			const float wetL = chL[i] - dryContribL;
 			const float wetR = chR[i] - dryContribR;
 
 			// Original dry pass-through (pre-Mode-In, preserves stereo image)
-			const float origDryL = dL[i] * (1.0f - mixValue);
-			const float origDryR = dR[i] * (1.0f - mixValue);
+			const float origDryL = dL[i] * dryGainTarget_;
+			const float origDryR = dR[i] * dryGainTarget_;
 
 			if (sumBusVal == 1) // →M: wet collapsed to mono mid
 			{
@@ -2131,10 +2563,24 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		kParamChaosSpdFilter, "Chaos Filter Speed",
 		juce::NormalisableRange<float> (kChaosSpdMin, kChaosSpdMax, 0.01f, 0.3f), kChaosSpdDefault));
 
-	// Engine (feedback-loop character: CLEAN / ANALOG / BBD)
+	// Model (feedback-loop character: CLEAN / SAT1 / SAT2)
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamEngine, "Engine",
+		kParamEngine, "Model",
 		juce::NormalisableRange<float> ((float) kEngineMin, (float) kEngineMax, 1.0f, 1.0f), (float) kEngineDefault));
+
+	// Saturation Drive (intensity of waveshaper, 0-100%) — independent per mode
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamSat1Drive, "Sat1 Drive",
+		juce::NormalisableRange<float> (kSatDriveMin, kSatDriveMax, 0.1f), kSatDriveDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamSat1Grit, "Sat1 Grit",
+		juce::NormalisableRange<float> (kSatGritMin, kSatGritMax, 0.1f), kSatGritDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamSat2Drive, "Sat2 Drive",
+		juce::NormalisableRange<float> (kSatDriveMin, kSatDriveMax, 0.1f), kSatDriveDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamSat2Grit, "Sat2 Grit",
+		juce::NormalisableRange<float> (kSatGritMin, kSatGritMax, 0.1f), kSatGritDefault));
 
 	// Duck (Valhalla-style 1-knob ducking: 0-100%)
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
@@ -2163,6 +2609,26 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
 		kParamInvStr, "Invert Stereo",
 		juce::StringArray { "NONE", "WET", "GLOBAL" }, kInvStrDefault));
+
+	// Mix Mode (INSERT / SEND) + Dry/Wet levels for SEND mode
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamMixMode, "Mix Mode",
+		juce::StringArray { "INSERT", "SEND" }, kMixModeDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamDryLevel, "Dry Level",
+		juce::NormalisableRange<float> (0.0f, 1.0f, 0.0f, 1.0f), kDryLevelDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamWetLevel, "Wet Level",
+		juce::NormalisableRange<float> (0.0f, 1.0f, 0.0f, 1.0f), kWetLevelDefault));
+
+	// Filter / Tilt position (PRE / POST saturation)
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamFilterPos, "Filter Position",
+		juce::StringArray { juce::String::fromUTF8 (u8"F\u25bc T\u25bc"),
+		                    juce::String::fromUTF8 (u8"F\u25b2 T\u25b2"),
+		                    juce::String::fromUTF8 (u8"F\u25b2 T\u25bc"),
+		                    juce::String::fromUTF8 (u8"F\u25bc T\u25b2") },
+		kFilterPosDefault));
 
 	// UI state (hidden from automation)
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));

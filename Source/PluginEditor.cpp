@@ -357,6 +357,191 @@ void ECHOTRAudioProcessorEditor::MinimalLNF::drawTooltip (juce::Graphics& g,
                       1);
 }
 
+//========================== DualMixBarComponent ==========================
+
+juce::Rectangle<float> ECHOTRAudioProcessorEditor::DualMixBarComponent::getInnerArea() const
+{
+    return getLocalBounds().toFloat().reduced (kPad);
+}
+
+float ECHOTRAudioProcessorEditor::DualMixBarComponent::levelToScreenX (float level) const
+{
+    // Maps 0..1 level to x within the LEFT half (DRY) or RIGHT half (WET).
+    // Caller offsets for the correct half.
+    (void) level;
+    return 0.0f; // unused — per-half helpers below
+}
+
+float ECHOTRAudioProcessorEditor::DualMixBarComponent::screenXToLevel (float x) const
+{
+    (void) x;
+    return 0.0f; // unused — per-half helpers below
+}
+
+ECHOTRAudioProcessorEditor::DualMixBarComponent::DragTarget
+ECHOTRAudioProcessorEditor::DualMixBarComponent::hitTestMarker (juce::Point<float> p) const
+{
+    const auto inner = getInnerArea();
+    const float halfW = inner.getWidth() * 0.5f;
+    const float midX  = inner.getX() + halfW;
+
+    return (p.x < midX) ? DRY : WET;
+}
+
+void ECHOTRAudioProcessorEditor::DualMixBarComponent::setLevelFromMouseX (float mouseX, DragTarget target)
+{
+    if (owner == nullptr || target == None)
+        return;
+
+    const auto inner = getInnerArea();
+    const float halfW = inner.getWidth() * 0.5f;
+
+    float level;
+    if (target == DRY)
+        level = (halfW > 0.0f) ? juce::jlimit (0.0f, 1.0f, (mouseX - inner.getX()) / halfW) : 0.0f;
+    else
+        level = (halfW > 0.0f) ? juce::jlimit (0.0f, 1.0f, (mouseX - (inner.getX() + halfW)) / halfW) : 0.0f;
+
+    const char* paramId = (target == DRY) ? ECHOTRAudioProcessor::kParamDryLevel
+                                          : ECHOTRAudioProcessor::kParamWetLevel;
+    auto& proc = owner->audioProcessor;
+    if (auto* param = proc.apvts.getParameter (paramId))
+        param->setValueNotifyingHost (level);
+}
+
+void ECHOTRAudioProcessorEditor::DualMixBarComponent::updateFromProcessor()
+{
+    if (owner == nullptr) return;
+    auto& proc = owner->audioProcessor;
+    const float newDry = proc.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamDryLevel)->load();
+    const float newWet = proc.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamWetLevel)->load();
+
+    if (newDry == dryLevel_ && newWet == wetLevel_)
+        return;
+
+    dryLevel_ = newDry;
+    wetLevel_ = newWet;
+    repaint();
+}
+
+void ECHOTRAudioProcessorEditor::DualMixBarComponent::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat();
+
+    g.setColour (scheme.outline);
+    g.drawRect (r, 4.0f);
+
+    const auto inner = getInnerArea();
+    g.setColour (scheme.bg);
+    g.fillRect (inner);
+
+    const float halfW = inner.getWidth() * 0.5f;
+    const float divX  = inner.getX() + halfW;
+
+    // Centre divider line
+    g.setColour (scheme.fg.withAlpha (0.25f));
+    g.drawVerticalLine ((int) divX, inner.getY(), inner.getBottom());
+
+    // DRY fill (left half, from left edge to marker)
+    {
+        const float fillW = dryLevel_ * halfW;
+        g.setColour (scheme.fg.withAlpha (0.18f));
+        g.fillRect (juce::Rectangle<float> (inner.getX(), inner.getY(), fillW, inner.getHeight())
+                     .getIntersection (inner));
+    }
+
+    // WET fill (right half, from divider to marker)
+    {
+        const float fillW = wetLevel_ * halfW;
+        g.setColour (scheme.fg.withAlpha (0.35f));
+        g.fillRect (juce::Rectangle<float> (divX, inner.getY(), fillW, inner.getHeight())
+                     .getIntersection (inner));
+    }
+
+    // DRY marker — vertical line full height inside left half
+    {
+        const float mx = inner.getX() + dryLevel_ * halfW;
+        if (mx >= inner.getX() && mx <= divX)
+        {
+            const float hw = 2.5f;
+            const float overshoot = 3.0f;
+            g.setColour (scheme.fg.withAlpha (0.7f));
+            g.fillRoundedRectangle (mx - hw, inner.getY() - overshoot, hw * 2.0f,
+                                    inner.getHeight() + overshoot * 2.0f, 2.0f);
+        }
+    }
+
+    // WET marker — vertical line full height inside right half
+    {
+        const float mx = divX + wetLevel_ * halfW;
+        if (mx >= divX && mx <= inner.getRight())
+        {
+            const float hw = 2.5f;
+            const float overshoot = 3.0f;
+            g.setColour (scheme.fg);
+            g.fillRoundedRectangle (mx - hw, inner.getY() - overshoot, hw * 2.0f,
+                                    inner.getHeight() + overshoot * 2.0f, 2.0f);
+        }
+    }
+}
+
+void ECHOTRAudioProcessorEditor::DualMixBarComponent::mouseDown (const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu())
+    {
+        if (owner != nullptr)
+            owner->openMixSendPrompt();
+        return;
+    }
+
+    currentDrag_ = hitTestMarker (e.position);
+    if (currentDrag_ != None)
+    {
+        lastTouched_ = currentDrag_;
+        setLevelFromMouseX (e.position.x, currentDrag_);
+        updateFromProcessor();
+        if (owner != nullptr)
+        {
+            if (owner->refreshLegendTextCache())
+                owner->updateCachedLayout();
+            owner->repaint();
+        }
+    }
+}
+
+void ECHOTRAudioProcessorEditor::DualMixBarComponent::mouseDrag (const juce::MouseEvent& e)
+{
+    if (currentDrag_ != None)
+    {
+        setLevelFromMouseX (e.position.x, currentDrag_);
+        updateFromProcessor();
+        if (owner != nullptr)
+        {
+            if (owner->refreshLegendTextCache())
+                owner->updateCachedLayout();
+            owner->repaint();
+        }
+    }
+}
+
+void ECHOTRAudioProcessorEditor::DualMixBarComponent::mouseUp (const juce::MouseEvent&)
+{
+    currentDrag_ = None;
+}
+
+void ECHOTRAudioProcessorEditor::DualMixBarComponent::mouseMove (const juce::MouseEvent& e)
+{
+    const auto target = hitTestMarker (e.position);
+    const float level = (target == DRY) ? dryLevel_ : wetLevel_;
+    const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
+    const juce::String label = (target == DRY) ? "DRY" : "WET";
+
+    if (dB <= -100.0f)
+        setTooltip (label + ": -INF dB");
+    else
+        setTooltip (label + ": " + juce::String (dB, 1) + " dB");
+}
+
 //========================== FilterBarComponent ==========================
 
 juce::Rectangle<float> ECHOTRAudioProcessorEditor::FilterBarComponent::getInnerArea() const
@@ -658,6 +843,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     filterBar_.setVisible (false);
     filterBar_.updateFromProcessor();
 
+    dualMixBar_.setScheme (activeScheme);
+
     // Chaos filter button + tooltip overlay
     chaosFilterButton.setButtonText ("");
     addAndMakeVisible (chaosFilterButton);
@@ -740,7 +927,27 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         invStrCombo.setJustificationType (juce::Justification::centred);
         invStrCombo.setLookAndFeel (&lnf);
         invStrCombo.setVisible (false);
+
+        addAndMakeVisible (mixModeCombo);
+        mixModeCombo.addItem ("INSERT", 1);
+        mixModeCombo.addItem ("SEND",   2);
+        mixModeCombo.setJustificationType (juce::Justification::centred);
+        mixModeCombo.setLookAndFeel (&lnf);
+        mixModeCombo.setVisible (false);
+
+        addAndMakeVisible (filterPosCombo);
+        filterPosCombo.addItem (juce::String::fromUTF8 (u8"F\u25bc T\u25bc"), 1);
+        filterPosCombo.addItem (juce::String::fromUTF8 (u8"F\u25b2 T\u25b2"), 2);
+        filterPosCombo.addItem (juce::String::fromUTF8 (u8"F\u25b2 T\u25bc"), 3);
+        filterPosCombo.addItem (juce::String::fromUTF8 (u8"F\u25bc T\u25b2"), 4);
+        filterPosCombo.setJustificationType (juce::Justification::centred);
+        filterPosCombo.setLookAndFeel (&lnf);
+        filterPosCombo.setVisible (false);
     }
+
+    addAndMakeVisible (dualMixBar_);
+    dualMixBar_.setOwner (this);
+    dualMixBar_.setVisible (false);
 
     syncButton.setButtonText ("");
     autoFbkButton.setButtonText ("");
@@ -829,6 +1036,12 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     // Disable numeric popup for STYLE, ENGINE, and DUCK (slider-only operation)
     modeSlider.setAllowNumericPopup (false);
     engineSlider.setAllowNumericPopup (false);
+    engineSlider.onRightClick = [this] ()
+    {
+        const int mode = juce::roundToInt (engineSlider.getValue());
+        if (mode > 0)  // SAT1 or SAT2
+            openEnginePrompt();
+    };
     duckSlider.setAllowNumericPopup (false);
     limThresholdSlider.setAllowNumericPopup (false);
 
@@ -852,6 +1065,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     limModeAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamLimMode, limModeCombo);
     invPolAttachment  = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamInvPol,  invPolCombo);
     invStrAttachment  = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamInvStr,  invStrCombo);
+    mixModeAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamMixMode, mixModeCombo);
+    filterPosAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, ECHOTRAudioProcessor::kParamFilterPos, filterPosCombo);
 
     for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.addParameterListener (paramId, this);
@@ -916,6 +1131,7 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     limModeCombo.setLookAndFeel (nullptr);
     invPolCombo.setLookAndFeel (nullptr);
     invStrCombo.setLookAndFeel (nullptr);
+    filterPosCombo.setLookAndFeel (nullptr);
 
     setLookAndFeel (nullptr);
 }
@@ -933,8 +1149,9 @@ void ECHOTRAudioProcessorEditor::applyActivePalette()
     activeScheme = scheme;
     lnf.setScheme (activeScheme);
     filterBar_.setScheme (activeScheme);
+    dualMixBar_.setScheme (activeScheme);
 
-    for (auto* combo : { &modeInCombo, &modeOutCombo, &sumBusCombo, &limModeCombo, &invPolCombo, &invStrCombo })
+    for (auto* combo : { &modeInCombo, &modeOutCombo, &sumBusCombo, &limModeCombo, &mixModeCombo, &invPolCombo, &invStrCombo, &filterPosCombo })
     {
         combo->setColour (juce::ComboBox::backgroundColourId, scheme.bg);
         combo->setColour (juce::ComboBox::textColourId,       scheme.text);
@@ -1137,6 +1354,32 @@ void ECHOTRAudioProcessorEditor::timerCallback()
     // Keep filter bar markers up to date
     if (filterBar_.isVisible())
         filterBar_.updateFromProcessor();
+
+    // Keep dual mix bar markers up to date + visibility swap
+    if (ioSectionExpanded_)
+    {
+        const float prevDry = dualMixBar_.getDryLevel();
+        const float prevWet = dualMixBar_.getWetLevel();
+        dualMixBar_.updateFromProcessor();
+        const bool isSendMode = mixModeCombo.getSelectedId() == 2;
+
+        // Refresh legend when levels change in SEND mode
+        if (isSendMode && (dualMixBar_.getDryLevel() != prevDry || dualMixBar_.getWetLevel() != prevWet))
+        {
+            if (refreshLegendTextCache())
+                updateCachedLayout();
+            repaint();
+        }
+
+        if (mixSlider.isVisible() == isSendMode)
+        {
+            mixSlider.setVisible (! isSendMode);
+            dualMixBar_.setVisible (isSendMode);
+            if (refreshLegendTextCache())
+                updateCachedLayout();
+            repaint();
+        }
+    }
 }
 
 void ECHOTRAudioProcessorEditor::applyPersistedUiStateFromProcessor (bool applySize, bool applyPaletteAndFx)
@@ -1323,7 +1566,21 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
         cachedEngineIntOnly   = getEngineTextShort();
         cachedInputIntOnly    = juce::String ((int) inputSlider.getValue()) + "dB";
         cachedOutputIntOnly   = juce::String ((int) outputSlider.getValue()) + "dB";
-        cachedMixIntOnly      = juce::String ((int) std::lround (mixSlider.getValue() * 100.0)) + "%";
+
+        if (mixModeCombo.getSelectedId() == 2)
+        {
+            const bool isDry = (dualMixBar_.getLastTouched() != DualMixBarComponent::WET);
+            const float level = isDry ? dualMixBar_.getDryLevel() : dualMixBar_.getWetLevel();
+            const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
+            const juce::String suffix = isDry ? " DRY" : " WET";
+            if (dB <= -100.0f) cachedMixIntOnly = "-INF" + suffix;
+            else if (std::abs (dB) < 0.05f) cachedMixIntOnly = "0dB" + suffix;
+            else cachedMixIntOnly = juce::String ((int) dB) + "dB" + suffix;
+        }
+        else
+        {
+            cachedMixIntOnly = juce::String ((int) std::lround (mixSlider.getValue() * 100.0)) + "%";
+        }
 
         const float tiltVal = (float) tiltSlider.getValue();
         if (std::abs (tiltVal) < 0.05f)
@@ -2741,6 +2998,583 @@ void ECHOTRAudioProcessorEditor::openFilterPrompt()
                     lpOnParam->setValueNotifyingHost (origLpOn ? 1.0f : 0.0f);
 
                 safeThis->filterBar_.updateFromProcessor();
+            }
+
+            safeThis->setPromptOverlayActive (false);
+        }),
+        false);
+}
+
+void ECHOTRAudioProcessorEditor::openMixSendPrompt()
+{
+    lnf.setScheme (activeScheme);
+    const auto scheme = activeScheme;
+
+    auto& proc = audioProcessor;
+    const float curDry = proc.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamDryLevel)->load();
+    const float curWet = proc.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamWetLevel)->load();
+
+    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    aw->setLookAndFeel (&lnf);
+
+    // ── Inline PromptBar (horizontal fill bar with draggable value) ──
+    struct PromptBar : public juce::Component
+    {
+        ECHOScheme colours;
+        float  value01   = 1.0f;
+        float  default01 = 1.0f;
+        std::function<void (float)> onValueChanged;
+
+        PromptBar (const ECHOScheme& s, float initial, float def)
+            : colours (s), value01 (initial), default01 (def) {}
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            g.setColour (colours.outline);
+            g.drawRect (r, 4.0f);
+            const float pad = 7.0f;
+            auto inner = r.reduced (pad);
+            g.setColour (colours.bg);
+            g.fillRect (inner);
+            const float fillW = juce::jlimit (0.0f, inner.getWidth(), inner.getWidth() * value01);
+            g.setColour (colours.fg);
+            g.fillRect (inner.withWidth (fillW));
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDrag (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { setValue (default01); }
+
+        void setValue (float v)
+        {
+            value01 = juce::jlimit (0.0f, 1.0f, v);
+            repaint();
+            if (onValueChanged)
+                onValueChanged (value01);
+        }
+
+    private:
+        void updateFromMouse (const juce::MouseEvent& e)
+        {
+            const float pad = 7.0f;
+            const float innerW = (float) getWidth() - pad * 2.0f;
+            setValue (innerW > 0.0f ? ((float) e.x - pad) / innerW : 0.0f);
+        }
+    };
+
+    // dB helpers
+    auto linearToDb = [] (float g) -> float
+    {
+        return (g <= 0.0001f) ? -100.0f : 20.0f * std::log10 (g);
+    };
+    auto dbToLinear = [] (float dB) -> float
+    {
+        return (dB <= -100.0f) ? 0.0f : std::pow (10.0f, dB / 20.0f);
+    };
+    auto dbString = [&linearToDb] (float g) -> juce::String
+    {
+        const float dB = linearToDb (g);
+        if (dB <= -100.0f) return "-INF";
+        if (std::abs (dB) < 0.05f) return "0";
+        return juce::String (dB, 1);
+    };
+
+    // DRY section
+    aw->addTextEditor ("dryLevel", dbString (curDry), juce::String());
+    auto* dryBar = new PromptBar (scheme, curDry, ECHOTRAudioProcessor::kDryLevelDefault);
+    aw->addAndMakeVisible (dryBar);
+
+    // WET section
+    aw->addTextEditor ("wetLevel", dbString (curWet), juce::String());
+    auto* wetBar = new PromptBar (scheme, curWet, ECHOTRAudioProcessor::kWetLevelDefault);
+    aw->addAndMakeVisible (wetBar);
+
+    // Shared sync flag
+    auto syncing  = std::make_shared<bool> (false);
+    auto layoutFn = std::make_shared<std::function<void()>> ([] {});
+
+    // ── Real-time parameter setter ──
+    juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
+
+    auto pushParams = [safeThis, aw, dbToLinear] ()
+    {
+        if (safeThis == nullptr) return;
+        auto& p = safeThis->audioProcessor;
+        auto setP = [&p] (const char* id, float plain)
+        {
+            if (auto* param = p.apvts.getParameter (id))
+                param->setValueNotifyingHost (param->convertTo0to1 (plain));
+        };
+
+        auto* dryTe = aw->getTextEditor ("dryLevel");
+        auto* wetTe = aw->getTextEditor ("wetLevel");
+        const float dryLin = dryTe ? juce::jlimit (0.0f, 1.0f, dbToLinear (dryTe->getText().getFloatValue())) : 1.0f;
+        const float wetLin = wetTe ? juce::jlimit (0.0f, 1.0f, dbToLinear (wetTe->getText().getFloatValue())) : 1.0f;
+        setP (ECHOTRAudioProcessor::kParamDryLevel, dryLin);
+        setP (ECHOTRAudioProcessor::kParamWetLevel, wetLin);
+
+        safeThis->dualMixBar_.updateFromProcessor();
+    };
+
+    // Wire bar → text sync (bar drag updates text + pushes params)
+    auto barToText = [aw, syncing, pushParams, dbString] (const char* editorId, float v01)
+    {
+        if (*syncing) return;
+        *syncing = true;
+        if (auto* te = aw->getTextEditor (editorId))
+        {
+            te->setText (dbString (v01), juce::sendNotification);
+            te->selectAll();
+        }
+        *syncing = false;
+        pushParams();
+    };
+
+    dryBar->onValueChanged = [barToText] (float v) { barToText ("dryLevel", v); };
+    wetBar->onValueChanged = [barToText] (float v) { barToText ("wetLevel", v); };
+
+    // Wire text → bar sync (text change updates bar + pushes params)
+    auto textToBar = [syncing, pushParams, dbToLinear] (juce::TextEditor* te, PromptBar* bar)
+    {
+        if (*syncing || te == nullptr || bar == nullptr) return;
+        *syncing = true;
+        const float dB  = te->getText().getFloatValue();
+        const float lin = juce::jlimit (0.0f, 1.0f, dbToLinear (dB));
+        bar->value01 = lin;
+        bar->repaint();
+        *syncing = false;
+        pushParams();
+    };
+
+    auto* dryTe = aw->getTextEditor ("dryLevel");
+    auto* wetTe = aw->getTextEditor ("wetLevel");
+
+    if (dryTe != nullptr)
+        dryTe->onTextChange = [syncing, textToBar, dryTe, dryBar, layoutFn] () { textToBar (dryTe, dryBar); if (*layoutFn) (*layoutFn)(); };
+    if (wetTe != nullptr)
+        wetTe->onTextChange = [syncing, textToBar, wetTe, wetBar, layoutFn] () { textToBar (wetTe, wetBar); if (*layoutFn) (*layoutFn)(); };
+
+    // Buttons: OK / CANCEL
+    aw->addButton ("OK",     1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    applyPromptShellSize (*aw);
+    layoutAlertWindowButtons (*aw);
+
+    const int margin = kPromptInnerMargin;
+    const juce::Font promptFont (juce::FontOptions (34.0f).withStyle ("Bold"));
+
+    // ── Create persistent labels ──
+    auto* dryNameLabel = new juce::Label ("", "DRY");
+    dryNameLabel->setJustificationType (juce::Justification::centredLeft);
+    dryNameLabel->setColour (juce::Label::textColourId, scheme.text);
+    dryNameLabel->setBorderSize (juce::BorderSize<int> (0));
+    dryNameLabel->setFont (promptFont);
+    aw->addAndMakeVisible (dryNameLabel);
+
+    auto* wetNameLabel = new juce::Label ("", "WET");
+    wetNameLabel->setJustificationType (juce::Justification::centredLeft);
+    wetNameLabel->setColour (juce::Label::textColourId, scheme.text);
+    wetNameLabel->setBorderSize (juce::BorderSize<int> (0));
+    wetNameLabel->setFont (promptFont);
+    aw->addAndMakeVisible (wetNameLabel);
+
+    auto* dryDbLabel = new juce::Label ("", "dB");
+    dryDbLabel->setJustificationType (juce::Justification::centredLeft);
+    dryDbLabel->setColour (juce::Label::textColourId, scheme.text);
+    dryDbLabel->setBorderSize (juce::BorderSize<int> (0));
+    dryDbLabel->setFont (promptFont);
+    aw->addAndMakeVisible (dryDbLabel);
+
+    auto* wetDbLabel = new juce::Label ("", "dB");
+    wetDbLabel->setJustificationType (juce::Justification::centredLeft);
+    wetDbLabel->setColour (juce::Label::textColourId, scheme.text);
+    wetDbLabel->setBorderSize (juce::BorderSize<int> (0));
+    wetDbLabel->setFont (promptFont);
+    aw->addAndMakeVisible (wetDbLabel);
+
+    // ── Prepare TextEditors ──
+    preparePromptTextEditor (*aw, "dryLevel", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    preparePromptTextEditor (*aw, "wetLevel", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+
+    // ── Re-callable layout ──
+    auto layoutRows = [aw, dryNameLabel, wetNameLabel, dryDbLabel, wetDbLabel,
+                        dryBar, wetBar, promptFont, margin] ()
+    {
+        auto* dryTe = aw->getTextEditor ("dryLevel");
+        auto* wetTe = aw->getTextEditor ("wetLevel");
+        if (dryTe == nullptr || wetTe == nullptr) return;
+
+        const int buttonsTop = getAlertButtonsTop (*aw);
+        const int rowH       = dryTe->getHeight();
+        const int barH       = juce::jmax (10, rowH / 2);
+        const int barGap     = juce::jmax (2, rowH / 6);
+        const int gap        = juce::jmax (4, rowH / 3);
+        const int rowTotal   = rowH + barGap + barH;
+        const int totalH     = rowTotal * 2 + gap;
+        const int startY     = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - totalH) / 2);
+
+        const int barX = margin;
+        const int barR = aw->getWidth() - margin;
+
+        const int nameW = stringWidth (promptFont, "WET") + 6;
+        const int hzGap = 2;
+        const int dbW   = stringWidth (promptFont, "dB") + 2;
+
+        auto placeRow = [&] (juce::Label* nameLabel, juce::TextEditor* te,
+                             juce::Label* dbLabel, PromptBar* bar, int y)
+        {
+            nameLabel->setFont (promptFont);
+            dbLabel->setFont (promptFont);
+
+            nameLabel->setBounds (barX, y, nameW, rowH);
+
+            const int midL = barX + nameW;
+            const int midR = barR;
+            const int midW = midR - midL;
+
+            const auto txt   = te->getText();
+            const int textW  = juce::jmax (1, stringWidth (promptFont, txt));
+            constexpr int kEditorPad = 6;
+            const int editorW = textW + kEditorPad * 2;
+            const int groupW  = editorW + hzGap + dbW;
+
+            const int groupX = midL + juce::jmax (0, (midW - groupW) / 2);
+
+            te->setBounds (groupX, y, editorW, rowH);
+            dbLabel->setBounds (groupX + editorW + hzGap, y, dbW, rowH);
+
+            const int barW = juce::jmax (60, barR - barX);
+            bar->setBounds (barX, y + rowH + barGap, barW, barH);
+        };
+
+        placeRow (dryNameLabel, dryTe, dryDbLabel, dryBar, startY);
+        placeRow (wetNameLabel, wetTe, wetDbLabel, wetBar, startY + rowTotal + gap);
+    };
+
+    layoutRows();
+    *layoutFn = layoutRows;
+
+    preparePromptTextEditor (*aw, "dryLevel", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    preparePromptTextEditor (*aw, "wetLevel", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    layoutRows();
+
+    styleAlertButtons (*aw, lnf);
+
+    // Store originals for CANCEL restore
+    const float origDry = curDry;
+    const float origWet = curWet;
+
+    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+    {
+        layoutAlertWindowButtons (a);
+        layoutRows();
+    });
+
+    embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create (
+            [safeThis, aw, origDry, origWet] (int result)
+        {
+            std::unique_ptr<juce::AlertWindow> killer (aw);
+
+            if (safeThis == nullptr)
+                return;
+
+            if (result != 1)
+            {
+                // CANCEL — restore original values
+                auto& p = safeThis->audioProcessor;
+                auto setP = [&p] (const char* id, float plain)
+                {
+                    if (auto* param = p.apvts.getParameter (id))
+                        param->setValueNotifyingHost (param->convertTo0to1 (plain));
+                };
+                setP (ECHOTRAudioProcessor::kParamDryLevel, origDry);
+                setP (ECHOTRAudioProcessor::kParamWetLevel, origWet);
+                safeThis->dualMixBar_.updateFromProcessor();
+            }
+
+            safeThis->setPromptOverlayActive (false);
+        }),
+        false);
+}
+
+void ECHOTRAudioProcessorEditor::openEnginePrompt()
+{
+    lnf.setScheme (activeScheme);
+    const auto scheme = activeScheme;
+
+    auto& proc = audioProcessor;
+    const int mode = juce::roundToInt (engineSlider.getValue());
+    const char* driveId = (mode == 1) ? ECHOTRAudioProcessor::kParamSat1Drive
+                                      : ECHOTRAudioProcessor::kParamSat2Drive;
+    const char* gritId  = (mode == 1) ? ECHOTRAudioProcessor::kParamSat1Grit
+                                      : ECHOTRAudioProcessor::kParamSat2Grit;
+    const float curDrive = proc.apvts.getRawParameterValue (driveId)->load();
+    const float curGrit  = proc.apvts.getRawParameterValue (gritId)->load();
+
+    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    aw->setLookAndFeel (&lnf);
+
+    // ── Inline PromptBar ──
+    struct PromptBar : public juce::Component
+    {
+        ECHOScheme colours;
+        float  value01   = 0.5f;
+        float  default01 = 0.5f;
+        std::function<void (float)> onValueChanged;
+
+        PromptBar (const ECHOScheme& s, float initial, float def)
+            : colours (s), value01 (initial), default01 (def) {}
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            g.setColour (colours.outline);
+            g.drawRect (r, 4.0f);
+            const float pad = 7.0f;
+            auto inner = r.reduced (pad);
+            g.setColour (colours.bg);
+            g.fillRect (inner);
+            const float fillW = juce::jlimit (0.0f, inner.getWidth(), inner.getWidth() * value01);
+            g.setColour (colours.fg);
+            g.fillRect (inner.withWidth (fillW));
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDrag (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { setValue (default01); }
+
+        void setValue (float v)
+        {
+            value01 = juce::jlimit (0.0f, 1.0f, v);
+            repaint();
+            if (onValueChanged)
+                onValueChanged (value01);
+        }
+
+    private:
+        void updateFromMouse (const juce::MouseEvent& e)
+        {
+            const float pad = 7.0f;
+            const float innerW = (float) getWidth() - pad * 2.0f;
+            setValue (innerW > 0.0f ? ((float) e.x - pad) / innerW : 0.0f);
+        }
+    };
+
+    // Normalise 0-100 → 0-1 for bars
+    const float driveNorm = curDrive * 0.01f;
+    const float gritNorm  = curGrit  * 0.01f;
+    const float driveDef  = ECHOTRAudioProcessor::kSatDriveDefault * 0.01f;
+    const float gritDef   = ECHOTRAudioProcessor::kSatGritDefault  * 0.01f;
+
+    // DRIVE section
+    aw->addTextEditor ("drive", juce::String (juce::roundToInt (curDrive)), juce::String());
+    auto* driveBar = new PromptBar (scheme, driveNorm, driveDef);
+    aw->addAndMakeVisible (driveBar);
+
+    // GRIT section
+    aw->addTextEditor ("grit", juce::String (juce::roundToInt (curGrit)), juce::String());
+    auto* gritBar = new PromptBar (scheme, gritNorm, gritDef);
+    aw->addAndMakeVisible (gritBar);
+
+    auto syncing  = std::make_shared<bool> (false);
+    auto layoutFn = std::make_shared<std::function<void()>> ([] {});
+
+    juce::Component::SafePointer<ECHOTRAudioProcessorEditor> safeThis (this);
+
+    auto pushParams = [safeThis, aw, driveId, gritId] ()
+    {
+        if (safeThis == nullptr) return;
+        auto& p = safeThis->audioProcessor;
+        auto setP = [&p] (const char* id, float plain)
+        {
+            if (auto* param = p.apvts.getParameter (id))
+                param->setValueNotifyingHost (param->convertTo0to1 (plain));
+        };
+
+        auto* drvTe = aw->getTextEditor ("drive");
+        auto* bsTe  = aw->getTextEditor ("grit");
+        const float drv = drvTe ? juce::jlimit (0.0f, 100.0f, drvTe->getText().getFloatValue()) : 50.0f;
+        const float bs  = bsTe  ? juce::jlimit (0.0f, 100.0f, bsTe->getText().getFloatValue())  : 0.0f;
+        setP (driveId, drv);
+        setP (gritId,  bs);
+    };
+
+    // Bar → text
+    auto barToText = [aw, syncing, pushParams] (const char* editorId, float v01)
+    {
+        if (*syncing) return;
+        *syncing = true;
+        if (auto* te = aw->getTextEditor (editorId))
+        {
+            te->setText (juce::String (juce::roundToInt (v01 * 100.0f)), juce::sendNotification);
+            te->selectAll();
+        }
+        *syncing = false;
+        pushParams();
+    };
+
+    driveBar->onValueChanged = [barToText] (float v) { barToText ("drive", v); };
+    gritBar->onValueChanged  = [barToText] (float v) { barToText ("grit",  v); };
+
+    // Text → bar
+    auto textToBar = [syncing, pushParams] (juce::TextEditor* te, PromptBar* bar)
+    {
+        if (*syncing || te == nullptr || bar == nullptr) return;
+        *syncing = true;
+        const float val = juce::jlimit (0.0f, 100.0f, te->getText().getFloatValue());
+        bar->value01 = val * 0.01f;
+        bar->repaint();
+        *syncing = false;
+        pushParams();
+    };
+
+    auto* drvTe = aw->getTextEditor ("drive");
+    auto* bsTe  = aw->getTextEditor ("grit");
+
+    if (drvTe != nullptr)
+        drvTe->onTextChange = [syncing, textToBar, drvTe, driveBar, layoutFn] () { textToBar (drvTe, driveBar); if (*layoutFn) (*layoutFn)(); };
+    if (bsTe != nullptr)
+        bsTe->onTextChange = [syncing, textToBar, bsTe, gritBar, layoutFn] () { textToBar (bsTe, gritBar); if (*layoutFn) (*layoutFn)(); };
+
+    // Buttons
+    aw->addButton ("OK",     1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    applyPromptShellSize (*aw);
+    layoutAlertWindowButtons (*aw);
+
+    const int margin = kPromptInnerMargin;
+    const juce::Font promptFont (juce::FontOptions (34.0f).withStyle ("Bold"));
+
+    auto* driveNameLabel = new juce::Label ("", "DRIVE");
+    driveNameLabel->setJustificationType (juce::Justification::centredLeft);
+    driveNameLabel->setColour (juce::Label::textColourId, scheme.text);
+    driveNameLabel->setBorderSize (juce::BorderSize<int> (0));
+    driveNameLabel->setFont (promptFont);
+    aw->addAndMakeVisible (driveNameLabel);
+
+    auto* gritNameLabel = new juce::Label ("", "GRIT");
+    gritNameLabel->setJustificationType (juce::Justification::centredLeft);
+    gritNameLabel->setColour (juce::Label::textColourId, scheme.text);
+    gritNameLabel->setBorderSize (juce::BorderSize<int> (0));
+    gritNameLabel->setFont (promptFont);
+    aw->addAndMakeVisible (gritNameLabel);
+
+    auto* drivePctLabel = new juce::Label ("", "%");
+    drivePctLabel->setJustificationType (juce::Justification::centredLeft);
+    drivePctLabel->setColour (juce::Label::textColourId, scheme.text);
+    drivePctLabel->setBorderSize (juce::BorderSize<int> (0));
+    drivePctLabel->setFont (promptFont);
+    aw->addAndMakeVisible (drivePctLabel);
+
+    auto* gritPctLabel = new juce::Label ("", "%");
+    gritPctLabel->setJustificationType (juce::Justification::centredLeft);
+    gritPctLabel->setColour (juce::Label::textColourId, scheme.text);
+    gritPctLabel->setBorderSize (juce::BorderSize<int> (0));
+    gritPctLabel->setFont (promptFont);
+    aw->addAndMakeVisible (gritPctLabel);
+
+    preparePromptTextEditor (*aw, "drive", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    preparePromptTextEditor (*aw, "grit",  scheme.bg, scheme.text, scheme.fg, promptFont, false);
+
+    auto layoutRows = [aw, driveNameLabel, gritNameLabel, drivePctLabel, gritPctLabel,
+                        driveBar, gritBar, promptFont, margin] ()
+    {
+        auto* drvTe = aw->getTextEditor ("drive");
+        auto* bsTe  = aw->getTextEditor ("grit");
+        if (drvTe == nullptr || bsTe == nullptr) return;
+
+        const int buttonsTop = getAlertButtonsTop (*aw);
+        const int rowH       = drvTe->getHeight();
+        const int barH       = juce::jmax (10, rowH / 2);
+        const int barGap     = juce::jmax (2, rowH / 6);
+        const int gap        = juce::jmax (4, rowH / 3);
+        const int rowTotal   = rowH + barGap + barH;
+        const int totalH     = rowTotal * 2 + gap;
+        const int startY     = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - totalH) / 2);
+
+        const int barX = margin;
+        const int barR = aw->getWidth() - margin;
+
+        const int nameW = stringWidth (promptFont, "DRIVE") + 6;
+        const int hzGap = 2;
+        const int pctW  = stringWidth (promptFont, "%") + 2;
+
+        auto placeRow = [&] (juce::Label* nameLabel, juce::TextEditor* te,
+                             juce::Label* pctLabel, PromptBar* bar, int y)
+        {
+            nameLabel->setFont (promptFont);
+            pctLabel->setFont (promptFont);
+
+            nameLabel->setBounds (barX, y, nameW, rowH);
+
+            const int midL = barX + nameW;
+            const int midR = barR;
+            const int midW = midR - midL;
+
+            const auto txt   = te->getText();
+            const int textW  = juce::jmax (1, stringWidth (promptFont, txt));
+            constexpr int kEditorPad = 6;
+            const int editorW = textW + kEditorPad * 2;
+            const int groupW  = editorW + hzGap + pctW;
+
+            const int groupX = midL + juce::jmax (0, (midW - groupW) / 2);
+
+            te->setBounds (groupX, y, editorW, rowH);
+            pctLabel->setBounds (groupX + editorW + hzGap, y, pctW, rowH);
+
+            const int barW = juce::jmax (60, barR - barX);
+            bar->setBounds (barX, y + rowH + barGap, barW, barH);
+        };
+
+        placeRow (driveNameLabel, drvTe, drivePctLabel, driveBar, startY);
+        placeRow (gritNameLabel,  bsTe,  gritPctLabel,  gritBar,  startY + rowTotal + gap);
+    };
+
+    layoutRows();
+    *layoutFn = layoutRows;
+
+    preparePromptTextEditor (*aw, "drive", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    preparePromptTextEditor (*aw, "grit",  scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    layoutRows();
+
+    styleAlertButtons (*aw, lnf);
+
+    const float origDrive = curDrive;
+    const float origGrit  = curGrit;
+
+    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+    {
+        layoutAlertWindowButtons (a);
+        layoutRows();
+    });
+
+    embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create (
+            [safeThis, aw, origDrive, origGrit, driveId, gritId] (int result)
+        {
+            std::unique_ptr<juce::AlertWindow> killer (aw);
+
+            if (safeThis == nullptr)
+                return;
+
+            if (result != 1)
+            {
+                auto& p = safeThis->audioProcessor;
+                auto setP = [&p] (const char* id, float plain)
+                {
+                    if (auto* param = p.apvts.getParameter (id))
+                        param->setValueNotifyingHost (param->convertTo0to1 (plain));
+                };
+                setP (driveId, origDrive);
+                setP (gritId,  origGrit);
             }
 
             safeThis->setPromptOverlayActive (false);
@@ -4692,10 +5526,10 @@ juce::String ECHOTRAudioProcessorEditor::getEngineText() const
     const int eng = (int) engineSlider.getValue();
     switch (eng)
     {
-        case 0: return "CLEAN ENGINE";
-        case 1: return "ANALOG ENGINE";
-        case 2: return "BBD ENGINE";
-        default: return "CLEAN ENGINE";
+        case 0: return "CLEAN MODEL";
+        case 1: return "SAT1 MODEL";
+        case 2: return "SAT2 MODEL";
+        default: return "CLEAN MODEL";
     }
 }
 
@@ -4705,8 +5539,8 @@ juce::String ECHOTRAudioProcessorEditor::getEngineTextShort() const
     switch (eng)
     {
         case 0: return "CLEAN";
-        case 1: return "ANALOG";
-        case 2: return "BBD";
+        case 1: return "SAT1";
+        case 2: return "SAT2";
         default: return "CLEAN";
     }
 }
@@ -4769,12 +5603,32 @@ juce::String ECHOTRAudioProcessorEditor::getOutputTextShort() const
 
 juce::String ECHOTRAudioProcessorEditor::getMixText() const
 {
+    if (mixModeCombo.getSelectedId() == 2)
+    {
+        const bool isDry = (dualMixBar_.getLastTouched() != DualMixBarComponent::WET);
+        const float level = isDry ? dualMixBar_.getDryLevel() : dualMixBar_.getWetLevel();
+        const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
+        const juce::String suffix = isDry ? " DRY" : " WET";
+        if (dB <= -100.0f) return "-INF dB" + suffix;
+        if (std::abs (dB) < 0.05f) return "0 dB" + suffix;
+        return juce::String (dB, 1) + " dB" + suffix;
+    }
     const int pct = (int) std::lround (mixSlider.getValue() * 100.0);
     return juce::String (pct) + "% MIX";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getMixTextShort() const
 {
+    if (mixModeCombo.getSelectedId() == 2)
+    {
+        const bool isDry = (dualMixBar_.getLastTouched() != DualMixBarComponent::WET);
+        const float level = isDry ? dualMixBar_.getDryLevel() : dualMixBar_.getWetLevel();
+        const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
+        const juce::String suffix = isDry ? " DRY" : " WET";
+        if (dB <= -100.0f) return "-INF" + suffix;
+        if (std::abs (dB) < 0.05f) return "0dB" + suffix;
+        return juce::String (dB, 1) + "dB" + suffix;
+    }
     const int pct = (int) std::lround (mixSlider.getValue() * 100.0);
     return juce::String (pct) + "% MX";
 }
@@ -4855,9 +5709,9 @@ namespace
     constexpr const char* kModeLegendShort = "PING-PONG";  // Value-only (worst-case width)
     constexpr const char* kModeLegendInt   = "P-P";
 
-    constexpr const char* kEngineLegendFull  = "ANALOG ENGINE";
-    constexpr const char* kEngineLegendShort = "ANALOG";
-    constexpr const char* kEngineLegendInt   = "ANLG";
+    constexpr const char* kEngineLegendFull  = "SAT1 MODEL";
+    constexpr const char* kEngineLegendShort = "SAT1";
+    constexpr const char* kEngineLegendInt   = "SAT1";
 
     constexpr const char* kModLegendFull  = "X4.00 MOD";
     constexpr const char* kModLegendShort = "X4.00";
@@ -4931,7 +5785,7 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.availableForSliders = juce::jmax (40, sliderBottomRef - m.betweenSlidersAndButtons - m.topMargin);
 
     // Bars below toggle: 8 IO bars when expanded (IN/OUT/TILT/FILTER/PAN/MIX/LIM_THRESHOLD/MODE_ROW),
-    // 6 main bars when collapsed (TIME/MOD/FBK/ENGINE/STYLE/DUCK).
+    // 6 main bars when collapsed (TIME/MOD/FBK/MODEL/STYLE/DUCK).
     const int numSliders = ioExpanded ? 9 : 6;
     const int numGaps    = ioExpanded ? 9 : 6;
 
@@ -4972,6 +5826,17 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
     {
         if (! sliders[i]->isVisible())
         {
+            // MIX row (index 8): use dualMixBar_ bounds when SEND mode is active
+            if (i == 8 && dualMixBar_.isVisible())
+            {
+                const auto& bb = dualMixBar_.getBounds();
+                const int valueX = bb.getRight() + cachedHLayout_.valuePad;
+                const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
+                const int vw   = juce::jmin (cachedHLayout_.valueW, maxW);
+                const int y    = bb.getCentreY() - (kValueAreaHeightPx / 2);
+                cachedValueAreas_[8] = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
+                continue;
+            }
             cachedValueAreas_[(size_t) i] = {};
             continue;
         }
@@ -5278,13 +6143,13 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         }
     }
 
-    if (getSyncLabelArea().contains (p))
+    if (syncButton.isVisible() && getSyncLabelArea().contains (p))
     {
         syncButton.setToggleState (! syncButton.getToggleState(), juce::sendNotificationSync);
         return;
     }
 
-    if (getAutoFbkLabelArea().contains (p) || autoFbkDisplay.getBounds().contains (p))
+    if (autoFbkButton.isVisible() && (getAutoFbkLabelArea().contains (p) || autoFbkDisplay.getBounds().contains (p)))
     {
         if (e.mods.isPopupMenu())
             openAutoFbkPrompt();
@@ -5293,7 +6158,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (getReverseLabelArea().contains (p) || reverseDisplay.getBounds().contains (p))
+    if (reverseButton.isVisible() && (getReverseLabelArea().contains (p) || reverseDisplay.getBounds().contains (p)))
     {
         if (e.mods.isPopupMenu())
             openReverseSmoothPrompt();
@@ -5302,7 +6167,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (getMidiLabelArea().contains (p) || midiChannelDisplay.getBounds().contains (p))
+    if (midiButton.isVisible() && (getMidiLabelArea().contains (p) || midiChannelDisplay.getBounds().contains (p)))
     {
         if (e.mods.isPopupMenu())
             openMidiChannelPrompt();
@@ -5311,7 +6176,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (getChaosLabelArea().contains (p) || chaosFilterDisplay.getBounds().contains (p))
+    if (chaosFilterButton.isVisible() && (getChaosLabelArea().contains (p) || chaosFilterDisplay.getBounds().contains (p)))
     {
         if (e.mods.isPopupMenu())
             openChaosFilterPrompt();
@@ -5587,8 +6452,10 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
             drawComboLabel (modeOutCombo, "MODE OUT", "OUT");
             drawComboLabel (sumBusCombo,  "SUM BUS",  "SUM");
             drawComboLabel (limModeCombo, "LIMIT",    "LIM");
-            drawComboLabel (invPolCombo,  "INV POL",  "POL");
-            drawComboLabel (invStrCombo,  "INV STR",  "STR");
+            drawComboLabel (mixModeCombo,   "MIX",    "MIX");
+            drawComboLabel (filterPosCombo, "F / T", "F/T");
+            drawComboLabel (invPolCombo,    "INV POL", "POL");
+            drawComboLabel (invStrCombo,    "INV STR", "STR");
         }
 
         // Chaos checkbox legends (when IO section is expanded)
@@ -5757,9 +6624,10 @@ void ECHOTRAudioProcessorEditor::resized()
         filterBar_.setBounds   (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
         panSlider.setBounds    (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
         mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
+        dualMixBar_.setBounds  (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
         limThresholdSlider.setBounds (horizontalLayout.leftX, mainTop + 6 * step, horizontalLayout.barW, verticalLayout.barH);
 
-        // Mode In / Mode Out / Sum Bus / Limiter Mode / INV POL / INV STR — 6 combos on row 7-8
+        // Mode In / Mode Out / Sum Bus / Limiter Mode / MIX MODE / INV POL / INV STR — 7 combos on row 7-8
         {
             const int modeRowPad = 10;
             const int modeY = mainTop + 7 * step + modeRowPad;
@@ -5772,10 +6640,12 @@ void ECHOTRAudioProcessorEditor::resized()
             sumBusCombo.setBounds  (horizontalLayout.leftX + (comboW + comboGap) * 2,  modeY, comboW, comboH);
             limModeCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap) * 3,  modeY, comboW, comboH);
 
-            const int invY = modeY + comboH + comboGap;
-            const int invW = (totalW - comboGap) / 2;
-            invPolCombo.setBounds (horizontalLayout.leftX,                    invY, invW, comboH);
-            invStrCombo.setBounds (horizontalLayout.leftX + invW + comboGap,  invY, invW, comboH);
+            const int invY = modeY + comboH + comboGap + 15;  // +15 for legend label space
+            const int invW = (totalW - comboGap * 3) / 4;
+            mixModeCombo.setBounds  (horizontalLayout.leftX,                              invY, invW, comboH);
+            filterPosCombo.setBounds(horizontalLayout.leftX + (invW + comboGap),          invY, invW, comboH);
+            invPolCombo.setBounds   (horizontalLayout.leftX + (invW + comboGap) * 2,      invY, invW, comboH);
+            invStrCombo.setBounds   (horizontalLayout.leftX + (invW + comboGap) * 3,      invY, invW, comboH);
         }
 
         // CHAOS checkboxes at chaosRowY (3rd button row above btnRow1)
@@ -5794,14 +6664,20 @@ void ECHOTRAudioProcessorEditor::resized()
         tiltSlider.setVisible (true);
         filterBar_.setVisible (true);
         panSlider.setVisible (true);
-        mixSlider.setVisible (true);
+        {
+            const bool isSendMode = mixModeCombo.getSelectedId() == 2;
+            mixSlider.setVisible (! isSendMode);
+            dualMixBar_.setVisible (isSendMode);
+        }
         limThresholdSlider.setVisible (true);
         modeInCombo.setVisible (true);
         modeOutCombo.setVisible (true);
         sumBusCombo.setVisible (true);
         limModeCombo.setVisible (true);
+        mixModeCombo.setVisible (true);
         invPolCombo.setVisible (true);
         invStrCombo.setVisible (true);
+        filterPosCombo.setVisible (true);
         chaosFilterButton.setVisible (true);
         chaosFilterDisplay.setVisible (true);
         chaosDelayButton.setVisible (true);
@@ -5852,12 +6728,14 @@ void ECHOTRAudioProcessorEditor::resized()
         mixSlider.setBounds (0, 0, 0, 0);
         panSlider.setBounds (0, 0, 0, 0);
         filterBar_.setBounds (0, 0, 0, 0);
+        dualMixBar_.setBounds (0, 0, 0, 0);
         limThresholdSlider.setBounds (0, 0, 0, 0);
 
         inputSlider.setVisible (false);
         outputSlider.setVisible (false);
         tiltSlider.setVisible (false);
         mixSlider.setVisible (false);
+        dualMixBar_.setVisible (false);
         panSlider.setVisible (false);
         filterBar_.setVisible (false);
         limThresholdSlider.setVisible (false);
@@ -5869,8 +6747,10 @@ void ECHOTRAudioProcessorEditor::resized()
         modeOutCombo.setVisible (false);
         sumBusCombo.setVisible (false);
         limModeCombo.setVisible (false);
+        mixModeCombo.setVisible (false);
         invPolCombo.setVisible (false);
         invStrCombo.setVisible (false);
+        filterPosCombo.setVisible (false);
 
         reverseButton.setVisible (true);
         autoFbkButton.setVisible (true);

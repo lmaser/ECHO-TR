@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <vector>
+#include <cstdio>
 #include "PerfTrace.h"
 #include "DspDebugLog.h"
 
@@ -42,8 +43,12 @@ public:
 	static constexpr const char* kParamTilt = "tilt";
 	static constexpr const char* kParamPan  = "pan";
 
-	// Engine parameter ID
-	static constexpr const char* kParamEngine    = "engine";
+	// Engine parameter IDs
+	static constexpr const char* kParamEngine     = "engine";
+	static constexpr const char* kParamSat1Drive  = "sat1_drive";
+	static constexpr const char* kParamSat1Grit   = "sat1_grit";
+	static constexpr const char* kParamSat2Drive  = "sat2_drive";
+	static constexpr const char* kParamSat2Grit   = "sat2_grit";
 
 	// Chaos parameter IDs
 	static constexpr const char* kParamChaos     = "chaos";      // filter chaos (CHS F)
@@ -62,6 +67,14 @@ public:
 	// Invert Polarity / Invert Stereo
 	static constexpr const char* kParamInvPol  = "inv_pol";
 	static constexpr const char* kParamInvStr  = "inv_str";
+
+	// Mix Mode (INSERT / SEND)
+	static constexpr const char* kParamMixMode  = "mix_mode";
+	static constexpr const char* kParamDryLevel = "dry_level";
+	static constexpr const char* kParamWetLevel = "wet_level";
+
+	// Filter position (PRE / POST saturation)
+	static constexpr const char* kParamFilterPos = "filter_pos";
 
 	// Limiter parameter IDs
 	static constexpr const char* kParamLimThreshold = "lim_threshold";
@@ -109,6 +122,10 @@ public:
 	static constexpr float kMixMax = 1.0f;
 	static constexpr float kMixDefault = 1.0f;
 
+	static constexpr int   kMixModeDefault  = 0;   // 0=INSERT, 1=SEND
+	static constexpr float kDryLevelDefault = 0.0f;
+	static constexpr float kWetLevelDefault = 1.0f;
+
 	static constexpr float kAutoFbkTauMin     = 0.0f;
 	static constexpr float kAutoFbkTauMax     = 100.0f;
 	static constexpr float kAutoFbkTauDefault = 50.0f;
@@ -146,10 +163,18 @@ public:
 	static constexpr float kChaosSpdMax     = 100.0f;  // Hz
 	static constexpr float kChaosSpdDefault = 5.0f;    // Hz
 
-	// Engine ranges and defaults
+	// Model ranges and defaults
 	static constexpr int kEngineMin     = 0;       // 0=CLEAN
-	static constexpr int kEngineMax     = 2;       // 2=BBD
+	static constexpr int kEngineMax     = 2;       // 2=SAT2
 	static constexpr int kEngineDefault = 0;       // CLEAN
+
+	// Saturation drive / grit ranges and defaults
+	static constexpr float kSatDriveMin     = 0.0f;
+	static constexpr float kSatDriveMax     = 100.0f;
+	static constexpr float kSatDriveDefault = 50.0f;
+	static constexpr float kSatGritMin      = 0.0f;
+	static constexpr float kSatGritMax      = 100.0f;
+	static constexpr float kSatGritDefault  = 0.0f;
 
 	// Duck ranges and defaults
 	static constexpr float kDuckMin     = 0.0f;
@@ -170,6 +195,9 @@ public:
 	// Invert Polarity / Invert Stereo defaults
 	static constexpr int   kInvPolDefault       = 0;   // 0=NONE  1=WET  2=GLOBAL
 	static constexpr int   kInvStrDefault       = 0;   // 0=NONE  1=WET  2=GLOBAL
+
+	// Filter position default
+	static constexpr int   kFilterPosDefault    = 0;   // 0=POST  1=PRE
 
 	static juce::StringArray getTimeSyncChoices();
 	static juce::String getTimeSyncName(int index);
@@ -291,6 +319,10 @@ private:
 	float smoothedInputGain = 1.0f;
 	float smoothedOutputGain = 1.0f;
 	float smoothedMix = 0.5f;
+	float smoothedDryLevel = 1.0f;
+	float smoothedWetLevel = 1.0f;
+	float dryGainTarget_ = 0.0f;
+	float wetGainTarget_ = 1.0f;
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
 	// Single-voice reverse delay state.
@@ -327,8 +359,10 @@ private:
 		void reset() { hp[0] = hp[1] = lp[0] = lp[1] = {}; }
 	};
 	WetFilterChannelState wetFilterState_[2];
-	WetFilterBiquadCoeffs hpCoeffs_[2];       // per-section HP coeffs
-	WetFilterBiquadCoeffs lpCoeffs_[2];       // per-section LP coeffs
+	WetFilterBiquadCoeffs hpCoeffs_[2];       // per-section HP coeffs (L / mono)
+	WetFilterBiquadCoeffs lpCoeffs_[2];       // per-section LP coeffs (L / mono)
+	WetFilterBiquadCoeffs hpCoeffsR_[2];      // per-section HP coeffs (R, stereo chaos)
+	WetFilterBiquadCoeffs lpCoeffsR_[2];      // per-section LP coeffs (R, stereo chaos)
 	float smoothedFilterHpFreq_ = kFilterHpFreqDefault;
 	float smoothedFilterLpFreq_ = kFilterLpFreqDefault;
 	float lastCalcHpFreq_ = -1.0f, lastCalcLpFreq_ = -1.0f;
@@ -340,11 +374,14 @@ private:
 	// Runtime filter targets (loaded in processBlock, used in process*Delay)
 	bool  wetFilterHpOn_   = false;
 	bool  wetFilterLpOn_   = false;
+	bool  filterPre_       = false;  // true = filter BEFORE saturation
+	bool  tiltPre_         = false;  // true = tilt   BEFORE saturation
 	float wetFilterTargetHpFreq_ = kFilterHpFreqDefault;
 	float wetFilterTargetLpFreq_ = kFilterLpFreqDefault;
 	int   wetFilterNumSectionsHp_ = 0;
 	int   wetFilterNumSectionsLp_ = 0;
 	void  filterWetSample (float& wetL, float& wetR);
+	void  tiltWetSample   (float& wetL, float& wetR);
 
 	// Tilt filter state
 	float tiltDb_        = 0.0f;
@@ -354,12 +391,14 @@ private:
 	float lastTiltDb_    = 0.0f;
 	float tiltSmoothSc_  = 0.0f;  // cached EMA coeff (depends only on sampleRate)
 
-	// ── Chaos state (3 independent S&H engines) ──
+	// ── Chaos state ──
 	bool  chaosFilterEnabled_    = false;
 	bool  chaosDelayEnabled_     = false;
+	bool  chaosStereo_           = false;   // true when mode >= 1 (per-channel D/G)
 
 	// CHS D parameters
 	float chaosAmtD_                    = 0.0f;
+	float chaosAmtNormD_                = 0.0f;   // cached amtD * 0.01
 	float chaosShPeriodD_               = 8820.0f;
 	float smoothedChaosShPeriodD_       = 8820.0f;
 	float chaosDelayMaxSamples_         = 0.0f;
@@ -367,19 +406,25 @@ private:
 	float chaosGainMaxDb_               = 0.0f;
 	float smoothedChaosGainMaxDb_       = 0.0f;
 
-	// CHS D S&H: delay (30ms EMA)
-	float chaosDPhase_       = 0.0f;
-	float chaosDTarget_      = 0.0f;
-	float chaosDSmoothed_    = 0.0f;
-	float chaosDSmoothCoeff_ = 0.999f;
-	juce::Random chaosDRng_;
+	// CHS D Hermite+Drift: delay (per-channel for stereo styles)
+	float chaosDPrev_[2]         = {};
+	float chaosDCurr_[2]         = {};
+	float chaosDNext_[2]         = {};
+	float chaosDPhase_[2]        = {};
+	float chaosDDriftPhase_[2]   = {};
+	float chaosDDriftFreqHz_[2]  = {};
+	float chaosDOut_[2]          = {};
+	juce::Random chaosDRng_[2];
 
-	// CHS D S&H: gain (15ms EMA, decorrelated)
-	float chaosGPhase_       = 0.0f;
-	float chaosGTarget_      = 0.0f;
-	float chaosGSmoothed_    = 0.0f;
-	float chaosGSmoothCoeff_ = 0.999f;
-	juce::Random chaosGRng_;
+	// CHS D Hermite+Drift: gain (per-channel, decorrelated)
+	float chaosGPrev_[2]         = {};
+	float chaosGCurr_[2]         = {};
+	float chaosGNext_[2]         = {};
+	float chaosGPhase_[2]        = {};
+	float chaosGDriftPhase_[2]   = {};
+	float chaosGDriftFreqHz_[2]  = {};
+	float chaosGOut_[2]          = {};
+	juce::Random chaosGRng_[2];
 
 	// CHS F parameters
 	float chaosAmtF_                  = 0.0f;
@@ -388,26 +433,29 @@ private:
 	float chaosFilterMaxOct_          = 0.0f;
 	float smoothedChaosFilterMaxOct_  = 0.0f;
 
-	// CHS F S&H: filter (60ms EMA)
-	float chaosFPhase_       = 0.0f;
-	float chaosFTarget_      = 0.0f;
-	float chaosFSmoothed_    = 0.0f;
-	float chaosFSmoothCoeff_ = 0.999f;
+	// CHS F Hermite+Drift: filter (mono S&H + quadrature drift)
+	float chaosFPrev_            = 0.0f;
+	float chaosFCurr_            = 0.0f;
+	float chaosFNext_            = 0.0f;
+	float chaosFPhase_           = 0.0f;
+	float chaosFDriftPhase_      = 0.0f;   // single phase; R = +90° offset
+	float chaosFDriftFreqHz_     = 0.0f;
+	float chaosFOut_[2]          = {};     // [0]=L, [1]=R (quadrature when stereo)
 	juce::Random chaosFRng_;
 
 	// Chaos per-sample param smoothing
 	float chaosParamSmoothCoeff_ = 0.999f;
 
 	// Precomputed sampleRate-dependent smooth coefficients (set in prepareToPlay)
-	float cachedChaosDSmoothCoeff_       = 0.999f;
-	float cachedChaosGSmoothCoeff_       = 0.999f;
-	float cachedChaosFSmoothCoeff_       = 0.999f;
 	float cachedChaosParamSmoothCoeff_   = 0.999f;
 
 	// Chaos micro-delay buffer (post-wet, CAB-TR style)
 	static constexpr int kChaosDelayBufLen = 1024;
 	float chaosDelayBuf_[2][kChaosDelayBufLen] = {};
 	int   chaosDelayWritePos_ = 0;
+
+	static constexpr float kChaosDriftAmp = 0.3f;
+	static constexpr float kTwoPi = 6.283185307f;
 
 	// Dual-stage transparent limiter state (stereo-linked)
 	static constexpr float kLimFloor = 1.0e-12f;
@@ -420,16 +468,30 @@ private:
 	float limThreshLin_     = 1.0f;   // linear threshold (set per-block)
 
 	// Engine feedback-loop processing state
-	int   engineMode_ = 0;            // 0=CLEAN, 1=ANALOG, 2=BBD
+	int   engineMode_ = 0;            // 0=CLEAN, 1=SAT1, 2=SAT2
 	int   prevEngineMode_ = 0;        // previous mode for LP state reset on switch
+	int   engineXfadePos_ = 0;        // crossfade position (samples elapsed)
+	int   engineXfadeLen_ = 0;        // crossfade length (0 = not active)
+	float smoothedSatDrive_ = 0.5f;   // normalised 0..1 (50% default)
+	float smoothedSatGrit_  = 0.0f;   // normalised 0..1 (0% default)
 	float engineLp1StateL_ = 0.0f;    // 1st-pole LP filter state (left)
 	float engineLp1StateR_ = 0.0f;    // 1st-pole LP filter state (right)
 	float engineLp2StateL_ = 0.0f;    // 2nd-pole LP filter state (left)
 	float engineLp2StateR_ = 0.0f;    // 2nd-pole LP filter state (right)
 	float engineLpCoeff_ = 0.0f;      // 1-pole LP coeff (precomputed per block)
 
-	// Per-sample feedback EMA smoothing
+	// G-domain feedback smoothing (rate-invariant)
+	// Instead of smoothing the per-pass feedback coefficient (which at short
+	// delays compounds hundreds of times per second killing the tail), we
+	// Delay-time compensated feedback: normalize the per-pass coefficient
+	// so the audible decay rate (dB/s) is constant regardless of delay time.
+	// smoothedFeedback_ is per-sample EMA'd toward the compensated target.
 	float smoothedFeedback_ = 0.0f;
+
+	// ── Temporary feedback diagnostic dump ──
+	FILE* fbkDumpFile_ = nullptr;
+	double fbkDumpT0_ = 0.0;           // start time (ms)
+	int    fbkDumpBlockCount_ = 0;     // block counter
 
 	// Duck envelope follower (Valhalla-style 1-knob ducking)
 	float smoothedDuck_     = 0.0f;   // EMA-smoothed duck amount (0-1)
@@ -438,14 +500,108 @@ private:
 	float duckReleaseCoeff_ = 0.0f;   // ~250 ms release
 	float duckAmount_       = 0.0f;   // target duck depth (0-1, set per block)
 
-	// Engine micro-oscillation — mode-dependent analog drift
-	// ANALOG: Slow wow (~2 Hz) modulating gain ±0.5 dB via sine LFO
-	// BBD:    Faster random clock jitter (~15 Hz S&H) ±0.2 dB
+	// Engine micro-oscillation — mode-dependent drift
+	// SAT1: Slow wow (~2 Hz) modulating gain ±0.5 dB via sine LFO
+	// SAT2: Faster random clock jitter (~15 Hz S&H) ±0.2 dB
 	float engineDriftPhase_    = 0.0f;
 	float engineDriftPeriod_   = 4800.0f;  // samples per cycle/step
 	float engineDriftTarget_   = 1.0f;     // raw target (gain multiplier)
 	float engineDriftSmoothed_ = 1.0f;     // EMA-smoothed gain multiplier
 	float engineDriftSmoothCoeff_ = 0.9995f; // EMA coeff
+
+	// Progressive AC-coupling HP in feedback (both SAT1 & SAT2)
+	// Simulates coupling caps in the preamp / record-driver stages.
+	// Each recirculation attenuates LF, making tails progressively thinner.
+	float engineHpStateL_ = 0.0f;
+	float engineHpStateR_ = 0.0f;
+	float engineHpCoeff_  = 0.0f;  // 1-pole IIR coeff (precomputed per block)
+
+	// SAT1 head bump (peaking biquad at ~80 Hz, +2 dB, Q≈0.8)
+	// Tape head proximity resonance — adds low-end warmth per repeat
+	float engineHbB0_ = 1.0f, engineHbB1_ = 0.0f, engineHbB2_ = 0.0f;
+	float engineHbA1_ = 0.0f, engineHbA2_ = 0.0f;
+	float engineHbZL_[2] = {0.0f, 0.0f};  // Transposed DF2 state L
+	float engineHbZR_[2] = {0.0f, 0.0f};  // Transposed DF2 state R
+
+	// SAT1 secondary flutter LFO (~0.4 Hz slow drift)
+	// Complements the primary 2 Hz wow with a slower tape-wander component
+	float engineFlutter2Phase_  = 0.0f;
+	float engineFlutter2Period_ = 110250.0f;  // SR / 0.4
+
+	// SAT1 pre-saturation anti-aliasing LP (~10 kHz) — reduces HF before
+	// the in-loop tube waveshaper to minimise aliasing without oversampling.
+	float enginePreSatLpL_ = 0.0f;
+	float enginePreSatLpR_ = 0.0f;
+	float enginePreSatLpCoeff_ = 0.0f;
+
+	// Output-stage anti-aliasing LP — band-limits signal before output
+	// waveshaper (SAT1 ~16 kHz, SAT2 ~10 kHz).
+	float engineOutAaLpL_ = 0.0f;
+	float engineOutAaLpR_ = 0.0f;
+	float engineOutAaLpCoeff_ = 0.0f;
+
+	// Post-waveshaper 2-pole Butterworth LP (catches harmonics generated
+	// by waveshapers that can't use ADAA). SAT1 ~16 kHz, SAT2 ~12 kHz.
+	float enginePostWsB0_ = 1.0f, enginePostWsB1_ = 0.0f, enginePostWsB2_ = 0.0f;
+	float enginePostWsA1_ = 0.0f, enginePostWsA2_ = 0.0f;
+	float enginePostWsZL_[2] = {0.0f, 0.0f};  // TDF2 state L
+	float enginePostWsZR_[2] = {0.0f, 0.0f};  // TDF2 state R
+
+	// ADAA (1st-order antiderivative anti-aliasing) state for tanh grit
+	// ADAA1: y[n] = (F(x[n]) - F(x[n-1])) / (x[n] - x[n-1])
+	// where F(x) = (1/k)·ln(cosh(k·x)) for tanh(k·x)
+	float adaaTanhPrevL_ = 0.0f;
+	float adaaTanhPrevR_ = 0.0f;
+	float adaaTanhAd1PrevL_ = 0.0f;  // F(x[n-1]) left
+	float adaaTanhAd1PrevR_ = 0.0f;  // F(x[n-1]) right
+
+	// ADAA state for SAT2 feedback-loop sin(π/2·|x|) waveshaper
+	float adaaSinFbkPrevL_ = 0.0f;
+	float adaaSinFbkPrevR_ = 0.0f;
+	float adaaSinFbkAd1PrevL_ = 0.0f;
+	float adaaSinFbkAd1PrevR_ = 0.0f;
+
+	// ADAA state for SAT2 grit wavefolding sin(π·x)
+	float adaaFoldPrevL_ = 0.0f;
+	float adaaFoldPrevR_ = 0.0f;
+	float adaaFoldAd1PrevL_ = 0.0f;
+	float adaaFoldAd1PrevR_ = 0.0f;
+
+	// Saturation drive modulation — S&H with EMA smoothing
+	// Varies the saturation intensity per-sample for analog "alive" feel.
+	// SAT1: ~1.5 Hz tape bias drift, SAT2: ~3 Hz BBD clock instability.
+	// Range ±2.5% around unity [0.975, 1.025].
+	float engineSatModPhase_     = 0.0f;
+	float engineSatModPeriod_    = 32000.0f;  // samples per S&H step
+	float engineSatModTarget_    = 1.0f;
+	float engineSatModSmoothed_  = 1.0f;
+	float engineSatModSmoothCoeff_ = 0.999f;
+
+	// Gain jitter — S&H with EMA smoothing, amplitude scales with drive²
+	// SAT1: ~1.5 Hz tape-bias voltage drift, ±1.5 dB max
+	// SAT2: ~8 Hz BBD clock instability, ±1.0 dB max
+	float engineGainJitterPhase_     = 0.0f;
+	float engineGainJitterPeriod_    = 29400.0f;  // samples per S&H step (~1.5 Hz @ 44.1k)
+	float engineGainJitterTarget_    = 1.0f;
+	float engineGainJitterSmoothed_  = 1.0f;
+	float engineGainJitterSmoothCoeff_ = 0.999f;  // ~50 ms EMA
+
+	// SAT2 compander envelope (stereo-linked, attack/release timing)
+	// Real NE571 compander has ~1 ms attack, ~10 ms release
+	float engineCompEnv_     = 0.0f;
+	float engineCompAttack_  = 0.0f;  // attack coeff (~1 ms)
+	float engineCompRelease_ = 0.0f;  // release coeff (~10 ms)
+
+	// SAT2 noise RNG (BBD thermal + clock noise)
+	juce::Random engineNoiseRng_;
+	float engineNoiseScale_ = 1.0f;  // raw |feedback| for noise level scaling
+
+	// Diagnostic: last-sample values for dump
+	float dbgCompEnv_       = 0.0f;  // compander envelope
+	float dbgPostEnginePk_  = 0.0f;  // peak after applyEngineToFeedback (pre-fbkMag)
+	float dbgPostFbkMagPk_  = 0.0f;  // peak after fbkMag multiplication
+	float dbgFbkMag_        = 0.0f;  // actual fbkMag applied
+	float dbgDelayBufPk_    = 0.0f;  // peak written to delay buffer
 
 	// Per-sample dual-stage transparent limiter (stereo-linked)
 	// Stage 1: Leveler (2ms att, 10ms rel) — gradual gain reduction
@@ -501,49 +657,118 @@ private:
 		return juce::jmax (0.0f, 1.0f - smoothedDuck_ * duckEnvelope_);
 	}
 
-	// Per-sample S&H step for CHS D (delay + gain, 2 independent S&H engines)
+	// Generic Hermite + Drift chaos engine (per-sample advance)
+	inline void advanceChaosEngine (
+		float& prev, float& curr, float& next, float& phase,
+		float& driftPhase, float& driftFreqHz, float& output,
+		juce::Random& rng, float period, float amtNorm, float sr) noexcept
+	{
+		phase += 1.0f;
+		if (phase >= period)
+		{
+			phase -= period;
+			prev = curr;
+			curr = next;
+			next = rng.nextFloat() * 2.0f - 1.0f;
+			const float driftBase = sr / juce::jmax (1.0f, period) * 0.37f;
+			driftFreqHz = driftBase * (0.88f + rng.nextFloat() * 0.24f);
+		}
+		const float t  = phase / period;
+		const float t2 = t * t;
+		const float t3 = t2 * t;
+		const float h00 =  2.0f * t3 - 3.0f * t2 + 1.0f;
+		const float h10 =         t3 - 2.0f * t2 + t;
+		const float h01 = -2.0f * t3 + 3.0f * t2;
+		const float h11 =         t3 -        t2;
+		const float tangCurr = (next - prev) * 0.5f;
+		const float tangNext = -curr * 0.5f;
+		const float shValue  = h00 * curr + h10 * tangCurr + h01 * next + h11 * tangNext;
+
+		driftPhase += driftFreqHz / sr;
+		if (driftPhase > 1e6f) driftPhase -= 1e6f;
+		const float driftValue = std::sin (driftPhase * kTwoPi) * kChaosDriftAmp;
+
+		const float shWeight = juce::jlimit (0.0f, 1.0f, amtNorm * 1.5f - 0.15f);
+		output = driftValue + shValue * shWeight;
+	}
+
 	inline void advanceChaosD() noexcept
 	{
 		smoothedChaosDelayMaxSamples_ += (chaosDelayMaxSamples_ - smoothedChaosDelayMaxSamples_) * (1.0f - chaosParamSmoothCoeff_);
 		smoothedChaosGainMaxDb_       += (chaosGainMaxDb_       - smoothedChaosGainMaxDb_)       * (1.0f - chaosParamSmoothCoeff_);
 		smoothedChaosShPeriodD_       += (chaosShPeriodD_       - smoothedChaosShPeriodD_)       * (1.0f - chaosParamSmoothCoeff_);
 
-		chaosDPhase_ += 1.0f;
-		if (chaosDPhase_ >= smoothedChaosShPeriodD_)
-		{
-			chaosDPhase_ -= smoothedChaosShPeriodD_;
-			chaosDTarget_ = chaosDRng_.nextFloat() * 2.0f - 1.0f;
-		}
-		chaosDSmoothed_ = chaosDSmoothCoeff_ * chaosDSmoothed_
-		                + (1.0f - chaosDSmoothCoeff_) * chaosDTarget_;
+		const float period = smoothedChaosShPeriodD_;
+		const float sr = (float) currentSampleRate;
+		const int nCh = chaosStereo_ ? 2 : 1;
 
-		chaosGPhase_ += 1.0f;
-		if (chaosGPhase_ >= smoothedChaosShPeriodD_)
+		for (int c = 0; c < nCh; ++c)
 		{
-			chaosGPhase_ -= smoothedChaosShPeriodD_;
-			chaosGTarget_ = chaosGRng_.nextFloat() * 2.0f - 1.0f;
+			advanceChaosEngine (chaosDPrev_[c], chaosDCurr_[c], chaosDNext_[c], chaosDPhase_[c],
+				chaosDDriftPhase_[c], chaosDDriftFreqHz_[c], chaosDOut_[c],
+				chaosDRng_[c], period, chaosAmtNormD_, sr);
+
+			advanceChaosEngine (chaosGPrev_[c], chaosGCurr_[c], chaosGNext_[c], chaosGPhase_[c],
+				chaosGDriftPhase_[c], chaosGDriftFreqHz_[c], chaosGOut_[c],
+				chaosGRng_[c], period, chaosAmtNormD_, sr);
 		}
-		chaosGSmoothed_ = chaosGSmoothCoeff_ * chaosGSmoothed_
-		                + (1.0f - chaosGSmoothCoeff_) * chaosGTarget_;
+
+		if (! chaosStereo_)
+		{
+			chaosDOut_[1] = chaosDOut_[0];
+			chaosGOut_[1] = chaosGOut_[0];
+		}
 	}
 
-	// Per-sample S&H step for CHS F (filter, 1 independent S&H engine)
 	inline void advanceChaosF() noexcept
 	{
 		smoothedChaosFilterMaxOct_  += (chaosFilterMaxOct_  - smoothedChaosFilterMaxOct_)  * (1.0f - chaosParamSmoothCoeff_);
 		smoothedChaosShPeriodF_     += (chaosShPeriodF_     - smoothedChaosShPeriodF_)     * (1.0f - chaosParamSmoothCoeff_);
 
+		const float amtNormF = chaosAmtF_ * 0.01f;
+		const float period   = smoothedChaosShPeriodF_;
+		const float sr       = (float) currentSampleRate;
+
 		chaosFPhase_ += 1.0f;
-		if (chaosFPhase_ >= smoothedChaosShPeriodF_)
+		if (chaosFPhase_ >= period)
 		{
-			chaosFPhase_ -= smoothedChaosShPeriodF_;
-			chaosFTarget_ = chaosFRng_.nextFloat() * 2.0f - 1.0f;
+			chaosFPhase_ -= period;
+			chaosFPrev_ = chaosFCurr_;
+			chaosFCurr_ = chaosFNext_;
+			chaosFNext_ = chaosFRng_.nextFloat() * 2.0f - 1.0f;
+			const float driftBase = sr / juce::jmax (1.0f, period) * 0.37f;
+			chaosFDriftFreqHz_ = driftBase * (0.88f + chaosFRng_.nextFloat() * 0.24f);
 		}
-		chaosFSmoothed_ = chaosFSmoothCoeff_ * chaosFSmoothed_
-		                + (1.0f - chaosFSmoothCoeff_) * chaosFTarget_;
+
+		const float t  = chaosFPhase_ / period;
+		const float t2 = t * t;
+		const float t3 = t2 * t;
+		const float h00 =  2.0f * t3 - 3.0f * t2 + 1.0f;
+		const float h10 =         t3 - 2.0f * t2 + t;
+		const float h01 = -2.0f * t3 + 3.0f * t2;
+		const float h11 =         t3 -        t2;
+		const float tangCurr = (chaosFNext_ - chaosFPrev_) * 0.5f;
+		const float tangNext = -chaosFCurr_ * 0.5f;
+		const float shValue  = h00 * chaosFCurr_ + h10 * tangCurr + h01 * chaosFNext_ + h11 * tangNext;
+
+		chaosFDriftPhase_ += chaosFDriftFreqHz_ / sr;
+		if (chaosFDriftPhase_ > 1e6f) chaosFDriftPhase_ -= 1e6f;
+		const float driftL = std::sin (chaosFDriftPhase_ * kTwoPi) * kChaosDriftAmp;
+
+		const float shWeight = juce::jlimit (0.0f, 1.0f, amtNormF * 1.5f - 0.15f);
+		chaosFOut_[0] = driftL + shValue * shWeight;
+
+		if (chaosStereo_)
+		{
+			const float driftR = std::sin (chaosFDriftPhase_ * kTwoPi + kTwoPi * 0.25f) * kChaosDriftAmp;
+			chaosFOut_[1] = driftR + shValue * shWeight;
+		}
+		else
+		{
+			chaosFOut_[1] = chaosFOut_[0];
+		}
 	}
 
-	// Post-wet micro-delay + gain modulation (CAB-TR style, ±5ms max, ±1dB gain)
 	inline void applyChaosDelay (float& wetL, float& wetR) noexcept
 	{
 		const int wp = chaosDelayWritePos_;
@@ -551,16 +776,16 @@ private:
 		chaosDelayBuf_[1][wp] = wetR;
 
 		const float centerDelay = smoothedChaosDelayMaxSamples_;
-		const float delaySamp   = juce::jlimit (0.0f, (float)(kChaosDelayBufLen - 2),
-		                                        centerDelay + chaosDSmoothed_ * smoothedChaosDelayMaxSamples_);
-
-		const float readPos = (float) wp - delaySamp;
-		const int iPos = (int) std::floor (readPos);
-		const float frac = readPos - (float) iPos;
 		const int mask = kChaosDelayBufLen - 1;
 
 		for (int ch = 0; ch < 2; ++ch)
 		{
+			const float delaySamp = juce::jlimit (0.0f, (float)(kChaosDelayBufLen - 2),
+				centerDelay + chaosDOut_[ch] * smoothedChaosDelayMaxSamples_);
+			const float readPos = (float) wp - delaySamp;
+			const int iPos = (int) std::floor (readPos);
+			const float frac = readPos - (float) iPos;
+
 			const float p0 = chaosDelayBuf_[ch][(iPos - 1) & mask];
 			const float p1 = chaosDelayBuf_[ch][(iPos    ) & mask];
 			const float p2 = chaosDelayBuf_[ch][(iPos + 1) & mask];
@@ -575,16 +800,44 @@ private:
 
 		chaosDelayWritePos_ = (wp + 1) & mask;
 
-		// Gain modulation (±1dB from decorrelated gain S&H)
-		const float gainDb  = chaosGSmoothed_ * smoothedChaosGainMaxDb_;
-		const float gainLin = std::pow (10.0f, gainDb * 0.05f);
-		wetL *= gainLin;
-		wetR *= gainLin;
+		// Per-channel gain modulation
+		for (int ch = 0; ch < 2; ++ch)
+		{
+			const float gainDb  = chaosGOut_[ch] * smoothedChaosGainMaxDb_;
+			const float ex = gainDb * 0.16609640474f;
+			const float exln2 = ex * 0.6931472f;
+			const float gainLin = 1.0f + exln2 * (1.0f + exln2 * 0.5f);
+			float& wet = (ch == 0) ? wetL : wetR;
+			wet *= gainLin;
+		}
+	}
+
+	// Soft clamp: linear below ±knee, smooth hyperbolic compression above.
+	// Approaches ±limit asymptotically — no hard harmonics from clipping.
+	// At the join point the derivative is exactly 1.0 (C¹ continuous).
+	// Used at the end of the feedback loop to replace the hard ±1.5 clamp
+	// which caused abrupt harmonic dropout when head bump self-oscillation
+	// crossed the feedback sustain threshold.
+	static inline float softClamp (float x) noexcept
+	{
+		constexpr float knee  = 1.0f;
+		constexpr float range = 0.5f;   // limit (1.5) − knee
+		if (x > knee)
+		{
+			const float excess = x - knee;
+			return knee + range * excess / (excess + range);
+		}
+		if (x < -knee)
+		{
+			const float excess = -x - knee;
+			return -(knee + range * excess / (excess + range));
+		}
+		return x;
 	}
 
 	// Engine feedback-loop processing
-	// ANALOG: Rational tanh saturation (Padé 3,3) + 2-pole LP @ 5 kHz + slow wow
-	// BBD:    Simplified compander → sin() waveshaper → expander + 2-pole LP @ 3 kHz + clock jitter
+	// SAT1: AC-coupling HP + head bump + mild saturation + 2-pole LP + dual flutter
+	// SAT2: AC-coupling HP + LP + NE571 compander w/ timing + sin() waveshaper + noise + expander
 	inline void applyEngineToFeedback (float& fbkL, float& fbkR) noexcept
 	{
 		if (engineMode_ == 0) return; // CLEAN: bypass
@@ -593,23 +846,32 @@ private:
 		engineDriftPhase_ += 1.0f;
 		if (engineMode_ == 1)
 		{
-			// ANALOG wow: smooth sine LFO at ~2 Hz, ±0.5 dB [0.944, 1.059]
+			// SAT1 primary wow: sine LFO at ~0.8 Hz, ±0.2 dB
 			if (engineDriftPhase_ >= engineDriftPeriod_)
 				engineDriftPhase_ -= engineDriftPeriod_;
-			const float phase = engineDriftPhase_ / engineDriftPeriod_; // [0,1)
-			// Fast sine: Bhaskara approximation, max error ~0.2%
-			const float x = phase * 2.0f - 1.0f; // [-1, 1]
+			const float phase = engineDriftPhase_ / engineDriftPeriod_;
+			const float x = phase * 2.0f - 1.0f;
 			const float x2 = x * x;
 			const float sineApprox = x * (1.0f - x2 * (0.16666667f - x2 * 0.00833333f));
-			engineDriftSmoothed_ = 1.0f + sineApprox * 0.057f; // ±0.5 dB
+
+			// SAT1 secondary flutter: ~0.15 Hz slow tape-wander, ±0.1 dB
+			engineFlutter2Phase_ += 1.0f;
+			if (engineFlutter2Phase_ >= engineFlutter2Period_)
+				engineFlutter2Phase_ -= engineFlutter2Period_;
+			const float ph2 = engineFlutter2Phase_ / engineFlutter2Period_;
+			const float x2b = ph2 * 2.0f - 1.0f;
+			const float x2b2 = x2b * x2b;
+			const float sine2 = x2b * (1.0f - x2b2 * (0.16666667f - x2b2 * 0.00833333f));
+
+			engineDriftSmoothed_ = 1.0f + sineApprox * 0.023f + sine2 * 0.012f;
 		}
 		else
 		{
-			// BBD clock jitter: S&H at ~15 Hz, ±0.2 dB [0.977, 1.023]
+			// SAT2 clock jitter: S&H at ~4 Hz, ±0.1 dB [0.988, 1.012]
 			if (engineDriftPhase_ >= engineDriftPeriod_)
 			{
 				engineDriftPhase_ -= engineDriftPeriod_;
-				engineDriftTarget_ = 0.977f + chaosDRng_.nextFloat() * 0.046f;
+				engineDriftTarget_ = 0.988f + chaosDRng_[0].nextFloat() * 0.024f;
 			}
 			engineDriftSmoothed_ = engineDriftSmoothCoeff_ * engineDriftSmoothed_
 			                     + (1.0f - engineDriftSmoothCoeff_) * engineDriftTarget_;
@@ -619,100 +881,420 @@ private:
 		fbkL = juce::jlimit (-1.5f, 1.5f, fbkL);
 		fbkR = juce::jlimit (-1.5f, 1.5f, fbkR);
 
+		// Save dry reference for mode-switch crossfade
+		const float xfDryL = fbkL;
+		const float xfDryR = fbkR;
+
+		// ── AC-coupling HP — progressive bass loss (coupling caps) ──
+		// 1-pole IIR LP computes the DC/LF component; subtracting it gives HP.
+		// SAT1 ~30 Hz (tape preamp caps), SAT2 ~20 Hz (BBD larger caps).
+		// Accumulates with each recirculation → tails become thinner.
+		engineHpStateL_ = engineHpStateL_ * (1.0f - engineHpCoeff_) + fbkL * engineHpCoeff_;
+		engineHpStateR_ = engineHpStateR_ * (1.0f - engineHpCoeff_) + fbkR * engineHpCoeff_;
+		fbkL -= engineHpStateL_;
+		fbkR -= engineHpStateR_;
+
 		if (engineMode_ == 1)
 		{
-			// ── ANALOG: LP filter only in feedback loop ──
-			// Saturation is applied on the wet OUTPUT path (applyAnalogOutputSat),
-			// NOT inside the feedback loop.  This ensures the feedback parameter
-			// alone controls sustain time — matching clean & BBD behavior.
-			// The 2-pole LP darkens repeats progressively (core analog character).
+			// ── SAT1: Analog tape feedback chain ──
 
-			// 2-pole LP at ~5 kHz (tape head + output transformer rolloff)
-			// Two cascaded 1-pole stages = 12 dB/oct Butterworth-like
+			// Head bump (~80 Hz peaking EQ, +0.15 dB, Q≈0.8)
+			// Tape head proximity resonance — adds subtle low-end warmth per repeat.
+			// Kept mild (+0.15 dB) because it accumulates inside the feedback loop.
+			// AC-coupling HP removes ~0.57 dB/pass at 80 Hz, so net is < 0,
+			// preventing self-oscillation at any feedback setting.
+			{
+				float outL = engineHbB0_ * fbkL + engineHbZL_[0];
+				engineHbZL_[0] = engineHbB1_ * fbkL - engineHbA1_ * outL + engineHbZL_[1];
+				engineHbZL_[1] = engineHbB2_ * fbkL - engineHbA2_ * outL;
+				fbkL = outL;
+
+				float outR = engineHbB0_ * fbkR + engineHbZR_[0];
+				engineHbZR_[0] = engineHbB1_ * fbkR - engineHbA1_ * outR + engineHbZR_[1];
+				engineHbZR_[1] = engineHbB2_ * fbkR - engineHbA2_ * outR;
+				fbkR = outR;
+			}
+
+			// Progressive tape-loss LP (~10 kHz, 1-pole)
+			// Simulates magnetic-spacing loss: HF is attenuated each pass
+			// through the record/playback heads.  At 10 kHz the per-pass
+			// loss at 1 kHz is only ~0.04 dB (transparent mid-range), but
+			// at 5 kHz it's ~0.8 dB — repeats darken progressively like
+			// real tape.  Higher cutoff than SAT2's 5 kHz because tape
+			// head losses are gentler than BBD clock-aliasing filters, and
+			// SAT1 has no compander to compensate mid-range drain.
 			engineLp1StateL_ += engineLpCoeff_ * (fbkL - engineLp1StateL_);
 			engineLp1StateR_ += engineLpCoeff_ * (fbkR - engineLp1StateR_);
-			engineLp2StateL_ += engineLpCoeff_ * (engineLp1StateL_ - engineLp2StateL_);
-			engineLp2StateR_ += engineLpCoeff_ * (engineLp1StateR_ - engineLp2StateR_);
-			fbkL = engineLp2StateL_;
-			fbkR = engineLp2StateR_;
+			fbkL = engineLp1StateL_;
+			fbkR = engineLp1StateR_;
 		}
 		else
 		{
-			// ── BBD: Compander + sin() waveshaper + expander ──
-			// Real BBD chips (MN3005/3207) use NE571 compander for SNR improvement.
-			// Simplified compander: compress → clip → expand
+			// ── SAT2: BBD feedback chain ──
 
-			// Pre-LP at ~3 kHz (anti-aliasing before S&H stage), 2-pole (12 dB/oct)
+			// Pre-LP at ~5 kHz (anti-aliasing before S&H stage), 1-pole
+			// Reduced from 2-pole to halve per-pass HF loss.  The 2-pole
+			// removed ~0.35 dB/pass at 1 kHz — more than the compander
+			// could compensate when feedback dropped below 100%, causing
+			// abrupt tail collapse.  1-pole (~0.18 dB/pass at 1 kHz)
+			// lets the compander maintain smooth decay at all feedback.
 			engineLp1StateL_ += engineLpCoeff_ * (fbkL - engineLp1StateL_);
 			engineLp1StateR_ += engineLpCoeff_ * (fbkR - engineLp1StateR_);
-			engineLp2StateL_ += engineLpCoeff_ * (engineLp1StateL_ - engineLp2StateL_);
-			engineLp2StateR_ += engineLpCoeff_ * (engineLp1StateR_ - engineLp2StateR_);
-			fbkL = engineLp2StateL_;
-			fbkR = engineLp2StateR_;
+			fbkL = engineLp1StateL_;
+			fbkR = engineLp1StateR_;
 
-			// Compressor stage: soft-knee RMS-like compression
-			// sign(x) * (2|x| / (1 + |x|)) — fast, no transcendentals
-			// Ratio ~2:1 for |x|>0.5, transparent below.
-			const float aL = std::abs (fbkL);
-			const float aR = std::abs (fbkR);
-			const float cL = (aL + aL) / (1.0f + aL);   // compressed magnitude
-			const float cR = (aR + aR) / (1.0f + aR);
-			fbkL = (fbkL >= 0.0f) ? cL : -cL;
-			fbkR = (fbkR >= 0.0f) ? cR : -cR;
+			// NE571-style compander with envelope timing.
+			// Stereo-linked peak envelope with ~1 ms attack, ~10 ms release.
+			// Creates characteristic BBD "pumping" on transients.
+			const float peak = juce::jmax (std::abs (fbkL), std::abs (fbkR));
+			const float eCoeff = (peak > engineCompEnv_) ? engineCompAttack_ : engineCompRelease_;
+			engineCompEnv_ = engineCompEnv_ * eCoeff + peak * (1.0f - eCoeff);
+			const float env = juce::jmax (engineCompEnv_, 0.001f);
 
-			// sin(π/2·|x|) waveshaper — matches BBD transfer function
-			// Fast 5th-order minimax polynomial (max error < 0.0002)
+			// Compress: gain = 2/(1+env) — envelope-driven 2:1 soft ratio
+			const float compGain = 2.0f / (1.0f + env);
+			fbkL *= compGain;
+			fbkR *= compGain;
+
+			// Clamp compressed signal to [-1, 1] before waveshaper.
+			fbkL = juce::jlimit (-1.0f, 1.0f, fbkL);
+			fbkR = juce::jlimit (-1.0f, 1.0f, fbkR);
+
+			// Save compressed linear values for drive blend
+			const float compLinL = fbkL;
+			const float compLinR = fbkR;
+
+			// sin(π/2·|x|) waveshaper with ADAA (BBD transfer nonlinearity)
 			constexpr float kPiHalf = 1.57079633f;
-			float rectL = std::abs (fbkL) * kPiHalf;
-			float rectR = std::abs (fbkR) * kPiHalf;
-			if (rectL > kPiHalf) rectL = kPiHalf;
-			if (rectR > kPiHalf) rectR = kPiHalf;
-			{
-				const float x2L = rectL * rectL;
-				rectL = rectL * (1.0f - x2L * (0.16666667f - x2L * 0.00833333f));
-				const float x2R = rectR * rectR;
-				rectR = rectR * (1.0f - x2R * (0.16666667f - x2R * 0.00833333f));
-			}
-			fbkL = (fbkL > 0.0f) ? rectL : -rectL;
-			fbkR = (fbkR > 0.0f) ? rectR : -rectR;
+			fbkL = processAdaaSinHalf (fbkL, adaaSinFbkPrevL_, adaaSinFbkAd1PrevL_);
+			fbkR = processAdaaSinHalf (fbkR, adaaSinFbkPrevR_, adaaSinFbkAd1PrevR_);
 
-			// Expander stage: inverse of compressor
-			// sign(x) * (|x| / (2 - |x|)) — restores dynamics with BBD coloring
-			const float eL = std::abs (fbkL);
-			const float eR = std::abs (fbkR);
-			const float denom_L = 2.0f - eL;
-			const float denom_R = 2.0f - eR;
-			// Guard against division by zero (only possible if |x| >= 2, shouldn't happen)
-			const float exL = (denom_L > 0.01f) ? (eL / denom_L) : 1.0f;
-			const float exR = (denom_R > 0.01f) ? (eR / denom_R) : 1.0f;
-			fbkL = (fbkL >= 0.0f) ? exL : -exL;
-			fbkR = (fbkR >= 0.0f) ? exR : -exR;
+			// Blend waveshaper with linear by DRIVE:
+			// At 0% drive → pure linear (no harmonics from waveshaper)
+			// At 100% drive → full sin() waveshaper (original BBD behavior)
+			fbkL = compLinL + smoothedSatDrive_ * (fbkL - compLinL);
+			fbkR = compLinR + smoothedSatDrive_ * (fbkR - compLinR);
+
+			// Subtle noise floor (BBD thermal + clock noise, ~-74 dBFS)
+			// Added after waveshaper, before expander: the expander will
+			// reduce noise during quiet passages (correct NE571 behavior)
+			// and noise is masked during loud passages.
+			// Scale by raw feedback so noise doesn't accumulate at low
+			// feedback with delay-time compensation (phantom feedback).
+			const float noiseAmp = 2.0e-4f * engineNoiseScale_;
+			fbkL += engineNoiseRng_.nextFloat() * 2.0f * noiseAmp - noiseAmp;
+			fbkR += engineNoiseRng_.nextFloat() * 2.0f * noiseAmp - noiseAmp;
+
+			// Gain-corrected expander.
+			// The waveshaper sin(π/2·|x|) has gain > 1 for |x| < 1:
+			//   wsGain(x) = sin(π/2·x)/x → π/2 as x→0.
+			// Without correction, compress × ws × expand > 1 → runaway.
+			// Compute wsGain at the clamped compressed peak and divide
+			// the expander by it so the compander is gain-neutral.
+			// When env > 1, compPk is clamped to 1.0 (matching the
+			// compressor output clamp) → wsGain = 1.0 → expGain < env
+			// → natural limiting that pushes the signal below 0 dBFS.
+			const float compPk = juce::jmin (2.0f * env / (1.0f + env), 1.0f);
+			const float wsArg = juce::jmin (compPk * kPiHalf, kPiHalf);
+			const float wsA2 = wsArg * wsArg;
+			const float wsSin = wsArg * (1.0f - wsA2 * (0.16666667f - wsA2 * 0.00833333f));
+			const float wsGain = (compPk > 0.001f) ? (wsSin / compPk) : kPiHalf;
+			// Blend gain correction with linear (wsGain=1) by drive amount
+			const float blendedWsGain = 1.0f + smoothedSatDrive_ * (wsGain - 1.0f);
+			const float expGain = (1.0f + env) * 0.5f / blendedWsGain;
+			fbkL *= expGain;
+			fbkR *= expGain;
 		}
 
 		// Apply mode-dependent drift modulation
-		fbkL *= engineDriftSmoothed_;
-		fbkR *= engineDriftSmoothed_;
+		// SAT1 drift applied in output stage (applyAnalogOutputSat) to
+		// preserve loop-gain neutrality at short delay times.
+		// SAT2 drift applied here — mild enough to not erode loop gain.
+		if (engineMode_ != 1)
+		{
+			fbkL *= engineDriftSmoothed_;
+			fbkR *= engineDriftSmoothed_;
+		}
 
-		// Final safety clamp
-		fbkL = juce::jlimit (-1.5f, 1.5f, fbkL);
-		fbkR = juce::jlimit (-1.5f, 1.5f, fbkR);
+		// Engine mode crossfade — 30 ms linear ramp from dry to
+		// fully-processed when switching to a new SAT mode.
+		if (engineXfadePos_ < engineXfadeLen_)
+		{
+			const float t = (float) ++engineXfadePos_ / (float) engineXfadeLen_;
+			fbkL = xfDryL + (fbkL - xfDryL) * t;
+			fbkR = xfDryR + (fbkR - xfDryR) * t;
+		}
+
+		// Soft safety clamp — smooth asymptotic curve prevents the
+		// abrupt harmonic dropout that hard clipping causes when
+		// head bump self-oscillation crosses the feedback threshold.
+		fbkL = softClamp (fbkL);
+		fbkR = softClamp (fbkR);
 	}
 
-	// ── Analog output saturation ──────────────────────────────────────
+	// ── Engine output saturation ────────────────────────────────────
 	// Applied to the WET output signal (not in the feedback loop).
-	// This preserves loop-gain neutrality while adding warm analog
-	// harmonic character to every repeat.
+	// Stage 2 of the dual-saturation architecture.
+	// ── ADAA helpers (inline, no class overhead) ──
+
+	// ADAA1 for tanh(k·x): F(x) = (1/k)·ln(cosh(k·x))
+	static inline float adaaTanhAD1 (float x, float k) noexcept
+	{
+		const float kx = k * x;
+		// ln(cosh(kx)) = |kx| + ln(1 + exp(-2|kx|)) - ln(2)
+		// numerically stable form avoids overflow of cosh() for large x
+		const float akx = std::abs (kx);
+		return (akx + std::log1p (std::exp (-2.0f * akx)) - 0.6931472f) / k;
+	}
+
+	// Process one sample through ADAA1 tanh(k·x)
+	inline float processAdaaTanh (float x, float k, float& prev, float& ad1Prev) noexcept
+	{
+		constexpr float kTol = 1.0e-5f;
+		const float ad1 = adaaTanhAD1 (x, k);
+		const float dx = x - prev;
+		const float y = (std::abs (dx) < kTol)
+		              ? std::tanh (k * 0.5f * (x + prev))
+		              : (ad1 - ad1Prev) / dx;
+		prev = x;
+		ad1Prev = ad1;
+		return y;
+	}
+
+	// ADAA1 for sgn(x)·sin(π/2·|x|): F(x) = (2/π)·(1 - cos(π/2·|x|))
+	static inline float adaaSinHalfAD1 (float x) noexcept
+	{
+		constexpr float kPiH = 1.57079633f;
+		constexpr float k2oPI = 0.63661977f;  // 2/π
+		return k2oPI * (1.0f - std::cos (kPiH * std::abs (x)));
+	}
+
+	// Process one sample through ADAA1 sgn(x)·sin(π/2·|x|) (clamped [-1,1])
+	inline float processAdaaSinHalf (float x, float& prev, float& ad1Prev) noexcept
+	{
+		constexpr float kTol = 1.0e-5f;
+		constexpr float kPiH = 1.57079633f;
+		x = juce::jlimit (-1.0f, 1.0f, x);
+		const float ad1 = adaaSinHalfAD1 (x);
+		const float dx = x - prev;
+		float y;
+		if (std::abs (dx) < kTol)
+		{
+			// fallback: evaluate function at midpoint
+			const float mid = 0.5f * (x + prev);
+			const float amid = std::abs (mid) * kPiH;
+			y = (mid >= 0.0f ? 1.0f : -1.0f) * std::sin (juce::jmin (amid, kPiH));
+		}
+		else
+		{
+			y = (ad1 - ad1Prev) / dx;
+		}
+		prev = x;
+		ad1Prev = ad1;
+		return y;
+	}
+
+	// ADAA1 for sin(π·x) wavefolder (SAT2 grit): F(x) = -(1/π)·cos(π·x)
+	static inline float adaaFoldAD1 (float x) noexcept
+	{
+		constexpr float kInvPi = 0.31830989f;
+		constexpr float kPi    = 3.14159265f;
+		return -kInvPi * std::cos (kPi * x);
+	}
+
+	inline float processAdaaFold (float x, float& prev, float& ad1Prev) noexcept
+	{
+		constexpr float kTol = 1.0e-5f;
+		constexpr float kPi  = 3.14159265f;
+		const float ad1 = adaaFoldAD1 (x);
+		const float dx = x - prev;
+		const float y = (std::abs (dx) < kTol)
+		              ? std::sin (kPi * 0.5f * (x + prev))
+		              : (ad1 - ad1Prev) / dx;
+		prev = x;
+		ad1Prev = ad1;
+		return y;
+	}
+
+	// 2-pole TDF2 biquad (inline, for post-waveshaper LP)
+	static inline float biquadTdf2 (float x, float b0, float b1, float b2,
+	                                 float a1, float a2, float z[2]) noexcept
+	{
+		const float y = b0 * x + z[0];
+		z[0] = b1 * x - a1 * y + z[1];
+		z[1] = b2 * x - a2 * y;
+		return y;
+	}
+
+	// SAT1: output waveshaper combining mojo + tube + grit
+	// SAT2: output waveshaper combining cubic fold + grit
+	// Both include: pre-WS AA LP, post-WS 2-pole LP, ADAA grit, gain jitter.
 	inline void applyAnalogOutputSat (float& L, float& R) noexcept
 	{
-		// Rational tanh (Padé 3,3): adds rich odd harmonics
-		const float x2L = L * L;
-		L = L * (27.0f + x2L) / (27.0f + 9.0f * x2L);
-		const float x2R = R * R;
-		R = R * (27.0f + x2R) / (27.0f + 9.0f * x2R);
+		// Anti-aliasing LP before waveshaper (band-limits signal)
+		engineOutAaLpL_ += engineOutAaLpCoeff_ * (L - engineOutAaLpL_);
+		engineOutAaLpR_ += engineOutAaLpCoeff_ * (R - engineOutAaLpR_);
+		L = engineOutAaLpL_;
+		R = engineOutAaLpR_;
 
-		// Asymmetric 2nd harmonic (even-order warmth)
-		L -= L * L * 0.08f;
-		R -= R * R * 0.08f;
+		// ── Saturation drive modulation (S&H → EMA) ──
+		engineSatModPhase_ += 1.0f;
+		if (engineSatModPhase_ >= engineSatModPeriod_)
+		{
+			engineSatModPhase_ -= engineSatModPeriod_;
+			engineSatModTarget_ = 0.975f + chaosDRng_[0].nextFloat() * 0.05f;
+		}
+		engineSatModSmoothed_ = engineSatModSmoothCoeff_ * engineSatModSmoothed_
+		                      + (1.0f - engineSatModSmoothCoeff_) * engineSatModTarget_;
+
+		// ── Drive-dependent gain jitter (S&H → EMA) ──
+		engineGainJitterPhase_ += 1.0f;
+		if (engineGainJitterPhase_ >= engineGainJitterPeriod_)
+		{
+			engineGainJitterPhase_ -= engineGainJitterPeriod_;
+			const float halfRange = (engineMode_ == 1) ? 0.159f : 0.109f;
+			engineGainJitterTarget_ = 1.0f + (chaosDRng_[0].nextFloat() * 2.0f - 1.0f) * halfRange;
+		}
+		engineGainJitterSmoothed_ = engineGainJitterSmoothCoeff_ * engineGainJitterSmoothed_
+		                          + (1.0f - engineGainJitterSmoothCoeff_) * engineGainJitterTarget_;
+
+		const float driveAmt = smoothedSatDrive_;
+		const float driveAmt2 = driveAmt * driveAmt;
+		const float gritAmt = smoothedSatGrit_;
+
+		if (engineMode_ == 1)
+		{
+			// SAT1 wow/flutter drift applied to output
+			L *= engineDriftSmoothed_;
+			R *= engineDriftSmoothed_;
+
+			const float cleanL = L, cleanR = R;
+
+			// ── SAT1: ToTape6 "mojo" + tube asymmetry ──
+			// Drive scales the input gain into the waveshaper for more aggression
+			constexpr float kPiH = 1.57079633f;
+			const float driveVar = engineSatModSmoothed_ * (1.0f + driveAmt * 1.5f);
+
+			float absL = std::abs (L);
+			if (absL > 0.0001f)
+			{
+				float mojoL = std::sqrt (std::sqrt (absL));
+				float argL  = juce::jlimit (-kPiH, kPiH, L * mojoL * driveVar * kPiH);
+				const float aL2 = argL * argL;
+				L = argL * (1.0f - aL2 * (0.16666667f - aL2 * 0.00833333f)) / mojoL;
+			}
+
+			float absR = std::abs (R);
+			if (absR > 0.0001f)
+			{
+				float mojoR = std::sqrt (std::sqrt (absR));
+				float argR  = juce::jlimit (-kPiH, kPiH, R * mojoR * driveVar * kPiH);
+				const float aR2 = argR * argR;
+				R = argR * (1.0f - aR2 * (0.16666667f - aR2 * 0.00833333f)) / mojoR;
+			}
+
+			// Tube asymmetric 2nd harmonic
+			const float tubeK = 0.12f * driveVar;
+			L -= L * L * tubeK;
+			R -= R * R * tubeK;
+
+			// Dry/wet blend by DRIVE
+			L = cleanL + driveAmt * (L - cleanL);
+			R = cleanR + driveAmt * (R - cleanR);
+
+			// Post-main-WS biquad LP (catches mojo harmonics)
+			L = biquadTdf2 (L, enginePostWsB0_, enginePostWsB1_, enginePostWsB2_,
+			                enginePostWsA1_, enginePostWsA2_, enginePostWsZL_);
+			R = biquadTdf2 (R, enginePostWsB0_, enginePostWsB1_, enginePostWsB2_,
+			                enginePostWsA1_, enginePostWsA2_, enginePostWsZR_);
+
+			// ── SAT1 Grit: "Valve Crunch" — cascaded asymmetric tanh with ADAA ──
+			// Two-stage half-wave tanh soft-clipper → duty-cycle modulation
+			// like real tube amps (Carvin/SimulAnalog technique).
+			// k scales 2→5 with grit for increasing aggression.
+			if (gritAmt > 0.001f)
+			{
+				const float k = 2.0f + gritAmt * 3.0f;  // 2..5 steepness
+
+				// Stage 1: positive half tanh with ADAA
+				float gL = processAdaaTanh (L, k, adaaTanhPrevL_, adaaTanhAd1PrevL_);
+				float gR = processAdaaTanh (R, k, adaaTanhPrevR_, adaaTanhAd1PrevR_);
+
+				// Stage 2: invert, clip negative half, invert back
+				// → asymmetric duty-cycle modulation (even+odd harmonics)
+				gL = -std::tanh (k * juce::jmax (0.0f, -gL));
+				gR = -std::tanh (k * juce::jmax (0.0f, -gR));
+
+				// Blend grit in
+				L += gritAmt * (gL - L);
+				R += gritAmt * (gR - R);
+			}
+		}
+		else
+		{
+			const float cleanL = L, cleanR = R;
+
+			// ── SAT2: Drive-style cubic fold ──
+			// Drive scales g for more aggressive fold at high drive
+			const float g = 0.35f * engineSatModSmoothed_ * (1.0f + driveAmt * 1.5f);
+
+			float sL = juce::jlimit (-1.0f, 1.0f, L);
+			float sR = juce::jlimit (-1.0f, 1.0f, R);
+
+			float aL = std::abs (sL);
+			sL -= sL * aL * g * aL * g;
+			sL *= (1.0f + g);
+
+			float aR = std::abs (sR);
+			sR -= sR * aR * g * aR * g;
+			sR *= (1.0f + g);
+
+			// Mild 2nd-harmonic asymmetry (NE571 transistor mismatch)
+			const float bbdAsym = 0.06f * engineSatModSmoothed_;
+			sL -= sL * sL * bbdAsym;
+			sR -= sR * sR * bbdAsym;
+
+			L = sL;
+			R = sR;
+
+			// Dry/wet blend by DRIVE
+			L = cleanL + driveAmt * (L - cleanL);
+			R = cleanR + driveAmt * (R - cleanR);
+
+			// Post-main-WS biquad LP (catches cubic-fold harmonics)
+			L = biquadTdf2 (L, enginePostWsB0_, enginePostWsB1_, enginePostWsB2_,
+			                enginePostWsA1_, enginePostWsA2_, enginePostWsZL_);
+			R = biquadTdf2 (R, enginePostWsB0_, enginePostWsB1_, enginePostWsB2_,
+			                enginePostWsA1_, enginePostWsA2_, enginePostWsZR_);
+
+			// ── SAT2 Grit: "Digital Wreck" — wavefold sin(πx) with ADAA ──
+			// + self-ring-mod (signal × sign-flipped delayed self)
+			// Produces intermodulation / metallic inharmonics typical of
+			// lo-fi digital / trap distortion.
+			if (gritAmt > 0.001f)
+			{
+				// Wavefold: sin(π·x) with ADAA — fold threshold lowers with grit
+				const float foldInput = L * (1.0f + gritAmt * 2.0f);
+				const float foldInputR = R * (1.0f + gritAmt * 2.0f);
+				float gL = processAdaaFold (foldInput, adaaFoldPrevL_, adaaFoldAd1PrevL_);
+				float gR = processAdaaFold (foldInputR, adaaFoldPrevR_, adaaFoldAd1PrevR_);
+
+				// Self-ring-mod: multiply by sign-inverted opposite channel
+				// Creates sum/difference frequencies — metallic intermodulation
+				const float ringAmt = gritAmt * 0.3f;  // max 30% ring mix
+				gL += ringAmt * gL * (gR >= 0.0f ? -1.0f : 1.0f);
+				gR += ringAmt * gR * (gL >= 0.0f ? -1.0f : 1.0f);
+
+				// Blend grit in
+				L += gritAmt * (gL - L);
+				R += gritAmt * (gR - R);
+			}
+		}
+
+		// ── Apply gain jitter (post-everything, scales with drive²) ──
+		const float jitterGain = 1.0f + driveAmt2 * (engineGainJitterSmoothed_ - 1.0f);
+		L *= jitterGain;
+		R *= jitterGain;
 	}
 
 	std::atomic<float> currentMidiFrequency { 0.0f };
@@ -750,7 +1332,11 @@ private:
 	std::atomic<float>* chaosSpdParam    = nullptr;
 	std::atomic<float>* chaosAmtFilterParam = nullptr;
 	std::atomic<float>* chaosSpdFilterParam = nullptr;
-	std::atomic<float>* engineParam     = nullptr;
+	std::atomic<float>* engineParam      = nullptr;
+	std::atomic<float>* sat1DriveParam   = nullptr;
+	std::atomic<float>* sat1GritParam    = nullptr;
+	std::atomic<float>* sat2DriveParam   = nullptr;
+	std::atomic<float>* sat2GritParam    = nullptr;
 	std::atomic<float>* duckParam       = nullptr;
 
 	std::atomic<float>* modeInParam   = nullptr;
@@ -761,8 +1347,12 @@ private:
 	std::atomic<float>* limModeParam      = nullptr;
 	std::atomic<float>* invPolParam       = nullptr;
 	std::atomic<float>* invStrParam       = nullptr;
+	std::atomic<float>* mixModeParam      = nullptr;
+	std::atomic<float>* dryLevelParam     = nullptr;
+	std::atomic<float>* wetLevelParam     = nullptr;
 
 	std::atomic<float>* panParam       = nullptr;
+	std::atomic<float>* filterPosParam = nullptr;
 	float lastPan_      = -1.0f;
 	float lastPanLeft_  = 1.0f;
 	float lastPanRight_ = 1.0f;

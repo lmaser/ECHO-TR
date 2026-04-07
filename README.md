@@ -176,9 +176,9 @@ Micro-variation engine that adds organic randomness to the effect. Two independe
 Each chaos target has its own toggle and shares two global controls:
 
 - **AMOUNT (0–100%)**: Modulation depth — how far from the base value the parameter can drift. Default: 50%.
-- **SPEED (0.01–100 Hz)**: Sample-and-hold rate — how often a new random target is picked. Default: 5 Hz.
+- **SPEED (0.01–100 Hz)**: Random target rate — how often a new random value is generated. Default: 5 Hz.
 
-Uses exponential smoothing between random targets for glitch-free transitions.
+Uses Hermite cubic interpolation (Catmull-Rom) between random targets with a per-channel quadrature drift LFO for organic, stereo-decorrelated movement.
 
 ### LIM THRESHOLD (−36 to 0 dB)
 
@@ -208,7 +208,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - **Reverse taper**: Precomputed 129-point Tukey (raised-cosine) lookup table with linear interpolation. No per-sample trigonometry.
 - **Wet filter**: Biquad HP/LP on the wet signal. Transposed Direct Form II. Coefficients updated once per block (channel 0), shared across channels.
 - **Tilt EQ**: First-order symmetric shelf at 1 kHz. Coefficients cached with tolerance-based update.
-- **Chaos**: Sample-and-hold random modulation with exponential smoothing. Per-block coefficient precomputation.
+- **Chaos**: Hermite cubic interpolation between random targets with per-channel quadrature drift LFO. Per-block coefficient precomputation.
 
 ### MIDI Implementation
 - Standard A440 tuning: `frequency = 440 × 2^((note − 69) / 12)`.
@@ -239,7 +239,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Feedback is now bipolar (−100% to +100%). Negative feedback inverts polarity, producing pitch-inverted repetitions and alternate comb-filter character.
 - Added ENGINE selector: CLEAN (default), TAPE, and BBD delay character modes.
 - Added TILT EQ (−6 to +6 dB) — first-order spectral tilt on the wet signal.
-- Added CHAOS engine with two independent targets: CHAOS F (filter modulation) and CHAOS D (delay time modulation). Sample-and-hold with exponential smoothing.
+- Added CHAOS engine with two independent targets: CHAOS F (filter modulation) and CHAOS D (delay time modulation). Hermite cubic interpolation with quadrature drift LFO.
 - Added safety hard-limiter at +48 dBFS on all output paths (forward and reverse). Catches NaN/Inf runaways without ever engaging during normal operation.
 - INPUT slider now displays "−INF" when set to −80 dB or below.
 - Numeric entry popup for percentage sliders: precision standardized to 1 decimal place.
