@@ -434,6 +434,21 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedMix = 0.5f;
 	smoothedDryLevel = 1.0f;
 	smoothedWetLevel = 1.0f;
+	{
+		const float pan = loadAtomicOrDefault (panParam, kPanDefault);
+		lastPan_ = pan;
+		if (std::abs (pan - 0.5f) > 0.001f)
+		{
+			const float angle = pan * 1.5707963f;
+			lastPanLeft_ = std::cos (angle);
+			lastPanRight_ = std::sin (angle);
+		}
+		else
+		{
+			lastPanLeft_ = 1.0f;
+			lastPanRight_ = 1.0f;
+		}
+	}
 
 	// Reset reverse delay state
 	reverseAnchor      = 0;
@@ -577,6 +592,9 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 		limRel1_ = std::exp (-1.0f / (sr * 0.010f));
 		limRel2_ = std::exp (-1.0f / (sr * 0.100f));
 	}
+	limThreshLin_ = fastDecibelsToGain (loadAtomicOrDefault (limThresholdParam, kLimThresholdDefault));
+	limThreshTargetLin_ = limThreshLin_;
+	limThreshStep_ = 0.0f;
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -805,7 +823,7 @@ void ECHOTRAudioProcessor::tiltWetSample (float& wetL, float& wetR)
 
 void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                 float delaySamples, float feedback, float inputGain, 
-                                                float outputGain, float mix, float delaySmoothCoeff)
+                                                float outputGain, float /*mix*/, float delaySmoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -898,7 +916,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 				float wL = wetL * smoothedOutputGain * duckGain;
 				float wR = wetR * smoothedOutputGain * duckGain;
-				if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
+				if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 				channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 				channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 
@@ -924,7 +942,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 				float wL = wetL * smoothedOutputGain * duckGain;
 				float wR = wL;
-				if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
+				if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 				channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 			}
 		}
@@ -937,7 +955,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 
 void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                               float delaySamples, float feedback, float inputGain,
-                                              float outputGain, float mix, float delaySmoothCoeff)
+                                              float outputGain, float /*mix*/, float delaySmoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -1010,7 +1028,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
-		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
+		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 		
@@ -1022,7 +1040,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 
 void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                   float delaySamples, float feedback, float inputGain,
-                                                  float outputGain, float mix, float delaySmoothCoeff)
+                                                  float outputGain, float /*mix*/, float delaySmoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -1098,7 +1116,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
-		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
+		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 		
@@ -1110,7 +1128,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 
 void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                               float delaySamples, float feedback, float inputGain,
-                                              float outputGain, float mix, float delaySmoothCoeff)
+                                              float outputGain, float /*mix*/, float delaySmoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -1207,7 +1225,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
-		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
+		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 
@@ -1219,7 +1237,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 
 void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                               float delaySamples, float feedback, float inputGain,
-                                              float outputGain, float mix, float delaySmoothCoeff)
+                                              float outputGain, float /*mix*/, float delaySmoothCoeff)
 {
 	auto* channelL = numChannels > 0 ? buffer.getWritePointer (0) : nullptr;
 	auto* channelR = numChannels > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -1311,7 +1329,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
-		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
+		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
 
@@ -1323,7 +1341,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 
 void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
                                                  float delaySamples, float feedback, float inputGain,
-                                                 float outputGain, float mix, float delaySmoothCoeff,
+                                                 float outputGain, float /*mix*/, float delaySmoothCoeff,
                                                  float smoothMult, int mode)
 {
 	// ══════════════════════════════════════════════════════════════════
@@ -1512,7 +1530,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
-		if (wetLimiterActive_) applyLimiter (wL, wR, limThreshLin_);
+		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 
 		if (monoInput)
 		{
@@ -1787,6 +1805,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 		smoothedDelaySamples = 0.0f;
 		smoothedDelaySamplesR = 0.0f;
+		limThreshLin_ = limThreshTargetLin_;
+		limThreshStep_ = 0.0f;
 		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 		return;
 	}
@@ -2109,7 +2129,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		limThreshLin = fastDecibelsToGain (limThreshDb);
 	}
 	wetLimiterActive_ = (limMode == 1);
-	limThreshLin_     = limThreshLin;
+	limThreshTargetLin_ = limThreshLin;
+	limThreshStep_ = (limThreshTargetLin_ - limThreshLin_) / static_cast<float> (juce::jmax (1, numSamples));
 
 	// Save original dry signal for Sum Bus reconstruction
 	juce::AudioBuffer<float> dryBuffer;
@@ -2323,18 +2344,19 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (numChannels >= 2)
 	{
 		const float pan = panParam->load();
-		if (std::abs (pan - lastPan_) > 0.001f)
+		float targetLeft = 1.0f;
+		float targetRight = 1.0f;
+		if (std::abs (pan - 0.5f) > 0.001f)
 		{
-			lastPan_ = pan;
 			const float angle = pan * 1.5707963f; // π/2
-			lastPanLeft_  = std::cos (angle);
-			lastPanRight_ = std::sin (angle);
+			targetLeft  = std::cos (angle);
+			targetRight = std::sin (angle);
 		}
-		if (std::abs (lastPan_ - 0.5f) > 0.001f)
-		{
-			juce::FloatVectorOperations::multiply (buffer.getWritePointer (0), lastPanLeft_,  numSamples);
-			juce::FloatVectorOperations::multiply (buffer.getWritePointer (1), lastPanRight_, numSamples);
-		}
+		buffer.applyGainRamp (0, 0, numSamples, lastPanLeft_, targetLeft);
+		buffer.applyGainRamp (1, 0, numSamples, lastPanRight_, targetRight);
+		lastPan_ = pan;
+		lastPanLeft_ = targetLeft;
+		lastPanRight_ = targetRight;
 	}
 
 	// ── Limiter (GLOBAL mode: after pan, before safety clip) ──
@@ -2343,7 +2365,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		auto* chL = buffer.getWritePointer (0);
 		auto* chR = (numChannels >= 2) ? buffer.getWritePointer (1) : chL;
 		for (int i = 0; i < numSamples; ++i)
-			applyLimiter (chL[i], chR[i], limThreshLin);
+			applyLimiter (chL[i], chR[i], nextLimiterThreshold());
 	}
 
 	// ── Invert Polarity / Stereo (GLOBAL mode: after Limiter GLOBAL, before safety clip) ──
@@ -2373,6 +2395,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 	}
 
+	limThreshLin_ = limThreshTargetLin_;
+	limThreshStep_ = 0.0f;
 	PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
 }
 

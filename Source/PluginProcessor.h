@@ -219,24 +219,24 @@ public:
 	// Optimized delay processing functions
 	void processStereoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                          float delaySamples, float feedback, float inputGain, 
-	                          float outputGain, float mix, float delaySmoothCoeff);
+	                          float outputGain, float /*mix*/, float delaySmoothCoeff);
 	void processMonoDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                        float delaySamples, float feedback, float inputGain,
-	                        float outputGain, float mix, float delaySmoothCoeff);
+	                        float outputGain, float /*mix*/, float delaySmoothCoeff);
 	void processPingPongDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                            float delaySamples, float feedback, float inputGain,
-	                            float outputGain, float mix, float delaySmoothCoeff);
+	                            float outputGain, float /*mix*/, float delaySmoothCoeff);
 	void processWideDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                       float delaySamples, float feedback, float inputGain,
-	                       float outputGain, float mix, float delaySmoothCoeff);
+	                       float outputGain, float /*mix*/, float delaySmoothCoeff);
 	void processDualDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                       float delaySamples, float feedback, float inputGain,
-	                       float outputGain, float mix, float delaySmoothCoeff);
+	                       float outputGain, float /*mix*/, float delaySmoothCoeff);
 
 	// Reverse delay processing (chunk-based backward playback with smooth taper control)
 	void processReverseDelay (juce::AudioBuffer<float>& buffer, int numSamples, int numChannels,
 	                          float delaySamples, float feedback, float inputGain,
-	                          float outputGain, float mix, float delaySmoothCoeff,
+	                          float outputGain, float /*mix*/, float delaySmoothCoeff,
 	                          float smoothMult, int mode);
 
 	juce::AudioProcessorEditor* createEditor() override;
@@ -465,7 +465,16 @@ private:
 	float limRel1_ = 0.0f;     // Stage 1 release coefficient (~10 ms)
 	float limRel2_ = 0.0f;     // Stage 2 release coefficient (~100 ms)
 	bool  wetLimiterActive_ = false;  // true when limMode == WET (set per-block)
-	float limThreshLin_     = 1.0f;   // linear threshold (set per-block)
+	float limThreshLin_     = 1.0f;   // current smoothed linear threshold
+	float limThreshTargetLin_ = 1.0f;
+	float limThreshStep_    = 0.0f;
+
+	inline float nextLimiterThreshold() noexcept
+	{
+		const float current = limThreshLin_;
+		limThreshLin_ += limThreshStep_;
+		return current;
+	}
 
 	// Engine feedback-loop processing state
 	int   engineMode_ = 0;            // 0=CLEAN, 1=SAT1, 2=SAT2

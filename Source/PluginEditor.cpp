@@ -817,7 +817,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         slider->addListener (this);
     }
 
-    timeSlider.setNumDecimalPlacesToDisplay (1);
+    timeSlider.setNumDecimalPlacesToDisplay (3);
     feedbackSlider.setNumDecimalPlacesToDisplay (1);
     modeSlider.setNumDecimalPlacesToDisplay (0);
     modSlider.setNumDecimalPlacesToDisplay (2);
@@ -1552,13 +1552,14 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
 
     // Cached int-only representations (avoids per-frame juce::String allocation in paint)
     {
-        // Time: in sync mode with MIDI display, show that; otherwise show integer
+        // Time: in sync mode with MIDI display, show that; otherwise show the
+        // same 3-decimal precision offered by the prompt.
         if (cachedMidiDisplay.isNotEmpty() && !cachedTimeSliderHeld)
             cachedTimeIntOnly = cachedMidiDisplay;
         else if (audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamSync)->load() > 0.5f)
             cachedTimeIntOnly = juce::String ((int) timeSlider.getValue());
         else
-            cachedTimeIntOnly = juce::String ((int) timeSlider.getValue());
+            cachedTimeIntOnly = juce::String ((float) timeSlider.getValue(), 3);
 
         cachedModIntOnly      = juce::String ((int) modSlider.getValue());
         cachedFeedbackIntOnly = juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)) + "%";
@@ -2551,7 +2552,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             if (safeThis != nullptr && sliderPtr == &safeThis->timeSlider 
                 && !safeThis->syncButton.getToggleState())
             {
-                clamped = roundToDecimals (clamped, 2);
+                clamped = roundToDecimals (clamped, 3);
             }
 
             sliderPtr->setValue (clamped, juce::sendNotificationSync);
@@ -5458,9 +5459,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
     }
     
     const float ms = (float) timeSlider.getValue();
-    if (ms >= 1000.0f)
-        return juce::String (ms / 1000.0f, 3) + " s TIME";
-    return juce::String ((int) std::lround (ms)) + " ms TIME";
+    return juce::String (ms, 3) + " ms TIME";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
@@ -5476,9 +5475,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     }
     
     const float ms = (float) timeSlider.getValue();
-    if (ms >= 1000.0f)
-        return juce::String (ms / 1000.0f, 3) + "s";
-    return juce::String ((int) std::lround (ms)) + "ms";
+    return juce::String (ms, 3) + "ms";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getFeedbackText() const
@@ -5697,9 +5694,9 @@ juce::String ECHOTRAudioProcessorEditor::getLimThresholdTextShort() const
 
 namespace
 {
-    constexpr const char* kTimeLegendFull  = "5000 ms TIME";
-    constexpr const char* kTimeLegendShort = "5000ms";  // Glued value+unit (wider than "5.000s")
-    constexpr const char* kTimeLegendInt   = "5000";
+    constexpr const char* kTimeLegendFull  = "5000.000 ms TIME";
+    constexpr const char* kTimeLegendShort = "5000.000ms";
+    constexpr const char* kTimeLegendInt   = "5000.000";
 
     constexpr const char* kFeedbackLegendFull  = "100% FEEDBACK";
     constexpr const char* kFeedbackLegendShort = "100% FBK";
