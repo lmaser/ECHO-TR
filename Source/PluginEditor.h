@@ -349,6 +349,7 @@ private:
         float screenXToLevel (float x) const;
         DragTarget hitTestMarker (juce::Point<float> p) const;
         void  setLevelFromMouseX (float mouseX, DragTarget target);
+        void  updateTooltipForTarget (DragTarget target);
     };
 
     DualMixBarComponent dualMixBar_;
@@ -399,6 +400,7 @@ private:
         float getMarkerScreenX (float freq) const;
         DragTarget hitTestMarker (juce::Point<float> p) const;
         void  setFreqFromMouseX (float mouseX, DragTarget target);
+        void  updateTooltipForTarget (DragTarget target);
     };
 
     FilterBarComponent filterBar_;

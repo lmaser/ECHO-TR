@@ -71,11 +71,12 @@ Frequency multiplier applied to the delay time.
 0% = `x0.25` (4x longer delay), 50% = `x1.0` (no change), 100% = `x4.0` (4x shorter delay).  
 Useful for octave shifting, harmonic tuning, and detuned textures.
 
-### INPUT (-100 to 0 dB)
+### INPUT (-INF to +24 dB)
 
 Pre-delay gain. Controls how much signal enters the delay line.
+The fader floor is -144 dB, displayed as -INF; 0 dB is centered on the control.
 
-### OUTPUT (-100 to +24 dB)
+### OUTPUT (-INF to +24 dB)
 
 Post-delay gain. Applied to the wet signal only.
 
@@ -240,7 +241,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Added TILT EQ (-6 to +6 dB) - first-order spectral tilt on the wet signal.
 - Added CHAOS engine with two independent targets: CHAOS F (filter modulation) and CHAOS D (delay time modulation). Hermite cubic interpolation with quadrature drift LFO.
 - Added safety hard-limiter at +48 dBFS on all output paths (forward and reverse). Catches NaN/Inf runaways without ever engaging during normal operation.
-- INPUT slider now displays "-INF" when set to -80 dB or below.
+- INPUT/OUTPUT faders now use a -144 dB floor displayed as "-INF", with +24 dB maximum and 0 dB centered.
 - Numeric entry popup for percentage sliders: precision standardized to 1 decimal place.
 - Filter coefficient update now uses tolerance-based comparison, preventing unnecessary recalculation from floating-point noise.
 - Ported `drawToggleButton` with automatic text-shrinking from CAB-TR for consistent toggle rendering.

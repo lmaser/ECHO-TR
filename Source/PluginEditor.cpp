@@ -24,8 +24,21 @@ namespace UiStateKeys
 // ── Timer & display constants ──
 static constexpr int   kCrtTimerHz   = 10;
 static constexpr int   kIdleTimerHz  = 4;
-static constexpr float kSilenceDb    = -80.0f;
 static constexpr float kMultEpsilon  = 0.01f;
+
+static bool isGainFaderFloor (float dB) noexcept
+{
+    return dB <= ECHOTRAudioProcessor::kGainFloorDb + 0.001f;
+}
+
+static juce::String formatGainFaderDb (float dB)
+{
+    if (isGainFaderFloor (dB))
+        return "-INF dB";
+    if (std::abs (dB) < 0.05f)
+        return "0 dB";
+    return juce::String (dB, 1) + " dB";
+}
 
 // ── Mod slider ↔ multiplier conversion ──
 static constexpr double kModCenter  = 0.5;
@@ -51,6 +64,9 @@ static double multiplierToModSlider (double mult)
 // ── MIDI channel tooltip ──
 static juce::String formatMidiChannelTooltip (int ch)
 {
+    if (ch <= 0)
+        return "OMNI";
+
     return "CHANNEL " + juce::String (ch);
 }
 
@@ -409,6 +425,24 @@ void ECHOTRAudioProcessorEditor::DualMixBarComponent::setLevelFromMouseX (float 
         param->setValueNotifyingHost (level);
 }
 
+void ECHOTRAudioProcessorEditor::DualMixBarComponent::updateTooltipForTarget (DragTarget target)
+{
+    if (target == None)
+    {
+        setTooltip ({});
+        return;
+    }
+
+    const float level = (target == DRY) ? dryLevel_ : wetLevel_;
+    const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
+    const juce::String label = (target == DRY) ? "DRY" : "WET";
+
+    if (dB <= -100.0f)
+        setTooltip (label + ": -INF dB");
+    else
+        setTooltip (label + ": " + juce::String (dB, 1) + " dB");
+}
+
 void ECHOTRAudioProcessorEditor::DualMixBarComponent::updateFromProcessor()
 {
     if (owner == nullptr) return;
@@ -500,6 +534,7 @@ void ECHOTRAudioProcessorEditor::DualMixBarComponent::mouseDown (const juce::Mou
         lastTouched_ = currentDrag_;
         setLevelFromMouseX (e.position.x, currentDrag_);
         updateFromProcessor();
+        updateTooltipForTarget (currentDrag_);
         if (owner != nullptr)
         {
             if (owner->refreshLegendTextCache())
@@ -515,6 +550,7 @@ void ECHOTRAudioProcessorEditor::DualMixBarComponent::mouseDrag (const juce::Mou
     {
         setLevelFromMouseX (e.position.x, currentDrag_);
         updateFromProcessor();
+        updateTooltipForTarget (currentDrag_);
         if (owner != nullptr)
         {
             if (owner->refreshLegendTextCache())
@@ -531,15 +567,7 @@ void ECHOTRAudioProcessorEditor::DualMixBarComponent::mouseUp (const juce::Mouse
 
 void ECHOTRAudioProcessorEditor::DualMixBarComponent::mouseMove (const juce::MouseEvent& e)
 {
-    const auto target = hitTestMarker (e.position);
-    const float level = (target == DRY) ? dryLevel_ : wetLevel_;
-    const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
-    const juce::String label = (target == DRY) ? "DRY" : "WET";
-
-    if (dB <= -100.0f)
-        setTooltip (label + ": -INF dB");
-    else
-        setTooltip (label + ": " + juce::String (dB, 1) + " dB");
+    updateTooltipForTarget (hitTestMarker (e.position));
 }
 
 //========================== FilterBarComponent ==========================
@@ -610,6 +638,24 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::setFreqFromMouseX (float mo
                                          : ECHOTRAudioProcessor::kParamFilterLpFreq;
     if (auto* param = proc.apvts.getParameter (paramId))
         param->setValueNotifyingHost (param->convertTo0to1 (freq));
+}
+
+void ECHOTRAudioProcessorEditor::FilterBarComponent::updateTooltipForTarget (DragTarget target)
+{
+    if (target == HP)
+    {
+        const int hz = juce::roundToInt (hpFreq_);
+        setTooltip ("HP: " + juce::String (hz) + " Hz");
+    }
+    else if (target == LP)
+    {
+        const int hz = juce::roundToInt (lpFreq_);
+        setTooltip ("LP: " + juce::String (hz) + " Hz");
+    }
+    else
+    {
+        setTooltip ({});
+    }
 }
 
 void ECHOTRAudioProcessorEditor::FilterBarComponent::updateFromProcessor()
@@ -696,6 +742,7 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseDown (const juce::Mous
     {
         setFreqFromMouseX (e.position.x, currentDrag_);
         updateFromProcessor();
+        updateTooltipForTarget (currentDrag_);
     }
 }
 
@@ -705,6 +752,7 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseDrag (const juce::Mous
     {
         setFreqFromMouseX (e.position.x, currentDrag_);
         updateFromProcessor();
+        updateTooltipForTarget (currentDrag_);
     }
 }
 
@@ -715,21 +763,7 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseUp (const juce::MouseE
 
 void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseMove (const juce::MouseEvent& e)
 {
-    const auto target = hitTestMarker (e.position);
-    if (target == HP)
-    {
-        const int hz = juce::roundToInt (hpFreq_);
-        setTooltip ("HP: " + juce::String (hz) + " Hz");
-    }
-    else if (target == LP)
-    {
-        const int hz = juce::roundToInt (lpFreq_);
-        setTooltip ("LP: " + juce::String (hz) + " Hz");
-    }
-    else
-    {
-        setTooltip ({});
-    }
+    updateTooltipForTarget (hitTestMarker (e.position));
 }
 
 void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseDoubleClick (const juce::MouseEvent& e)
@@ -823,6 +857,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     modSlider.setNumDecimalPlacesToDisplay (2);
     inputSlider.setNumDecimalPlacesToDisplay (1);
     outputSlider.setNumDecimalPlacesToDisplay (1);
+    inputSlider.setSkewFactor (ECHOTRAudioProcessor::kGainSkew);
+    outputSlider.setSkewFactor (ECHOTRAudioProcessor::kGainSkew);
     mixSlider.setNumDecimalPlacesToDisplay (1);
     tiltSlider.setNumDecimalPlacesToDisplay (1);
     panSlider.setNumDecimalPlacesToDisplay (1);
@@ -1565,8 +1601,10 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
         cachedFeedbackIntOnly = juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)) + "%";
         cachedModeIntOnly     = juce::String ((int) modeSlider.getValue());
         cachedEngineIntOnly   = getEngineTextShort();
-        cachedInputIntOnly    = juce::String ((int) inputSlider.getValue()) + "dB";
-        cachedOutputIntOnly   = juce::String ((int) outputSlider.getValue()) + "dB";
+        cachedInputIntOnly    = isGainFaderFloor ((float) inputSlider.getValue())
+                                ? "-INFdB" : juce::String ((int) inputSlider.getValue()) + "dB";
+        cachedOutputIntOnly   = isGainFaderFloor ((float) outputSlider.getValue())
+                                ? "-INFdB" : juce::String ((int) outputSlider.getValue()) + "dB";
 
         if (mixModeCombo.getSelectedId() == 2)
         {
@@ -2201,9 +2239,9 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         else if (&s == &modSlider)
             worstCaseText = "4.00";
         else if (&s == &inputSlider)
-            worstCaseText = "-100.0";
+            worstCaseText = "-144.0";
         else if (&s == &outputSlider)
-            worstCaseText = "-100.0";
+            worstCaseText = "-144.0";
         else if (&s == &mixSlider)
             worstCaseText = "100.00";
         else if (&s == &panSlider)
@@ -2331,17 +2369,17 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         }
         else if (&s == &inputSlider)
         {
-            minVal = -100.0;
-            maxVal = 0.0;      // dB range: -inf to 0 dB
+            minVal = ECHOTRAudioProcessor::kGainFloorDb;
+            maxVal = ECHOTRAudioProcessor::kGainMaxDb;
             maxDecs = 1;
-            maxLen = 6; // "-100.0"
+            maxLen = 6; // "-144.0"
         }
         else if (&s == &outputSlider)
         {
-            minVal = -100.0;
-            maxVal = 24.0;     // dB range: -inf to +24 dB
+            minVal = ECHOTRAudioProcessor::kGainFloorDb;
+            maxVal = ECHOTRAudioProcessor::kGainMaxDb;
             maxDecs = 1;
-            maxLen = 6; // "-100.0"
+            maxLen = 6; // "-144.0"
         }
         else if (&s == &mixSlider)
         {
@@ -4779,7 +4817,10 @@ void ECHOTRAudioProcessorEditor::openChaosConfigPrompt (const char* amtParamId, 
 
             constexpr int kEditorTextPadPx = 12;
             constexpr int kMinEditorWidthPx = 24;
-            const int editorW = juce::jlimit (kMinEditorWidthPx, 80,
+            const int maxEditorWidthPx = (unitLabel != nullptr && unitLabel->getText() == "Hz")
+                                        ? juce::jmax (80, stringWidth (font, "100.00") + kEditorTextPadPx * 2)
+                                        : 80;
+            const int editorW = juce::jlimit (kMinEditorWidthPx, maxEditorWidthPx,
                                               textW + kEditorTextPadPx * 2);
 
             const int visualW = labelW + spaceW + textW + unitW;
@@ -5561,41 +5602,25 @@ juce::String ECHOTRAudioProcessorEditor::getModTextShort() const
 juce::String ECHOTRAudioProcessorEditor::getInputText() const
 {
     const float db = (float) inputSlider.getValue();
-    if (db <= kSilenceDb)
-        return "-INF dB INPUT";
-    if (std::abs (db) < 0.05f)
-        return "0 dB INPUT";
-    return juce::String (db, 1) + " dB INPUT";
+    return formatGainFaderDb (db) + " INPUT";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getInputTextShort() const
 {
     const float db = (float) inputSlider.getValue();
-    if (db <= kSilenceDb)
-        return "-INF dB IN";
-    if (std::abs (db) < 0.05f)
-        return "0 dB IN";
-    return juce::String (db, 1) + " dB IN";
+    return formatGainFaderDb (db) + " IN";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getOutputText() const
 {
     const float db = (float) outputSlider.getValue();
-    if (db <= kSilenceDb)
-        return "-INF dB OUTPUT";
-    if (std::abs (db) < 0.05f)
-        return "0 dB OUTPUT";
-    return juce::String (db, 1) + " dB OUTPUT";
+    return formatGainFaderDb (db) + " OUTPUT";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getOutputTextShort() const
 {
     const float db = (float) outputSlider.getValue();
-    if (db <= kSilenceDb)
-        return "-INF dB OUT";
-    if (std::abs (db) < 0.05f)
-        return "0 dB OUT";
-    return juce::String (db, 1) + " dB OUT";
+    return formatGainFaderDb (db) + " OUT";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getMixText() const

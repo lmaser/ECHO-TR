@@ -104,6 +104,19 @@ namespace
 		return (dB <= -100.0f) ? 0.0f : std::exp2 (dB * 0.16609640474f);
 	}
 
+	inline float gainFaderDecibelsToGain (float dB) noexcept
+	{
+		return (dB <= ECHOTRAudioProcessor::kGainFloorDb) ? 0.0f : std::exp2 (dB * 0.16609640474f);
+	}
+
+	inline juce::NormalisableRange<float> makeGainFaderRange() noexcept
+	{
+		return juce::NormalisableRange<float> (ECHOTRAudioProcessor::kGainFloorDb,
+		                                       ECHOTRAudioProcessor::kGainMaxDb,
+		                                       0.0f,
+		                                       ECHOTRAudioProcessor::kGainSkew);
+	}
+
 	// ---- Feedback loop processing chain ----
 	// Applied ONLY to the feedback component (never to input signal).
 	// DC blocker only — maximally transparent.
@@ -282,11 +295,11 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	uiEditorWidth.store (w, std::memory_order_relaxed);
 	uiEditorHeight.store (h, std::memory_order_relaxed);
 
-	// Performance tracing: auto-dump to Desktop on plugin unload
+#if JUCE_DEBUG
+	// Developer diagnostics stay available in Debug, but must not write files in Release.
 	perfTrace.enableDesktopAutoDump();
-
-	// DSP debug logging: auto-dump CSV to Desktop on plugin unload
 	dspLog.enableDesktopAutoDump();
+#endif
 }
 
 ECHOTRAudioProcessor::~ECHOTRAudioProcessor()
@@ -434,6 +447,9 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedMix = 0.5f;
 	smoothedDryLevel = 1.0f;
 	smoothedWetLevel = 1.0f;
+	lastMidiNote.store (-1, std::memory_order_relaxed);
+	lastMidiVelocity.store (0, std::memory_order_relaxed);
+	currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
 	{
 		const float pan = loadAtomicOrDefault (panParam, kPanDefault);
 		lastPan_ = pan;
@@ -495,6 +511,12 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	chaosDelayMaxSamples_ = 0.0f; smoothedChaosDelayMaxSamples_ = 0.0f;
 	chaosGainMaxDb_ = 0.0f; smoothedChaosGainMaxDb_ = 0.0f;
 	chaosFilterMaxOct_ = 0.0f; smoothedChaosFilterMaxOct_ = 0.0f;
+	chaosDriveAmtSmoothed_ = 0.0f;
+	chaosDriveSpdSmoothed_ = kChaosSpdDefault;
+	chaosDriveParamSmoothReady_ = false;
+	chaosFilterAmtSmoothed_ = 0.0f;
+	chaosFilterSpdSmoothed_ = kChaosSpdDefault;
+	chaosFilterParamSmoothReady_ = false;
 	for (int c = 0; c < 2; ++c)
 	{
 		chaosDPrev_[c] = 0.0f; chaosDCurr_[c] = 0.0f; chaosDNext_[c] = 0.0f;
@@ -503,12 +525,15 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 		chaosGPrev_[c] = 0.0f; chaosGCurr_[c] = 0.0f; chaosGNext_[c] = 0.0f;
 		chaosGPhase_[c] = 0.0f; chaosGDriftPhase_[c] = 0.0f; chaosGDriftFreqHz_[c] = 0.0f;
 		chaosGOut_[c] = 0.0f;
+		chaosDelaySmoothedSamples_[c] = 0.0f;
+		chaosDelaySmoothReady_[c] = false;
 	}
 	chaosFPrev_ = 0.0f; chaosFCurr_ = 0.0f; chaosFNext_ = 0.0f;
 	chaosFPhase_ = 0.0f; chaosFDriftPhase_ = 0.0f; chaosFDriftFreqHz_ = 0.0f;
 	chaosFOut_[0] = chaosFOut_[1] = 0.0f;
 	std::memset (chaosDelayBuf_, 0, sizeof (chaosDelayBuf_));
 	chaosDelayWritePos_ = 0;
+	chaosDelaySmoothStep_ = 1.0f - std::exp (-1.0f / ((float) currentSampleRate * 0.002f));
 
 	// Reset engine state
 	engineMode_ = 0;
@@ -698,7 +723,8 @@ void ECHOTRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 	if (--filterCoeffCountdown_ <= 0)
 	{
 		filterCoeffCountdown_ = kFilterCoeffUpdateInterval;
-		const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmtF_ > 0.01f;
+		const bool chaosFilterActive = chaosFilterEnabled_
+		                            && (chaosAmtF_ > 0.01f || (chaosFilterParamSmoothReady_ && chaosFilterAmtSmoothed_ > 0.01f));
 		if (chaosFilterActive)
 		{
 			const float sHp = smoothedFilterHpFreq_;
@@ -747,7 +773,8 @@ void ECHOTRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 	}
 
 	// Apply HP cascade (also when chaos modulates frequency)
-	const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmtF_ > 0.01f;
+	const bool chaosFilterActive = chaosFilterEnabled_
+	                            && (chaosAmtF_ > 0.01f || (chaosFilterParamSmoothReady_ && chaosFilterAmtSmoothed_ > 0.01f));
 	if (wetFilterHpOn_ || chaosFilterActive)
 	{
 		for (int s = 0; s < wetFilterNumSectionsHp_; ++s)
@@ -1581,7 +1608,17 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			if (selectedMidiChannel > 0 && msg.getChannel() != selectedMidiChannel)
 				continue;
 			
-			if (msg.isNoteOn())
+			if (msg.isAllNotesOff() || msg.isAllSoundOff())
+			{
+				lastMidiNote.store (-1, std::memory_order_relaxed);
+				lastMidiVelocity.store (0, std::memory_order_relaxed);
+				currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+
+				const float fallbackMs = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
+				const float fallbackSamples = (float) currentSampleRate * (fallbackMs / 1000.0f);
+				smoothedDelaySamples = juce::jlimit (0.0f, (float) (delayBufferLength - 2), fallbackSamples);
+			}
+			else if (msg.isNoteOn())
 			{
 				const int noteNumber = msg.getNoteNumber();
 				lastMidiNote.store (noteNumber, std::memory_order_relaxed);
@@ -1595,6 +1632,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				if (msg.getNoteNumber() == lastMidiNote.load (std::memory_order_relaxed))
 				{
 					lastMidiNote.store (-1, std::memory_order_relaxed);
+					lastMidiVelocity.store (0, std::memory_order_relaxed);
 					currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
 					
 					const float fallbackMs = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
@@ -1610,6 +1648,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (lastMidiNote.load (std::memory_order_relaxed) >= 0)
 		{
 			lastMidiNote.store (-1, std::memory_order_relaxed);
+			lastMidiVelocity.store (0, std::memory_order_relaxed);
 			currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
 		}
 	}
@@ -1670,8 +1709,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	duckAmount_             = loadAtomicOrDefault (duckParam, kDuckDefault) * 0.01f;  // 0-100 → 0-1
 	
 	// Fast dB→linear (std::exp2 instead of std::pow via Decibels::decibelsToGain)
-	const float inputGain  = fastDecibelsToGain (inputGainDb);
-	const float outputGain = fastDecibelsToGain (outputGainDb);
+	const float inputGain  = gainFaderDecibelsToGain (inputGainDb);
+	const float outputGain = gainFaderDecibelsToGain (outputGainDb);
 	targetFeedback = juce::jlimit (kFeedbackMin, kFeedbackMax, targetFeedback);
 	const float rawFeedback = targetFeedback; // save pre-smoothstep value for diagnostic dump
 
@@ -1916,9 +1955,12 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		if (chaosDelayEnabled_)
 		{
-			const float rawAmtD = loadAtomicOrDefault (chaosAmtParam, kChaosAmtDefault);
-			const float rawSpdD = loadAtomicOrDefault (chaosSpdParam, kChaosSpdDefault);
+			const float rawAmtD = juce::jlimit (kChaosAmtMin, kChaosAmtMax,
+				loadAtomicOrDefault (chaosAmtParam, kChaosAmtDefault));
+			const float rawSpdD = juce::jlimit (kChaosSpdMin, kChaosSpdMax,
+				loadAtomicOrDefault (chaosSpdParam, kChaosSpdDefault));
 			chaosAmtD_       = rawAmtD;
+			chaosAmtNormD_   = rawAmtD * 0.01f;
 			chaosShPeriodD_  = (float) currentSampleRate / rawSpdD;
 			const float amtNormD = rawAmtD * 0.01f;
 			chaosAmtNormD_        = amtNormD;
@@ -1929,12 +1971,19 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			chaosDelayMaxSamples_ = 0.0f;
 			chaosGainMaxDb_ = 0.0f;
+			chaosDriveAmtSmoothed_ = 0.0f;
+			chaosDriveSpdSmoothed_ = kChaosSpdDefault;
+			chaosDriveParamSmoothReady_ = false;
+			chaosDelaySmoothedSamples_[0] = chaosDelaySmoothedSamples_[1] = 0.0f;
+			chaosDelaySmoothReady_[0] = chaosDelaySmoothReady_[1] = false;
 		}
 
 		if (chaosFilterEnabled_)
 		{
-			const float rawAmtF = loadAtomicOrDefault (chaosAmtFilterParam, kChaosAmtDefault);
-			const float rawSpdF = loadAtomicOrDefault (chaosSpdFilterParam, kChaosSpdDefault);
+			const float rawAmtF = juce::jlimit (kChaosAmtMin, kChaosAmtMax,
+				loadAtomicOrDefault (chaosAmtFilterParam, kChaosAmtDefault));
+			const float rawSpdF = juce::jlimit (kChaosSpdMin, kChaosSpdMax,
+				loadAtomicOrDefault (chaosSpdFilterParam, kChaosSpdDefault));
 			chaosAmtF_       = rawAmtF;
 			chaosShPeriodF_  = (float) currentSampleRate / rawSpdF;
 			const float amtNormF = rawAmtF * 0.01f;
@@ -1943,6 +1992,9 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		else
 		{
 			chaosFilterMaxOct_ = 0.0f;
+			chaosFilterAmtSmoothed_ = 0.0f;
+			chaosFilterSpdSmoothed_ = kChaosSpdDefault;
+			chaosFilterParamSmoothReady_ = false;
 		}
 
 		chaosParamSmoothCoeff_ = cachedChaosParamSmoothCoeff_;
@@ -1953,6 +2005,14 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		chaosDelayMaxSamples_ = 0.0f;
 		chaosGainMaxDb_ = 0.0f;
 		chaosFilterMaxOct_ = 0.0f;
+		chaosDriveAmtSmoothed_ = 0.0f;
+		chaosDriveSpdSmoothed_ = kChaosSpdDefault;
+		chaosDriveParamSmoothReady_ = false;
+		chaosFilterAmtSmoothed_ = 0.0f;
+		chaosFilterSpdSmoothed_ = kChaosSpdDefault;
+		chaosFilterParamSmoothReady_ = false;
+		chaosDelaySmoothedSamples_[0] = chaosDelaySmoothedSamples_[1] = 0.0f;
+		chaosDelaySmoothReady_[0] = chaosDelaySmoothReady_[1] = false;
 	}
 
 	// ── Load engine mode and precompute feedback-loop coefficients ──
@@ -2288,16 +2348,24 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 	}
 
-	// ── Mode Out: M/S encode output after delay processing ──
+	// ── Mode Out: MID stays dual-mono, SIDE becomes true stereo (+S / -S) ──
 	if (numChannels >= 2 && modeOutVal != 0)
 	{
 		auto* chL = buffer.getWritePointer (0);
 		auto* chR = buffer.getWritePointer (1);
 		for (int i = 0; i < numSamples; ++i)
 		{
-			const float l = chL[i], r = chR[i];
-			if (modeOutVal == 1)      { const float mid = (l + r) * kSqrt2Over2; chL[i] = chR[i] = mid; }
-			else /* modeOutVal==2 */   { const float side = (l - r) * kSqrt2Over2; chL[i] = chR[i] = side; }
+			const float mono = (chL[i] + chR[i]) * 0.5f;
+			if (modeOutVal == 1)
+			{
+				chL[i] = mono;
+				chR[i] = mono;
+			}
+			else /* modeOutVal == 2 */
+			{
+				chL[i] = mono;
+				chR[i] = -mono;
+			}
 		}
 	}
 
@@ -2311,10 +2379,26 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 		for (int i = 0; i < numSamples; ++i)
 		{
-			// Recompute Mode-In-encoded dry to accurately extract wet portion
+			// Recompute the dry contribution as it exists after Mode In and Mode Out,
+			// so wet isolation for Sum Bus stays aligned with the realtime signal path.
 			float encL = dL[i], encR = dR[i];
 			if (modeInVal == 1)      { const float m = (encL + encR) * kSqrt2Over2; encL = encR = m; }
 			else if (modeInVal == 2) { const float s = (encL - encR) * kSqrt2Over2; encL = encR = s; }
+
+			if (modeOutVal != 0)
+			{
+				const float mono = (encL + encR) * 0.5f;
+				if (modeOutVal == 1)
+				{
+					encL = mono;
+					encR = mono;
+				}
+				else
+				{
+					encL = mono;
+					encR = -mono;
+				}
+			}
 
 			const float dryContribL = encL * dryGainTarget_;
 			const float dryContribR = encR * dryGainTarget_;
@@ -2522,11 +2606,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamInput, "Input",
-		juce::NormalisableRange<float> (kInputMin, kInputMax, 0.0f, 2.5f), kInputDefault));
+		makeGainFaderRange(), kInputDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamOutput, "Output",
-		juce::NormalisableRange<float> (kOutputMin, kOutputMax, 0.0f, 3.23f), kOutputDefault));
+		makeGainFaderRange(), kOutputDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamMix, "Mix",
