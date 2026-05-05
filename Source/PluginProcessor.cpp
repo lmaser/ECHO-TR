@@ -2413,14 +2413,13 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	effFbk *= autoFbkEnvMix;
 	effFbk *= lowDelayFeedbackScale;
 
-	// Positive feedback at sub-ms delay behaves like a near-DC resonator.
-	// Negative feedback is naturally stable here, so only compress +FBK as
-	// the delay approaches the interpolation floor. This prevents the hard
-	// jump into clipping around 100% without changing normal echo timings.
+	// Positive feedback at the interpolation floor behaves like a near-DC
+	// resonator. Negative feedback is naturally stable here, so only compress
+	// +FBK in the 2-8 sample danger zone. Above that, 100% feedback should
+	// remain truly 100% so short musical delays can sustain.
 	if (effFbk > 0.0f)
 	{
-		const float delayMsForFbk = (delaySamples / (float) currentSampleRate) * 1000.0f;
-		const float ultraShort = smoothStep01 ((2.5f - delayMsForFbk) / 2.5f);
+		const float ultraShort = smoothStep01 ((8.0f - requestedDelaySamples) / 6.0f);
 		if (ultraShort > 0.0f)
 		{
 			const float maxPositiveFbk = 1.0f - ultraShort * 0.30f;
