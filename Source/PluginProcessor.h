@@ -92,11 +92,11 @@ public:
 	// Parameter ranges and defaults
 	static constexpr float kTimeMsMin = 0.0f;
 	static constexpr float kTimeMsMax = 5000.0f;
-	static constexpr float kTimeMsMaxSync = 20000.0f;
+	static constexpr float kTimeMsMaxSync = 30000.0f;
 	static constexpr float kTimeMsDefault = 500.0f;
 
 	static constexpr int kTimeSyncMin = 0;
-	static constexpr int kTimeSyncMax = 29;
+	static constexpr int kTimeSyncMax = 28;
 	static constexpr int kTimeSyncDefault = 10;
 
 	static constexpr float kFeedbackMin = -1.0f;

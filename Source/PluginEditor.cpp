@@ -1051,7 +1051,9 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     if (syncEnabled)
     {
         bindSlider (timeSyncAttachment, ECHOTRAudioProcessor::kParamTimeSync, timeSlider, (double) ECHOTRAudioProcessor::kTimeSyncDefault);
-        timeSlider.setRange (0.0, 29.0, 1.0);  // 30 divisions
+        timeSlider.setRange ((double) ECHOTRAudioProcessor::kTimeSyncMin,
+                             (double) ECHOTRAudioProcessor::kTimeSyncMax,
+                             1.0);
     }
     else
     {
@@ -1498,7 +1500,7 @@ void ECHOTRAudioProcessorEditor::updateTimeSliderForSyncMode (bool syncEnabled)
         int bestSyncIndex = ECHOTRAudioProcessor::kTimeSyncDefault;
         float bestDiff = std::abs (currentMs - audioProcessor.tempoSyncToMs (bestSyncIndex, bpm));
         
-        for (int i = 0; i < 30; ++i)
+        for (int i = ECHOTRAudioProcessor::kTimeSyncMin; i <= ECHOTRAudioProcessor::kTimeSyncMax; ++i)
         {
             const float syncMs = audioProcessor.tempoSyncToMs (i, bpm);
             const float diff = std::abs (currentMs - syncMs);
@@ -1514,7 +1516,9 @@ void ECHOTRAudioProcessorEditor::updateTimeSliderForSyncMode (bool syncEnabled)
         timeSyncAttachment = std::make_unique<SliderAttachment> (audioProcessor.apvts, 
                                                                   ECHOTRAudioProcessor::kParamTimeSync, 
                                                                   timeSlider);
-        timeSlider.setRange (0.0, 29.0, 1.0);  // 30 sync divisions
+        timeSlider.setRange ((double) ECHOTRAudioProcessor::kTimeSyncMin,
+                             (double) ECHOTRAudioProcessor::kTimeSyncMax,
+                             1.0);
         timeSlider.setDoubleClickReturnValue (true, (double) ECHOTRAudioProcessor::kTimeSyncDefault);
         
         // Update parameter value
@@ -1525,7 +1529,9 @@ void ECHOTRAudioProcessorEditor::updateTimeSliderForSyncMode (bool syncEnabled)
     {
         // Switching from SYNC to MS: convert current sync division to MS
         const int currentSyncIndex = (int) timeSlider.getValue();
-        const float targetMs = audioProcessor.tempoSyncToMs (currentSyncIndex, bpm);
+        const float targetMs = juce::jlimit (ECHOTRAudioProcessor::kTimeMsMin,
+                                             ECHOTRAudioProcessor::kTimeMsMax,
+                                             audioProcessor.tempoSyncToMs (currentSyncIndex, bpm));
         
         // Destroy SYNC attachment and create MS attachment
         timeSyncAttachment.reset();
@@ -2125,13 +2131,16 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     // grab a local copy, we will use its raw colours below to bypass
     // any host/LNF oddities that might creep in
     const auto scheme = activeScheme;
+    const bool isTimeSyncMode = (&s == &timeSlider && syncButton.getToggleState());
+
+    if (isTimeSyncMode)
+        return;
 
     // decide what suffix label should appear; we want *separate* text that
     // is not part of the editable field. provide both long and short forms;
     // the layout lambda will auto-switch to short when combined width overflows.
     juce::String suffix;
     juce::String suffixShort;
-    const bool isTimeSyncMode = (&s == &timeSlider && syncButton.getToggleState());
     if (&s == &timeSlider)
     {
         if (isTimeSyncMode)
@@ -2242,7 +2251,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         // the current value).  Use a representative widest string per slider.
         juce::String worstCaseText;
         if (&s == &timeSlider)
-            worstCaseText = isTimeSyncMode ? "1/64T." : "10000.000";
+            worstCaseText = isTimeSyncMode ? "1/64T." : juce::String (ECHOTRAudioProcessor::kTimeMsMax, 3);
         else if (&s == &feedbackSlider)
             worstCaseText = "100.00";
         else if (&s == &jitterSlider)
@@ -2345,18 +2354,18 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         {
             if (isTimeSyncMode)
             {
-                // In sync mode: allow typing division names or indices (0-29)
+                // In sync mode: allow typing division names or indices.
                 minVal = 0.0;
-                maxVal = 29.0;
+                maxVal = (double) ECHOTRAudioProcessor::kTimeSyncMax;
                 maxDecs = 0;
                 maxLen = 6; // "1/64T." or "29"
             }
             else
             {
-                minVal = 0.0;
-                maxVal = 10000.0;  // 10 seconds max
+                minVal = (double) ECHOTRAudioProcessor::kTimeMsMin;
+                maxVal = (double) ECHOTRAudioProcessor::kTimeMsMax;
                 maxDecs = 3;
-                maxLen = 9; // "10000.000"
+                maxLen = juce::String (ECHOTRAudioProcessor::kTimeMsMax, 3).length();
             }
         }
         else if (&s == &feedbackSlider)
@@ -2582,7 +2591,9 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
                 }
                 
                 // Clamp to valid range
-                v = (double) juce::jlimit (0, 29, foundIndex);
+                v = (double) juce::jlimit (ECHOTRAudioProcessor::kTimeSyncMin,
+                                           ECHOTRAudioProcessor::kTimeSyncMax,
+                                           foundIndex);
             }
             else
             {
