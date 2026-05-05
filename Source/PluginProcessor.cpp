@@ -167,16 +167,6 @@ namespace
 
 	constexpr float kFbkDcBlockHz = 5.0f;
 
-	// DC blocker tick (one-pole HP)
-	inline float dcBlockTick (float in, float& inState, float& outState, float r) noexcept
-	{
-		outState = r * (outState + in - inState);
-		inState = in;
-		// Guard: inf - inf in the line above produces NaN; reset state if that happens
-		if (!(outState > -1e15f && outState < 1e15f)) { outState = 0.0f; inState = 0.0f; }
-		return outState;
-	}
-
 	// Sanitise a value before writing to the delay buffer.
 	// Catches NaN, ±inf and runaway growth before they can propagate
 	// through the feedback loop.  The threshold ±10 is ~+20 dBFS —
@@ -525,6 +515,10 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	// Reset feedback loop processing state
 	fbkDcStateInL = fbkDcStateInR = 0.0f;
 	fbkDcStateOutL = fbkDcStateOutR = 0.0f;
+	wetDcStateInL = wetDcStateInR = 0.0f;
+	wetDcStateOutL = wetDcStateOutR = 0.0f;
+	outDcStateInL = outDcStateInR = 0.0f;
+	outDcStateOutL = outDcStateOutR = 0.0f;
 
 	// Reset wet-signal HP/LP filter state
 	wetFilterState_[0].reset();
@@ -588,6 +582,8 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	engineLp1StateL_ = 0.0f; engineLp1StateR_ = 0.0f;
 	engineLp2StateL_ = 0.0f; engineLp2StateR_ = 0.0f;
 	engineLpCoeff_ = 0.0f;
+	engineNoteHoldSmoothed_ = 0.0f;
+	engineFeedbackMakeup_ = 1.0f;
 	engineHpStateL_ = 0.0f; engineHpStateR_ = 0.0f;
 	engineHpCoeff_ = 0.0f;
 	engineToneHpStateL_ = 0.0f; engineToneHpStateR_ = 0.0f;
@@ -1012,6 +1008,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				float fbkR = delayedR * fbkSign;
 
 				applyEngineToFeedback (fbkL, fbkR);
+				applyFeedbackDcBlock (fbkL, fbkR);
 #ifdef ECHOTR_FBK_DUMP
 				dbgPostEnginePk_ = juce::jmax (std::abs (fbkL), std::abs (fbkR));
 				dbgFbkMag_       = fbkMag;
@@ -1042,6 +1039,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				if (!filterPre_) filterWetSample (wetL, wetR);
 				float wL = wetL * smoothedOutputGain * duckGain;
 				float wR = wetR * smoothedOutputGain * duckGain;
+				applyWetDcBlock (wL, wR);
 				if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 				channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 				channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
@@ -1055,7 +1053,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 			{
 				const float duckGain = advanceDuck (inputL, inputL);
 				float fbkL = delayedL * fbkSign;
-				{ float fbkR = fbkL; applyEngineToFeedback (fbkL, fbkR); }
+				{ float fbkR = fbkL; applyEngineToFeedback (fbkL, fbkR); applyFeedbackDcBlock (fbkL, fbkR); }
 				fbkL *= fbkMag;
 				fbkL *= duckGain;
 				delayL[writePos] = sanitiseDelay (inputL * smoothedInputGain + fbkL);
@@ -1068,6 +1066,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				if (!filterPre_) filterWetSample (wetL, wetR);
 				float wL = wetL * smoothedOutputGain * duckGain;
 				float wR = wL;
+				applyWetDcBlock (wL, wR);
 				if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 				channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 			}
@@ -1139,7 +1138,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		
 		float fbkMono = delayed * fbkSign;
 
-		{ float fbkR = fbkMono; applyEngineToFeedback (fbkMono, fbkR); }
+		{ float fbkR = fbkMono; applyEngineToFeedback (fbkMono, fbkR); applyFeedbackDcBlock (fbkMono, fbkR); }
 		fbkMono *= fbkMag;
 		fbkMono *= duckGain;
 
@@ -1156,6 +1155,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		if (!filterPre_) filterWetSample (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
+		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
@@ -1229,6 +1229,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		float fbkPpR = delayedL * fbkSign;
 
 		applyEngineToFeedback (fbkPpL, fbkPpR);
+		applyFeedbackDcBlock (fbkPpL, fbkPpR);
 		fbkPpL *= fbkMag;
 		fbkPpR *= fbkMag;
 		fbkPpL *= duckGain;
@@ -1246,6 +1247,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		if (!filterPre_) filterWetSample (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
+		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
@@ -1341,6 +1343,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		float fbkR = delayedL * fbkSign;
 
 		applyEngineToFeedback (fbkL, fbkR);
+		applyFeedbackDcBlock (fbkL, fbkR);
 		fbkL *= fbkMag;
 		fbkR *= fbkMag;
 		fbkL *= duckGain;
@@ -1358,6 +1361,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		if (!filterPre_) filterWetSample (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
+		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
@@ -1448,6 +1452,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		float fbkR = delayedR * fbkSign;
 
 		applyEngineToFeedback (fbkL, fbkR);
+		applyFeedbackDcBlock (fbkL, fbkR);
 		fbkL *= fbkMag;
 		fbkR *= fbkMag;
 		fbkL *= duckGain;
@@ -1465,6 +1470,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		if (!filterPre_) filterWetSample (wetL, wetR);
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
+		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
 		if (channelR != nullptr) channelR[i] = inputR * smoothedDryLevel + wR * smoothedWetLevel;
@@ -1601,6 +1607,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		}
 
 		applyEngineToFeedback (fbkL, fbkR);
+		applyFeedbackDcBlock (fbkL, fbkR);
 		fbkL *= fbkMag;
 		fbkR *= fbkMag;
 		fbkL *= duckGain;
@@ -1668,6 +1675,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 		float wL = wetL * smoothedOutputGain * duckGain;
 		float wR = wetR * smoothedOutputGain * duckGain;
+		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 
 		if (monoInput)
@@ -2035,6 +2043,14 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (std::abs (fbkDcStateOutL)  < kDnr) fbkDcStateOutL  = 0.0f;
 		if (std::abs (fbkDcStateInR)   < kDnr) fbkDcStateInR   = 0.0f;
 		if (std::abs (fbkDcStateOutR)  < kDnr) fbkDcStateOutR  = 0.0f;
+		if (std::abs (wetDcStateInL)   < kDnr) wetDcStateInL   = 0.0f;
+		if (std::abs (wetDcStateOutL)  < kDnr) wetDcStateOutL  = 0.0f;
+		if (std::abs (wetDcStateInR)   < kDnr) wetDcStateInR   = 0.0f;
+		if (std::abs (wetDcStateOutR)  < kDnr) wetDcStateOutR  = 0.0f;
+		if (std::abs (outDcStateInL)   < kDnr) outDcStateInL   = 0.0f;
+		if (std::abs (outDcStateOutL)  < kDnr) outDcStateOutL  = 0.0f;
+		if (std::abs (outDcStateInR)   < kDnr) outDcStateInR   = 0.0f;
+		if (std::abs (outDcStateOutR)  < kDnr) outDcStateOutR  = 0.0f;
 		if (std::abs (engineLp1StateL_) < kDnr) engineLp1StateL_ = 0.0f;
 		if (std::abs (engineLp1StateR_) < kDnr) engineLp1StateR_ = 0.0f;
 		if (std::abs (engineLp2StateL_) < kDnr) engineLp2StateL_ = 0.0f;
@@ -2139,6 +2155,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		// Reset all engine filter state on mode change to prevent transient bursts
 		engineLp1StateL_ = 0.0f; engineLp1StateR_ = 0.0f;
 		engineLp2StateL_ = 0.0f; engineLp2StateR_ = 0.0f;
+		engineNoteHoldSmoothed_ = 0.0f;
+		engineFeedbackMakeup_ = 1.0f;
 		engineHpStateL_  = 0.0f; engineHpStateR_  = 0.0f;
 		engineToneHpStateL_ = 0.0f; engineToneHpStateR_ = 0.0f;
 		engineHbZL_[0] = engineHbZL_[1] = 0.0f;
@@ -2172,6 +2190,20 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			engineLpCoeff_ = 1.0f - std::exp (-6.2831853f * 5000.0f / sr);
 		else
 			engineLpCoeff_ = 1.0f - std::exp (-6.2831853f * 10000.0f / sr);
+
+		// High-feedback sustain hold: near 100% feedback, analog-mode losses
+		// must not make the max setting decay faster than CLEAN. It opens the
+		// in-loop LP mainly for tuned short/medium delays while leaving normal
+		// feedback settings unchanged.
+		const float delayMsForHold = (delaySamples / sr) * 1000.0f;
+		const float delayHold = 0.35f + 0.65f * smoothStep01 ((260.0f - delayMsForHold) / 220.0f);
+		const float feedbackHold = smoothStep01 ((std::abs (targetFeedback) - 0.90f) / 0.10f);
+		const float noteHoldTarget = feedbackHold * delayHold;
+		const float noteHoldStep = 1.0f - std::exp (-(float) numSamples / (sr * 0.030f));
+		engineNoteHoldSmoothed_ += (noteHoldTarget - engineNoteHoldSmoothed_) * noteHoldStep;
+		const float noteHoldDepth = (engineMode_ == 2) ? 0.78f : 0.55f;
+		engineLpCoeff_ += (1.0f - engineLpCoeff_) * engineNoteHoldSmoothed_ * noteHoldDepth;
+		engineFeedbackMakeup_ = 1.0f + engineNoteHoldSmoothed_ * ((engineMode_ == 2) ? 0.040f : 0.028f);
 
 		// Subsonic AC-coupling HP: DC/rumble cleanup without eating tuned notes.
 		const float hpCutoff = 5.0f;
@@ -2293,6 +2325,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		smoothedSatGrit_  += kSatParamSmooth * (gritTarget  - smoothedSatGrit_);
 
 		const float fbkNearMax = smoothStep01 ((std::abs (targetFeedback) - 0.70f) / 0.30f);
+		const float sustainProtect = juce::jlimit (0.0f, 1.0f, engineNoteHoldSmoothed_);
 		const float drive = juce::jlimit (0.0f, 1.0f, smoothedSatDrive_);
 		const float grit  = juce::jlimit (0.0f, 1.0f, smoothedSatGrit_);
 		const float sr = (float) currentSampleRate;
@@ -2301,13 +2334,17 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		float toneHpMix = 0.0f;
 		if (engineMode_ == 1)
 		{
-			toneHpCutoff = 240.0f + 110.0f * drive + 70.0f * grit + 80.0f * fbkNearMax;
-			toneHpMix    = 0.16f  + 0.10f  * drive + 0.05f * grit + 0.10f * fbkNearMax;
+			toneHpCutoff = 240.0f + 110.0f * drive + 70.0f * grit + 35.0f * fbkNearMax;
+			toneHpMix    = 0.16f  + 0.10f  * drive + 0.05f * grit;
+			toneHpCutoff *= (1.0f - 0.16f * sustainProtect);
+			toneHpMix    *= (1.0f - 0.55f * sustainProtect);
 		}
 		else
 		{
-			toneHpCutoff = 340.0f + 160.0f * drive + 120.0f * grit + 100.0f * fbkNearMax;
-			toneHpMix    = 0.20f  + 0.12f  * drive + 0.08f  * grit + 0.12f  * fbkNearMax;
+			toneHpCutoff = 340.0f + 160.0f * drive + 120.0f * grit + 45.0f * fbkNearMax;
+			toneHpMix    = 0.20f  + 0.12f  * drive + 0.08f  * grit;
+			toneHpCutoff *= (1.0f - 0.20f * sustainProtect);
+			toneHpMix    *= (1.0f - 0.65f * sustainProtect);
 		}
 
 		engineToneHpCoeff_ = 1.0f - std::exp (-6.2831853f * toneHpCutoff / sr);
@@ -2316,6 +2353,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	else
 	{
 		engineToneHpMix_ = 0.0f;
+		engineFeedbackMakeup_ = 1.0f;
 	}
 	
 	// ── Mode In / Mode Out / Sum Bus ──
@@ -2584,6 +2622,21 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		lastPan_ = pan;
 		lastPanLeft_ = targetLeft;
 		lastPanRight_ = targetRight;
+	}
+
+	// ── Final DC blocker: before GLOBAL limiter and safety clip ──
+	if (numChannels >= 2)
+	{
+		auto* chL = buffer.getWritePointer (0);
+		auto* chR = buffer.getWritePointer (1);
+		for (int i = 0; i < numSamples; ++i)
+			applyOutputDcBlock (chL[i], chR[i]);
+	}
+	else if (numChannels == 1)
+	{
+		auto* ch = buffer.getWritePointer (0);
+		for (int i = 0; i < numSamples; ++i)
+			ch[i] = dcBlockSample (ch[i], outDcStateInL, outDcStateOutL, fbkDcCoeff);
 	}
 
 	// ── Limiter (GLOBAL mode: after pan, before safety clip) ──

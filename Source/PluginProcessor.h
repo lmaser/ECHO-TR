@@ -358,6 +358,14 @@ private:
 	float fbkDcStateInR = 0.0f;  // DC blocker input state (right)
 	float fbkDcStateOutL = 0.0f; // DC blocker output state (left)
 	float fbkDcStateOutR = 0.0f; // DC blocker output state (right)
+	float wetDcStateInL = 0.0f;  // wet pre-limiter DC blocker input state (left)
+	float wetDcStateInR = 0.0f;  // wet pre-limiter DC blocker input state (right)
+	float wetDcStateOutL = 0.0f; // wet pre-limiter DC blocker output state (left)
+	float wetDcStateOutR = 0.0f; // wet pre-limiter DC blocker output state (right)
+	float outDcStateInL = 0.0f;  // final output DC blocker input state (left)
+	float outDcStateInR = 0.0f;  // final output DC blocker input state (right)
+	float outDcStateOutL = 0.0f; // final output DC blocker output state (left)
+	float outDcStateOutR = 0.0f; // final output DC blocker output state (right)
 	// Per-block precomputed coefficient
 	float fbkDcCoeff  = 0.999f;  // DC blocker R coefficient
 
@@ -537,6 +545,36 @@ private:
 		return current;
 	}
 
+	static inline float dcBlockSample (float in, float& inState, float& outState, float r) noexcept
+	{
+		outState = r * (outState + in - inState);
+		inState = in;
+		if (! (outState > -1.0e15f && outState < 1.0e15f))
+		{
+			outState = 0.0f;
+			inState = 0.0f;
+		}
+		return outState;
+	}
+
+	inline void applyFeedbackDcBlock (float& sampleL, float& sampleR) noexcept
+	{
+		sampleL = dcBlockSample (sampleL, fbkDcStateInL, fbkDcStateOutL, fbkDcCoeff);
+		sampleR = dcBlockSample (sampleR, fbkDcStateInR, fbkDcStateOutR, fbkDcCoeff);
+	}
+
+	inline void applyWetDcBlock (float& sampleL, float& sampleR) noexcept
+	{
+		sampleL = dcBlockSample (sampleL, wetDcStateInL, wetDcStateOutL, fbkDcCoeff);
+		sampleR = dcBlockSample (sampleR, wetDcStateInR, wetDcStateOutR, fbkDcCoeff);
+	}
+
+	inline void applyOutputDcBlock (float& sampleL, float& sampleR) noexcept
+	{
+		sampleL = dcBlockSample (sampleL, outDcStateInL, outDcStateOutL, fbkDcCoeff);
+		sampleR = dcBlockSample (sampleR, outDcStateInR, outDcStateOutR, fbkDcCoeff);
+	}
+
 	// Engine feedback-loop processing state
 	int   engineMode_ = 0;            // 0=CLEAN, 1=SAT1, 2=SAT2
 	int   prevEngineMode_ = 0;        // previous mode for LP state reset on switch
@@ -549,6 +587,8 @@ private:
 	float engineLp2StateL_ = 0.0f;    // 2nd-pole LP filter state (left)
 	float engineLp2StateR_ = 0.0f;    // 2nd-pole LP filter state (right)
 	float engineLpCoeff_ = 0.0f;      // 1-pole LP coeff (precomputed per block)
+	float engineNoteHoldSmoothed_ = 0.0f; // opens in-loop LP for high-feedback short-delay notes
+	float engineFeedbackMakeup_ = 1.0f;   // near-max feedback compensation for lossy analog modes
 
 	// G-domain feedback smoothing (rate-invariant)
 	// Instead of smoothing the per-pass feedback coefficient (which at short
@@ -800,44 +840,61 @@ private:
 		}
 
 		const float amt = juce::jlimit (0.0f, 1.0f, jitterAmountSmoothed_);
-		const float high = smoothStep01 ((amt - 0.55f) / 0.45f);
-		const float fastMix = smoothStep01 ((amt - 0.68f) / 0.32f) * 0.42f;
-		const float slowRateHz = 0.11f + amt * 0.39f + high * 1.25f;
-		const float fastRateHz = 2.5f + amt * amt * 28.0f + high * 24.0f;
+		const float high = smoothStep01 ((amt - 0.50f) / 0.50f);
+		const float extreme = smoothStep01 ((amt - 0.78f) / 0.22f);
+		const float fastMix = smoothStep01 ((amt - 0.56f) / 0.44f) * (0.44f + extreme * 0.18f);
+		const float slowRateHz = 0.11f + amt * 0.46f + high * 1.65f + extreme * 0.80f;
+		const float fastRateHzBase = 3.0f + amt * amt * 36.0f + high * 34.0f + extreme * 42.0f;
 		const float slowPeriod = sr / juce::jmax (0.01f, slowRateHz);
-		const float fastPeriod = sr / juce::jmax (0.01f, fastRateHz);
+		const float feedbackFastPeriod = sr / juce::jmax (0.01f, fastRateHzBase);
 		const int nCh = chaosStereo_ ? 2 : 1;
 		const float baseDelaySamples[2] = { baseDelaySamplesL, baseDelaySamplesR };
-		const float toneAmount = smoothStep01 ((amt - 0.48f) / 0.52f);
+		const float toneAmount = smoothStep01 ((amt - 0.42f) / 0.58f);
 		const float toneRateSmooth = std::exp (-1.0f / (sr * 0.010f));
 
 		for (int ch = 0; ch < nCh; ++ch)
 		{
 			float slowOut = 0.0f;
 			float fastOut = 0.0f;
+			const float delaySamples = juce::jmax (2.0f, baseDelaySamples[ch]);
+			const float delayMs = delaySamples * 1000.0f / sr;
+			const float veryShortDelay = smoothStep01 ((45.0f - delayMs) / 35.0f);
+			const float shortDelay = smoothStep01 ((180.0f - delayMs) / 160.0f);
+			const float midHighDelay = juce::jlimit (0.0f, 1.0f, shortDelay * (1.0f - veryShortDelay));
+			const float mediumDelay = smoothStep01 ((520.0f - delayMs) / 360.0f) * (1.0f - shortDelay);
+			const float longDelay = smoothStep01 ((delayMs - 260.0f) / 900.0f);
+			const float veryLongDelay = smoothStep01 ((delayMs - 900.0f) / 1600.0f);
+			const float timeSpeedScale = juce::jlimit (0.35f, 1.35f,
+				1.0f - longDelay * 0.45f - veryLongDelay * 0.20f
+				    - midHighDelay * (0.22f + high * 0.18f)
+				    + veryShortDelay * (0.48f + high * 0.75f + extreme * 0.35f));
+			const float shortSpeedBoost = 1.0f
+			                            + midHighDelay * (0.28f + high * 0.22f)
+			                            + veryShortDelay * (2.25f + high * 1.10f + extreme * 3.20f);
+			const float slowPeriodForDelay = sr / juce::jmax (0.01f, slowRateHz * timeSpeedScale);
+			const float fastRateHz = fastRateHzBase * shortSpeedBoost * timeSpeedScale;
+			const float fastPeriod = sr / juce::jmax (0.01f, fastRateHz);
+
 			advanceChaosEngine (jitterDelayPrev_[ch], jitterDelayCurr_[ch], jitterDelayNext_[ch],
 			                    jitterDelayPhase_[ch], jitterDelayDriftPhase_[ch],
 			                    jitterDelayDriftFreqHz_[ch], slowOut, jitterDelayRng_[ch],
-			                    slowPeriod, amt, sr);
+			                    slowPeriodForDelay, amt, sr);
 			advanceChaosEngine (jitterDelayFastPrev_[ch], jitterDelayFastCurr_[ch], jitterDelayFastNext_[ch],
 			                    jitterDelayFastPhase_[ch], jitterDelayFastDriftPhase_[ch],
 			                    jitterDelayFastDriftFreqHz_[ch], fastOut, jitterDelayFastRng_[ch],
 			                    fastPeriod, amt, sr);
 
 			float combined = slowOut * (1.0f - fastMix) + fastOut * fastMix;
-			const float delaySamples = juce::jmax (2.0f, baseDelaySamples[ch]);
-			const float delayMs = delaySamples * 1000.0f / sr;
-			const float shortDelay = smoothStep01 ((180.0f - delayMs) / 160.0f);
-			const float mediumDelay = smoothStep01 ((520.0f - delayMs) / 360.0f) * (1.0f - shortDelay);
-			const float toneMix = toneAmount * (0.34f * shortDelay + 0.08f * mediumDelay);
+			const float toneMix = toneAmount * (0.42f * shortDelay + 0.11f * mediumDelay) * (1.0f + extreme * 0.28f);
 
 			if (toneMix > 0.000001f)
 			{
 				const float delayHz = sr / delaySamples;
 				const float harmonic = (ch == 0) ? 1.0f : 2.0f;
-				const float veryShortDelay = smoothStep01 ((45.0f - delayMs) / 35.0f);
-				const float speedLift = 1.0f + shortDelay * toneAmount + veryShortDelay * high * 1.5f;
-				const float targetToneRateHz = juce::jlimit (4.0f, 840.0f, delayHz * harmonic * speedLift);
+				const float speedLift = 1.0f
+				                      + midHighDelay * toneAmount * 0.45f
+				                      + veryShortDelay * (1.80f + high * 4.20f + extreme * 3.60f);
+				const float targetToneRateHz = juce::jlimit (4.0f, 3600.0f, delayHz * harmonic * speedLift);
 
 				if (jitterToneRateHz_[ch] <= 0.0f)
 					jitterToneRateHz_[ch] = targetToneRateHz;
@@ -872,7 +929,7 @@ private:
 		                    feedbackSlow, jitterFeedbackRng_, slowPeriod * 1.31f, amt, sr);
 		advanceChaosEngine (jitterFeedbackFastPrev_, jitterFeedbackFastCurr_, jitterFeedbackFastNext_,
 		                    jitterFeedbackFastPhase_, jitterFeedbackFastDriftPhase_, jitterFeedbackFastDriftFreqHz_,
-		                    feedbackFast, jitterFeedbackFastRng_, fastPeriod * 0.79f, amt, sr);
+		                    feedbackFast, jitterFeedbackFastRng_, feedbackFastPeriod * 0.79f, amt, sr);
 		jitterFeedbackOut_ = juce::jlimit (-1.0f, 1.0f, feedbackSlow * 0.70f + feedbackFast * fastMix * 0.75f);
 	}
 
@@ -887,11 +944,19 @@ private:
 		const float sr = juce::jmax (1.0f, (float) currentSampleRate);
 		const float delayMs = juce::jmax (1.0f, baseDelaySamples) * 1000.0f / sr;
 		constexpr float kReferenceDelayMs = 250.0f;
-		const float delayDepthScale = juce::jlimit (0.25f, 4.0f, std::sqrt (kReferenceDelayMs / delayMs));
+		const float delayDepthScale = juce::jlimit (0.45f, 4.0f, std::sqrt (kReferenceDelayMs / delayMs));
 		const float longDelay = smoothStep01 ((delayMs - 260.0f) / 740.0f);
+		const float veryLongDelay = smoothStep01 ((delayMs - 900.0f) / 1600.0f);
 		const float amountPush = smoothStep01 ((amt - 0.35f) / 0.65f);
-		const float longDelayBoost = 1.0f + longDelay * amountPush * 1.15f;
-		const float depthOct = (0.004f + 0.026f * amt) * amt * (1.0f + high * 0.20f) * delayDepthScale * longDelayBoost;
+		const float longDelayBoost = 1.0f + longDelay * amountPush * 1.65f + veryLongDelay * amountPush * 0.45f;
+		const float extreme = smoothStep01 ((amt - 0.78f) / 0.22f);
+		const float creativeLift = 1.0f + high * 0.34f + extreme * 0.22f;
+		const float veryShortDelay = smoothStep01 ((45.0f - delayMs) / 35.0f);
+		const float shortDelay = smoothStep01 ((180.0f - delayMs) / 160.0f);
+		const float midHighDelay = juce::jlimit (0.0f, 1.0f, shortDelay * (1.0f - veryShortDelay));
+		const float midHighLift = 1.0f + midHighDelay * amountPush * (0.58f + extreme * 0.32f);
+		const float ultraTrim = 1.0f - veryShortDelay * 0.25f;
+		const float depthOct = (0.0045f + 0.031f * amt) * amt * creativeLift * delayDepthScale * longDelayBoost * midHighLift * ultraTrim;
 		return std::exp2 (jitterDelayOut_[lane] * depthOct);
 	}
 
@@ -1281,6 +1346,9 @@ private:
 			fbkL *= engineDriftSmoothed_;
 			fbkR *= engineDriftSmoothed_;
 		}
+
+		fbkL *= engineFeedbackMakeup_;
+		fbkR *= engineFeedbackMakeup_;
 
 		// Engine mode crossfade — 30 ms linear ramp from dry to
 		// fully-processed when switching to a new SAT mode.
