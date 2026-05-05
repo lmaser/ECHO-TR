@@ -121,6 +121,7 @@ private:
 
     BarSlider timeSlider;
     BarSlider feedbackSlider;
+    BarSlider jitterSlider;
     BarSlider modeSlider;
     BarSlider modSlider;
     BarSlider engineSlider;
@@ -161,6 +162,7 @@ private:
     std::unique_ptr<SliderAttachment> timeAttachment;
     std::unique_ptr<SliderAttachment> timeSyncAttachment;  // For tempo sync mode
     std::unique_ptr<SliderAttachment> feedbackAttachment;
+    std::unique_ptr<SliderAttachment> jitterAttachment;
     std::unique_ptr<SliderAttachment> modeAttachment;
     std::unique_ptr<SliderAttachment> modAttachment;
     std::unique_ptr<SliderAttachment> engineAttachment;
@@ -419,6 +421,9 @@ private:
     juce::String getFeedbackText() const;
     juce::String getFeedbackTextShort() const;
 
+    juce::String getJitterText() const;
+    juce::String getJitterTextShort() const;
+
     juce::String getModeText() const;
     juce::String getModeTextShort() const;
 
@@ -484,6 +489,8 @@ private:
     juce::String cachedTimeTextShort;
     juce::String cachedFeedbackTextFull;
     juce::String cachedFeedbackTextShort;
+    juce::String cachedJitterTextFull;
+    juce::String cachedJitterTextShort;
     juce::String cachedModeTextFull;
     juce::String cachedModeTextShort;
     juce::String cachedEngineTextFull;
@@ -507,6 +514,7 @@ private:
 
     juce::String cachedTimeIntOnly;
     juce::String cachedFeedbackIntOnly;
+    juce::String cachedJitterIntOnly;
     juce::String cachedModeIntOnly;
     juce::String cachedEngineIntOnly;
     juce::String cachedModIntOnly;
@@ -529,7 +537,7 @@ private:
 
     HorizontalLayoutMetrics cachedHLayout_;
     VerticalLayoutMetrics cachedVLayout_;
-    std::array<juce::Rectangle<int>, 10> cachedValueAreas_;
+    std::array<juce::Rectangle<int>, 11> cachedValueAreas_;
     juce::Rectangle<int> cachedFilterValueArea_;
     juce::Rectangle<int> cachedPanValueArea_;
     juce::Rectangle<int> cachedTiltValueArea_;
@@ -540,6 +548,7 @@ private:
 
     static constexpr double kDefaultTimeMs = (double) ECHOTRAudioProcessor::kTimeMsDefault;
     static constexpr double kDefaultFeedback = (double) ECHOTRAudioProcessor::kFeedbackDefault;
+    static constexpr double kDefaultJitter = (double) ECHOTRAudioProcessor::kJitterDefault;
     static constexpr double kDefaultMix = (double) ECHOTRAudioProcessor::kMixDefault;
     static constexpr double kDefaultInput = (double) ECHOTRAudioProcessor::kInputDefault;
     static constexpr double kDefaultOutput = (double) ECHOTRAudioProcessor::kOutputDefault;

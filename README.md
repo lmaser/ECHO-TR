@@ -33,6 +33,7 @@ ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visib
 The value column to the right of each slider shows the current state in context:
 - TIME shows milliseconds, MIDI note name, or sync division depending on the active control source.
 - FEEDBACK shows percentage plus `FBK`.
+- JITTER shows percentage plus `JIT`.
 - STYLE shows `MONO`, `STEREO`, `WIDE`, `DUAL`, or `PING-PONG`.
 - MOD shows the frequency multiplier.
 - INPUT/OUTPUT show dB values.
@@ -53,6 +54,14 @@ When MIDI is active, TIME shows the note name instead of milliseconds. When the 
 Signal fed back into the delay line. 100% = infinite sustain / self-oscillation. Negative values invert the feedback polarity, producing pitch-inverted repetitions and a different comb-filter character.  
 Sign-preserving smoothstep mapping (`3x^2 - 2x^3`) gives finer control at both extremes, especially near +/-100% where self-oscillation lives.  
 Only a DC blocker (5 Hz high-pass) sits in the feedback path - no filtering and no saturation.
+
+### JITTER (0-100%)
+
+Tape-style timing instability applied inside the delay engine.
+At low values it adds subtle wow/flutter movement; at high values it becomes more animated while staying smoothed and deterministic for repeatable playback.
+
+JITTER modulates delay time and feedback magnitude together, so the repeats breathe like a slightly unstable mechanical delay rather than adding a post-effect wobble.
+0% is a true bypass.
 
 ### STYLE
 
@@ -171,7 +180,7 @@ Useful for darkening or brightening the delay tail without external EQ.
 Micro-variation engine that adds organic randomness to the effect. Two independent chaos targets:
 
 - **CHAOS F (Filter)**: Modulates the HP/LP filter cutoff frequencies when filters are enabled. Creates evolving tonal movement in the delay tail.
-- **CHAOS D (Delay)**: Modulates the delay time. Produces drifting, tape-like pitch wobble.
+- **CHAOS D (Delay)**: Applies post-delay stereo micro-delay movement before the wet coloration stage, so SAT1/SAT2, filter, and tilt respond to the movement.
 
 Each chaos target has its own toggle and shares two global controls:
 
@@ -208,6 +217,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - **Reverse taper**: Precomputed 129-point Tukey (raised-cosine) lookup table with linear interpolation. No per-sample trigonometry.
 - **Wet filter**: Biquad HP/LP on the wet signal. Transposed Direct Form II. Coefficients updated once per block (channel 0), shared across channels.
 - **Tilt EQ**: First-order symmetric shelf at 1 kHz. Coefficients cached with tolerance-based update.
+- **Jitter**: Deterministic smoothed sample-and-hold lanes plus drift modulation for internal delay-time and feedback movement. Bypassed at 0%.
 - **Chaos**: Hermite cubic interpolation between random targets with per-channel quadrature drift LFO. Per-block coefficient precomputation.
 
 ### MIDI Implementation
@@ -239,7 +249,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Feedback is now bipolar (-100% to +100%). Negative feedback inverts polarity, producing pitch-inverted repetitions and alternate comb-filter character.
 - Added ENGINE selector: CLEAN (default), TAPE, and BBD delay character modes.
 - Added TILT EQ (-6 to +6 dB) - first-order spectral tilt on the wet signal.
-- Added CHAOS engine with two independent targets: CHAOS F (filter modulation) and CHAOS D (delay time modulation). Hermite cubic interpolation with quadrature drift LFO.
+- Added CHAOS engine with two independent targets: CHAOS F (filter modulation) and CHAOS D (post-delay micro-delay/decorrelation before wet coloration). Hermite cubic interpolation with quadrature drift LFO.
 - Added safety hard-limiter at +48 dBFS on all output paths (forward and reverse). Catches NaN/Inf runaways without ever engaging during normal operation.
 - INPUT/OUTPUT faders now use a -144 dB floor displayed as "-INF", with +24 dB maximum and 0 dB centered.
 - Numeric entry popup for percentage sliders: precision standardized to 1 decimal place.
@@ -247,3 +257,4 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Ported `drawToggleButton` with automatic text-shrinking from CAB-TR for consistent toggle rendering.
 - Added dual-stage transparent peak limiter with LIM THRESHOLD (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with 2 ms/10 ms leveler + instant/100 ms brickwall stages.
 - TIME numeric prompt and readout now support 3-decimal millisecond precision for consistency with the rest of the series.
+- Added JITTER (`JIT`) control for deterministic tape-style timing and feedback instability inside the delay engine.
