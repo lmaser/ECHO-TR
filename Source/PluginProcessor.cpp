@@ -590,6 +590,9 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	engineLpCoeff_ = 0.0f;
 	engineHpStateL_ = 0.0f; engineHpStateR_ = 0.0f;
 	engineHpCoeff_ = 0.0f;
+	engineToneHpStateL_ = 0.0f; engineToneHpStateR_ = 0.0f;
+	engineToneHpCoeff_ = 0.0f;
+	engineToneHpMix_ = 0.0f;
 	engineHbZL_[0] = engineHbZL_[1] = 0.0f;
 	engineHbZR_[0] = engineHbZR_[1] = 0.0f;
 	enginePreSatLpL_ = 0.0f; enginePreSatLpR_ = 0.0f;
@@ -2137,6 +2140,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		engineLp1StateL_ = 0.0f; engineLp1StateR_ = 0.0f;
 		engineLp2StateL_ = 0.0f; engineLp2StateR_ = 0.0f;
 		engineHpStateL_  = 0.0f; engineHpStateR_  = 0.0f;
+		engineToneHpStateL_ = 0.0f; engineToneHpStateR_ = 0.0f;
 		engineHbZL_[0] = engineHbZL_[1] = 0.0f;
 		engineHbZR_[0] = engineHbZR_[1] = 0.0f;
 		enginePreSatLpL_ = 0.0f; enginePreSatLpR_ = 0.0f;
@@ -2169,7 +2173,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		else
 			engineLpCoeff_ = 1.0f - std::exp (-6.2831853f * 10000.0f / sr);
 
-		// AC-coupling HP: SAT1 ~5 Hz, SAT2 ~5 Hz (low enough for eternal tail at short delays)
+		// Subsonic AC-coupling HP: DC/rumble cleanup without eating tuned notes.
 		const float hpCutoff = 5.0f;
 		engineHpCoeff_ = 1.0f - std::exp (-6.2831853f * hpCutoff / sr);
 
@@ -2287,6 +2291,31 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		constexpr float kSatParamSmooth = 0.05f; // ~50 ms at block rate
 		smoothedSatDrive_ += kSatParamSmooth * (driveTarget - smoothedSatDrive_);
 		smoothedSatGrit_  += kSatParamSmooth * (gritTarget  - smoothedSatGrit_);
+
+		const float fbkNearMax = smoothStep01 ((std::abs (targetFeedback) - 0.70f) / 0.30f);
+		const float drive = juce::jlimit (0.0f, 1.0f, smoothedSatDrive_);
+		const float grit  = juce::jlimit (0.0f, 1.0f, smoothedSatGrit_);
+		const float sr = (float) currentSampleRate;
+
+		float toneHpCutoff = 0.0f;
+		float toneHpMix = 0.0f;
+		if (engineMode_ == 1)
+		{
+			toneHpCutoff = 240.0f + 110.0f * drive + 70.0f * grit + 80.0f * fbkNearMax;
+			toneHpMix    = 0.16f  + 0.10f  * drive + 0.05f * grit + 0.10f * fbkNearMax;
+		}
+		else
+		{
+			toneHpCutoff = 340.0f + 160.0f * drive + 120.0f * grit + 100.0f * fbkNearMax;
+			toneHpMix    = 0.20f  + 0.12f  * drive + 0.08f  * grit + 0.12f  * fbkNearMax;
+		}
+
+		engineToneHpCoeff_ = 1.0f - std::exp (-6.2831853f * toneHpCutoff / sr);
+		engineToneHpMix_ = juce::jlimit (0.0f, 0.58f, toneHpMix);
+	}
+	else
+	{
+		engineToneHpMix_ = 0.0f;
 	}
 	
 	// ── Mode In / Mode Out / Sum Bus ──

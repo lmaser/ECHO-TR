@@ -586,6 +586,15 @@ private:
 	float engineHpStateR_ = 0.0f;
 	float engineHpCoeff_  = 0.0f;  // 1-pole IIR coeff (precomputed per block)
 
+	// Commercial repeat low-cut inside the feedback loop.
+	// Unlike the subsonic AC-coupling stage above, this is a partial high-pass
+	// blend in the 250-700 Hz region. It thins analog repeats like tape/BBD
+	// delay plugins while preserving near-unity loop gain above the cutoff.
+	float engineToneHpStateL_ = 0.0f;
+	float engineToneHpStateR_ = 0.0f;
+	float engineToneHpCoeff_  = 0.0f;
+	float engineToneHpMix_    = 0.0f;
+
 	// SAT1 head bump (peaking biquad at ~80 Hz, +2 dB, Q≈0.8)
 	// Tape head proximity resonance — adds low-end warmth per repeat
 	float engineHbB0_ = 1.0f, engineHbB1_ = 0.0f, engineHbB2_ = 0.0f;
@@ -1137,6 +1146,19 @@ private:
 		engineHpStateR_ = engineHpStateR_ * (1.0f - engineHpCoeff_) + fbkR * engineHpCoeff_;
 		fbkL -= engineHpStateL_;
 		fbkR -= engineHpStateR_;
+
+		// Tonal feedback HP: commercial repeat low-cut.
+		// Partial blend, not a full replacement: lows thin out over repeats
+		// while mids/highs keep near-unity loop gain at 100% feedback.
+		if (engineToneHpMix_ > 0.0001f)
+		{
+			engineToneHpStateL_ = engineToneHpStateL_ * (1.0f - engineToneHpCoeff_) + fbkL * engineToneHpCoeff_;
+			engineToneHpStateR_ = engineToneHpStateR_ * (1.0f - engineToneHpCoeff_) + fbkR * engineToneHpCoeff_;
+			const float hpL = fbkL - engineToneHpStateL_;
+			const float hpR = fbkR - engineToneHpStateR_;
+			fbkL += (hpL - fbkL) * engineToneHpMix_;
+			fbkR += (hpR - fbkR) * engineToneHpMix_;
+		}
 
 		if (engineMode_ == 1)
 		{
