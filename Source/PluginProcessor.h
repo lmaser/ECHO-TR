@@ -858,19 +858,22 @@ private:
 			float fastOut = 0.0f;
 			const float delaySamples = juce::jmax (2.0f, baseDelaySamples[ch]);
 			const float delayMs = delaySamples * 1000.0f / sr;
+			const float microDelay = smoothStep01 ((8.0f - delayMs) / 8.0f);
 			const float veryShortDelay = smoothStep01 ((45.0f - delayMs) / 35.0f);
 			const float shortDelay = smoothStep01 ((180.0f - delayMs) / 160.0f);
 			const float midHighDelay = juce::jlimit (0.0f, 1.0f, shortDelay * (1.0f - veryShortDelay));
 			const float mediumDelay = smoothStep01 ((520.0f - delayMs) / 360.0f) * (1.0f - shortDelay);
 			const float longDelay = smoothStep01 ((delayMs - 260.0f) / 900.0f);
 			const float veryLongDelay = smoothStep01 ((delayMs - 900.0f) / 1600.0f);
-			const float timeSpeedScale = juce::jlimit (0.35f, 1.35f,
-				1.0f - longDelay * 0.45f - veryLongDelay * 0.20f
+			const float timeSpeedScale = juce::jlimit (0.24f, 2.80f,
+				1.0f - longDelay * 0.58f - veryLongDelay * 0.26f
 				    - midHighDelay * (0.22f + high * 0.18f)
-				    + veryShortDelay * (0.48f + high * 0.75f + extreme * 0.35f));
+				    + veryShortDelay * (0.78f + high * 1.05f + extreme * 0.55f)
+				    + microDelay * (1.20f + high * 1.40f + extreme * 0.80f));
 			const float shortSpeedBoost = 1.0f
 			                            + midHighDelay * (0.28f + high * 0.22f)
-			                            + veryShortDelay * (2.25f + high * 1.10f + extreme * 3.20f);
+			                            + veryShortDelay * (3.40f + high * 1.80f + extreme * 4.60f)
+			                            + microDelay * (5.00f + high * 4.00f + extreme * 5.00f);
 			const float slowPeriodForDelay = sr / juce::jmax (0.01f, slowRateHz * timeSpeedScale);
 			const float fastRateHz = fastRateHzBase * shortSpeedBoost * timeSpeedScale;
 			const float fastPeriod = sr / juce::jmax (0.01f, fastRateHz);
@@ -893,8 +896,10 @@ private:
 				const float harmonic = (ch == 0) ? 1.0f : 2.0f;
 				const float speedLift = 1.0f
 				                      + midHighDelay * toneAmount * 0.45f
-				                      + veryShortDelay * (1.80f + high * 4.20f + extreme * 3.60f);
-				const float targetToneRateHz = juce::jlimit (4.0f, 3600.0f, delayHz * harmonic * speedLift);
+				                      + veryShortDelay * (2.80f + high * 5.40f + extreme * 4.60f)
+				                      + microDelay * (4.00f + high * 6.00f + extreme * 5.00f);
+				const float toneRateCeilHz = juce::jmin (12000.0f, sr * 0.24f);
+				const float targetToneRateHz = juce::jlimit (4.0f, toneRateCeilHz, delayHz * harmonic * speedLift);
 
 				if (jitterToneRateHz_[ch] <= 0.0f)
 					jitterToneRateHz_[ch] = targetToneRateHz;
@@ -948,7 +953,7 @@ private:
 		const float longDelay = smoothStep01 ((delayMs - 260.0f) / 740.0f);
 		const float veryLongDelay = smoothStep01 ((delayMs - 900.0f) / 1600.0f);
 		const float amountPush = smoothStep01 ((amt - 0.35f) / 0.65f);
-		const float longDelayBoost = 1.0f + longDelay * amountPush * 1.65f + veryLongDelay * amountPush * 0.45f;
+		const float longDelayBoost = 1.0f + longDelay * amountPush * 2.10f + veryLongDelay * amountPush * 0.70f;
 		const float extreme = smoothStep01 ((amt - 0.78f) / 0.22f);
 		const float creativeLift = 1.0f + high * 0.34f + extreme * 0.22f;
 		const float veryShortDelay = smoothStep01 ((45.0f - delayMs) / 35.0f);

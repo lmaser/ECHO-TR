@@ -965,7 +965,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
 		if (jitterActive_) advanceJitter (targetDelay, targetDelay);
-		const float targetDelayNow = targetDelay * getJitterDelayMultiplier (0, targetDelay);
+		const float targetDelayNow = juce::jmax (2.0f, targetDelay * getJitterDelayMultiplier (0, targetDelay));
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelayNow * (1.0f - smoothCoeff);
 		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelayNow;
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
@@ -1101,7 +1101,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
 		if (jitterActive_) advanceJitter (targetDelay, targetDelay);
-		const float targetDelayNow = targetDelay * getJitterDelayMultiplier (0, targetDelay);
+		const float targetDelayNow = juce::jmax (2.0f, targetDelay * getJitterDelayMultiplier (0, targetDelay));
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelayNow * (1.0f - smoothCoeff);
 		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelayNow;
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
@@ -1189,7 +1189,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
 		if (jitterActive_) advanceJitter (targetDelay, targetDelay);
-		const float targetDelayNow = targetDelay * getJitterDelayMultiplier (0, targetDelay);
+		const float targetDelayNow = juce::jmax (2.0f, targetDelay * getJitterDelayMultiplier (0, targetDelay));
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelayNow * (1.0f - smoothCoeff);
 		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelayNow;
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
@@ -1276,8 +1276,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 	// Cross-feedback round trip = T_L + T_R.  For the comb resonance to match
 	// self-feedback pitch (period T), we need T_L + T_R = T.
 	// Ratio 2:1 (octave between channels) ⇒ T_L = 2T/3, T_R = T/3.
-	const float targetDelayL = delaySamples * (2.0f / 3.0f);
-	const float targetDelayR = delaySamples * (1.0f / 3.0f);
+	const float targetDelayL = juce::jmax (2.0f, delaySamples * (2.0f / 3.0f));
+	const float targetDelayR = juce::jmax (2.0f, delaySamples * (1.0f / 3.0f));
 	const float absFbk  = std::abs (feedback);
 	const float fbkSign = (feedback >= 0.0f) ? 1.0f : -1.0f;
 
@@ -1286,8 +1286,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
 		if (jitterActive_) advanceJitter (targetDelayL, targetDelayR);
-		const float targetDelayLNow = targetDelayL * getJitterDelayMultiplier (0, targetDelayL);
-		const float targetDelayRNow = targetDelayR * getJitterDelayMultiplier (1, targetDelayR);
+		const float targetDelayLNow = juce::jmax (2.0f, targetDelayL * getJitterDelayMultiplier (0, targetDelayL));
+		const float targetDelayRNow = juce::jmax (2.0f, targetDelayR * getJitterDelayMultiplier (1, targetDelayR));
 		smoothedDelaySamples  = smoothedDelaySamples  * smoothCoeff + targetDelayLNow * (1.0f - smoothCoeff);
 		smoothedDelaySamplesR = smoothedDelaySamplesR * smoothCoeff + targetDelayRNow * (1.0f - smoothCoeff);
 		if (smoothedDelaySamples  < 2.0f) smoothedDelaySamples  = targetDelayLNow;
@@ -1387,7 +1387,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 
 	const float smoothCoeff = delaySmoothCoeff;
 	const float targetDelayL = delaySamples;
-	const float targetDelayR = delaySamples * 0.5f; // Half-time offset for R channel
+	const float targetDelayR = juce::jmax (2.0f, delaySamples * 0.5f); // Half-time offset for R channel
 	const float absFbk  = std::abs (feedback);
 	const float fbkSign = (feedback >= 0.0f) ? 1.0f : -1.0f;
 
@@ -1396,8 +1396,8 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
 		if (jitterActive_) advanceJitter (targetDelayL, targetDelayR);
-		const float targetDelayLNow = targetDelayL * getJitterDelayMultiplier (0, targetDelayL);
-		const float targetDelayRNow = targetDelayR * getJitterDelayMultiplier (1, targetDelayR);
+		const float targetDelayLNow = juce::jmax (2.0f, targetDelayL * getJitterDelayMultiplier (0, targetDelayL));
+		const float targetDelayRNow = juce::jmax (2.0f, targetDelayR * getJitterDelayMultiplier (1, targetDelayR));
 		smoothedDelaySamples  = smoothedDelaySamples  * smoothCoeff + targetDelayLNow * (1.0f - smoothCoeff);
 		smoothedDelaySamplesR = smoothedDelaySamplesR * smoothCoeff + targetDelayRNow * (1.0f - smoothCoeff);
 		if (smoothedDelaySamples  < 2.0f) smoothedDelaySamples  = targetDelayLNow;
@@ -1530,7 +1530,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
 		if (jitterActive_) advanceJitter (delaySamples, delaySamples);
-		const float jitteredDelaySamples = delaySamples * getJitterDelayMultiplier (0, delaySamples);
+		const float jitteredDelaySamples = juce::jmax (2.0f, delaySamples * getJitterDelayMultiplier (0, delaySamples));
 		revSmoothedDelay = revSmoothedDelay * smoothCoeff + jitteredDelaySamples * (1.0f - smoothCoeff);
 		if (revSmoothedDelay < 2.0f) revSmoothedDelay = jitteredDelaySamples;
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
@@ -1569,7 +1569,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		// ════════════════════════════════════════════════════════════
 
 		// L channel forward read (at style-specific delay)
-		float fwdReadPosL = (float) writePos - revSmoothedDelay * fbkRatioL;
+		const float fwdDelayL = juce::jmax (2.0f, revSmoothedDelay * fbkRatioL);
+		float fwdReadPosL = (float) writePos - fwdDelayL;
 		if (fwdReadPosL < 0.0f) fwdReadPosL += (float) delayBufferLength;
 
 		const int fLIdx0  = static_cast<int>(fwdReadPosL) & wrapMask;
@@ -1581,7 +1582,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		const float fwdDelayedL = hermite4pt (delayL[fLIdxM1], delayL[fLIdx0], delayL[fLIdx1], delayL[fLIdx2], fLFrac);
 
 		// R channel forward read (at style-specific delay)
-		float fwdReadPosR = (float) writePos - revSmoothedDelay * fbkRatioR;
+		const float fwdDelayR = juce::jmax (2.0f, revSmoothedDelay * fbkRatioR);
+		float fwdReadPosR = (float) writePos - fwdDelayR;
 		if (fwdReadPosR < 0.0f) fwdReadPosR += (float) delayBufferLength;
 
 		const int fRIdx0  = static_cast<int>(fwdReadPosR) & wrapMask;
@@ -1849,6 +1851,12 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	float delaySamples = juce::jmax (0.0f, (float) currentSampleRate * (targetDelayMs / 1000.0f));
 	delaySamples /= freqMultiplier;
 	delaySamples = juce::jlimit (0.0f, (float) (delayBufferLength - 2), delaySamples);
+	const float requestedDelaySamples = delaySamples;
+	constexpr float kMinSafeDelaySamples = 2.0f;
+	const float lowDelayBlend = smoothStep01 (requestedDelaySamples / kMinSafeDelaySamples);
+	const float lowDelayWetScale = lowDelayBlend;
+	const float lowDelayFeedbackScale = lowDelayBlend * lowDelayBlend;
+	const float processDelaySamples = juce::jmax (kMinSafeDelaySamples, requestedDelaySamples);
 
 	// Auto feedback: envelope resets to 0 on note/time/MOD change, then ramps
 	// back to 1.0.  Feedback is multiplied by the envelope so the delay
@@ -1952,28 +1960,10 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		autoFbkCooldownLeft     = 0;
 	}
 
-	// Bypass if delay < 2 samples.  Hermite 4-point interpolation reads idx2
-	// (= writePos) which hasn't been written yet when delay < 2, creating stale
-	// data that boosts DC gain above 1.0 — causing divergent DC with high feedback.
-	// 2 samples @ 48 kHz = 0.042 ms — imperceptible as a delay.
-	if (delaySamples < 2.0f)
-	{
-		for (int ch = 0; ch < numChannels; ++ch)
-		{
-			auto* channelData = buffer.getWritePointer (ch);
-			for (int i = 0; i < numSamples; ++i)
-			{
-				smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
-				channelData[i] *= smoothedOutputGain;
-			}
-		}
-		smoothedDelaySamples = 0.0f;
-		smoothedDelaySamplesR = 0.0f;
-		limThreshLin_ = limThreshTargetLin_;
-		limThreshStep_ = 0.0f;
-		PERF_BLOCK_END(perfTrace, numSamples, currentSampleRate);
-		return;
-	}
+	// Below two samples Hermite would read the current write position. Keep
+	// DSP continuous by processing at the safe floor while crossfading wet and
+	// feedback out according to the requested time, instead of hard-bypassing.
+	delaySamples = processDelaySamples;
 	
 	// Delay smoothing coefficients (cached; only recompute for MIDI glide).
 	// Direct and reverse use DIFFERENT velocity→tau curves because their
@@ -2421,6 +2411,28 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Apply env follower mix AFTER pow() so the modulation affects the
 	// per-pass gain directly instead of being neutralized by pow(x, ~0).
 	effFbk *= autoFbkEnvMix;
+	effFbk *= lowDelayFeedbackScale;
+
+	// Positive feedback at sub-ms delay behaves like a near-DC resonator.
+	// Negative feedback is naturally stable here, so only compress +FBK as
+	// the delay approaches the interpolation floor. This prevents the hard
+	// jump into clipping around 100% without changing normal echo timings.
+	if (effFbk > 0.0f)
+	{
+		const float delayMsForFbk = (delaySamples / (float) currentSampleRate) * 1000.0f;
+		const float ultraShort = smoothStep01 ((2.5f - delayMsForFbk) / 2.5f);
+		if (ultraShort > 0.0f)
+		{
+			const float maxPositiveFbk = 1.0f - ultraShort * 0.30f;
+			const float kneeWidth = 0.10f + ultraShort * 0.14f;
+			const float kneeStart = juce::jlimit (0.0f, maxPositiveFbk, maxPositiveFbk - kneeWidth);
+			if (effFbk > kneeStart)
+			{
+				const float t = juce::jlimit (0.0f, 1.0f, (effFbk - kneeStart) / (1.0f - kneeStart));
+				effFbk = kneeStart + (maxPositiveFbk - kneeStart) * (1.0f - (1.0f - t) * (1.0f - t));
+			}
+		}
+	}
 
 	// All engines now use pure delay-time compensation.
 	// The compander is gain-neutral, and fbkMag is applied as an
@@ -2438,13 +2450,14 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// ── Dry/Wet gain targets (unified for INSERT and SEND modes) ──
 	if (mixMode == 0) // INSERT: classic crossfade
 	{
-		dryGainTarget_ = 1.0f - mixValue;
-		wetGainTarget_ = mixValue;
+		const float wetTarget = mixValue * lowDelayWetScale;
+		dryGainTarget_ = 1.0f - wetTarget;
+		wetGainTarget_ = wetTarget;
 	}
 	else // SEND: independent dry + wet levels
 	{
 		dryGainTarget_ = dryLevel;
-		wetGainTarget_ = wetLevel;
+		wetGainTarget_ = wetLevel * lowDelayWetScale;
 	}
 
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
