@@ -837,7 +837,7 @@ private:
 	{
 		JitterMetrics m;
 		const float a = juce::jlimit (0.0f, 1.0f, amount);
-		m.amountMapped = a * a;
+		m.amountMapped = a;
 
 		m.delayMs = juce::jmax (0.05f, juce::jmax (2.0f, baseDelaySamples) * 1000.0f / sr);
 		const float delaySeconds = m.delayMs * 0.001f;
@@ -988,7 +988,7 @@ private:
 		                    feedbackMetrics.amountMapped, sr);
 		jitterFeedbackOut_ = juce::jlimit (-1.0f, 1.0f,
 			feedbackSlow * 0.62f + feedbackFast * (0.24f + feedbackMetrics.shortness * 0.28f));
-		jitterFeedbackDepth_ = feedbackMetrics.feedbackDepth;
+		jitterFeedbackDepth_ = feedbackMetrics.feedbackDepth * 0.60f;
 	}
 
 	inline float getJitterDelayMultiplier (int channel, float baseDelaySamples) const noexcept
