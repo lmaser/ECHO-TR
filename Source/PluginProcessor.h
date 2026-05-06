@@ -1023,7 +1023,7 @@ private:
 		}
 		else
 		{
-			const float maxOffsetStep = 0.10f + 0.65f * amt;
+			const float maxOffsetStep = 0.12f + 0.78f * amt;
 			const float delta = targetOffset - jitterDelayOffsetSamples_[lane];
 			jitterDelayOffsetSamples_[lane] += maxOffsetStep * std::tanh (delta / maxOffsetStep);
 		}
