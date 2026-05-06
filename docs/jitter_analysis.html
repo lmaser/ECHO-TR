@@ -140,7 +140,7 @@
 <pre><code>targetDelayMs = MIDI ? 1000/freq : Sync ? tempoSyncToMs(index,bpm) : timeMs
 freqMultiplier = mod &lt; 0.5 ? 1/(4 - 6*mod) : 1 + (mod - 0.5)*6
 delaySamples = sampleRate * targetDelayMs / 1000 / freqMultiplier
-jitAmountMapped = 1 - pow(1 - JIT, 1.75)
+jitAmountMapped = JIT * JIT
 delayMultiplier = exp2(jitterDelayOut * depthOct)</code></pre>
   </section>
 
@@ -214,7 +214,7 @@ delayMultiplier = exp2(jitterDelayOut * depthOct)</code></pre>
     <h3>Modelo propuesto</h3>
 <pre><code>// 1) Amount perceptual, una sola curva para todos los submotores
 a = clamp(JIT / 100)
-aP = 1 - pow(1 - a, 1.35)       // menos agresiva que 1.75, mas control en 60-100
+aP = a * a                       // curva UX global: el 50% nuevo equivale aprox. al 20% anterior
 
 // 2) Tiempo en escala logaritmica, no por ventanas duras
 Dms = max(1000 * delaySamples / sr, 0.05)
@@ -295,7 +295,7 @@ const syncDivisions = [
 function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
 function smoothStep01(x){ const t = clamp(x,0,1); return t*t*(3-2*t); }
 function amtMap(a){ return 1 - Math.pow(1 - clamp(a,0,1), 1.75); }
-function amtMapProposed(a){ return 1 - Math.pow(1 - clamp(a,0,1), 1.35); }
+function amtMapProposed(a){ const x = clamp(a,0,1); return x * x; }
 function currentMetrics(delayMs, jitPct, channel=0){
   const a = clamp(jitPct/100,0,1);
   const am = amtMap(a);

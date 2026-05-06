@@ -835,7 +835,7 @@ private:
 	{
 		JitterMetrics m;
 		const float a = juce::jlimit (0.0f, 1.0f, amount);
-		m.amountMapped = 1.0f - std::pow (1.0f - a, 1.35f);
+		m.amountMapped = a * a;
 
 		m.delayMs = juce::jmax (0.05f, juce::jmax (2.0f, baseDelaySamples) * 1000.0f / sr);
 		const float delaySeconds = m.delayMs * 0.001f;
