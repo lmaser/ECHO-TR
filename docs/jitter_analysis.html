@@ -116,7 +116,7 @@
 <main>
   <section class="hero">
     <h1>ECHO-TR JIT analysis</h1>
-    <p>Estado actual, calculos y propuesta de reimplementacion para que JIT tenga intensidad perceptual coherente en todo el rango de TIME/SYNC/MOD.</p>
+    <p>Estado anterior, calculos y modelo de reimplementacion aplicado para que JIT tenga intensidad perceptual coherente en todo el rango de TIME/SYNC/MOD.</p>
     <p class="note warning"><strong>Conclusion corta:</strong> el motor actual no esta roto por una sola constante. Esta mezclando varias ventanas por tiempo, una profundidad dependiente de delay y un S&amp;H suavizado cuyo efecto perceptual depende del producto <code>rate * depth_seconds</code>. Por eso tocar "mas rapido" varias veces no ha compensado bien 1/16, 1/8 y 1/1.</p>
   </section>
 
@@ -208,7 +208,7 @@ delayMultiplier = exp2(jitterDelayOut * depthOct)</code></pre>
   </section>
 
   <section>
-    <h2>6. Propuesta desde cero</h2>
+    <h2>6. Modelo aplicado desde cero</h2>
     <p class="note"><strong>Objetivo:</strong> JIT 50% debe ser claramente audible en 1/16 y 1/8 sin depender de estar al 70-100%. JIT 100% debe ser creativo y casi excesivo, pero usable. La percepcion debe ser similar entre tiempos cortos y largos.</p>
 
     <h3>Modelo propuesto</h3>
@@ -223,18 +223,19 @@ longness  = clamp(log2(Dms / 250) / log2(4000 / 250), 0, 1)
 
 // 3) Capas separadas
 driftRateHz   = mix(0.08, 1.2, aP) * mix(1.0, 0.35, longness)
-flutterRateHz = mix(4.0, 80.0, aP) * pow(250 / Dms, 0.55)
-flutterRateHz = clamp(flutterRateHz, 2.0, 1800.0)
+flutterRateHz = mix(4.0, 130.0, aP) * pow(250 / Dms, 0.90)
+flutterRateHz = clamp(flutterRateHz, 2.0, 7000.0)
 
 // 4) Capa tone/phase-noise ligada a la frecuencia del delay
 delayHz = 1000 / Dms
-toneRateHz = delayHz * mix(2.0, 48.0, aP) * pow(shortness, 1.25)
+toneRateHz = delayHz * (4.0 + 190.0*aP + high*60.0 + extreme*90.0) * pow(shortness, 0.70)
 toneRateHz = clamp(toneRateHz, 0.0, sr * 0.22)
 
-// 5) Profundidad normalizada por indice perceptual
-targetIndex = mix(0.002, 0.09, aP) * mix(1.0, 1.25, shortness)
-depthSeconds = targetIndex / (2*pi*max(flutterRateHz, 1.0))
-depthSeconds = clamp(depthSeconds, 0.00001, Dms * 0.001 * 0.22)
+// 5) Profundidad temporal de JIT: misma intensidad relativa, distinto reparto perceptual
+// JIT no es variation. El recorrido debe ser apreciable y no decrecer en tiempos largos.
+targetDepthRatio = 0.055 * pow(aP, 1.05)
+depthSeconds = Dms * 0.001 * targetDepthRatio
+depthSeconds = clamp(depthSeconds, 0.0000001, Dms * 0.001 * 0.12)
 depthOct = log2((Dms*0.001 + depthSeconds) / (Dms*0.001))</code></pre>
 
     <h3>Arquitectura de capas</h3>
@@ -242,7 +243,7 @@ depthOct = log2((Dms*0.001 + depthSeconds) / (Dms*0.001))</code></pre>
       <li><strong>Drift:</strong> lento, aleatorio y suavizado. Debe dominar en tiempos largos.</li>
       <li><strong>Flutter S&amp;H:</strong> rapido, con slew/lag controlado. Debe estar presente desde JIT medio.</li>
       <li><strong>Tone layer:</strong> oscilador irregular ligado a <code>delayHz</code>, para que en tiempos cortos haya efecto timbrico/ring-like real.</li>
-      <li><strong>Depth normalizer:</strong> calcular profundidad desde un indice perceptual, no por constantes sueltas.</li>
+      <li><strong>Depth law:</strong> calcular profundidad como proporcion temporal del delay. En tiempos cortos hay mas velocidad/tone; en tiempos largos mas recorrido en ms.</li>
       <li><strong>No thresholds duros:</strong> usar curvas logaritmicas suaves para evitar cambios de regimen en 1/8, 1/16, etc.</li>
     </ul>
   </section>
@@ -354,12 +355,19 @@ function proposedMetrics(delayMs, jitPct){
   const D = Math.max(delayMs, 0.05);
   const shortness = clamp(Math.log2(500 / D) / Math.log2(500 / 8), 0, 1);
   const longness = clamp(Math.log2(D / 250) / Math.log2(4000 / 250), 0, 1);
-  const driftRateHz = (0.08 + (1.2 - 0.08) * ap) * (1 - 0.65 * longness);
-  const flutterRateHz = clamp((4 + (80 - 4) * ap) * Math.pow(250 / D, 0.55), 2, 1800);
-  const targetIndex = (0.002 + (0.09 - 0.002) * ap) * (1 + 0.25 * shortness);
-  const depthSec = clamp(targetIndex / (2 * Math.PI * Math.max(flutterRateHz, 1)), 0.00001, D * 0.001 * 0.22);
+  const high = smoothStep01((ap - 0.55) / 0.45);
+  const extreme = smoothStep01((ap - 0.82) / 0.18);
+  const driftRateHz = clamp((0.08 + (1.2 - 0.08) * ap) * (1 - 0.65 * longness) * (1 + 0.10 * shortness), 0.03, 2.0);
+  const flutterRateHz = clamp((4 + (130 - 4) * ap) * Math.pow(250 / D, 0.90), 2, 7000);
+  const delayHz = 1000 / D;
+  const toneRateHz = clamp(delayHz * (4 + 190 * ap + high * 60 + extreme * 90) * Math.pow(shortness, 0.70), 0, Math.min(12000, SR * 0.22));
+  const driftWeight = clamp(0.42 + 0.30 * longness - 0.14 * shortness, 0.18, 0.72);
+  const flutterWeight = clamp(0.45 + 0.38 * shortness + 0.12 * high, 0.35, 0.95);
+  const targetDepthRatio = 0.055 * Math.pow(ap, 1.05);
+  const depthSec = clamp(D * 0.001 * targetDepthRatio, 0.0000001, D * 0.001 * 0.12);
   const depthOct = Math.log2((D*0.001 + depthSec) / (D*0.001));
-  return {ap, shortness, longness, driftRateHz, flutterRateHz, targetIndex, depthSec, depthOct};
+  const targetIndex = 2 * Math.PI * flutterRateHz * depthSec;
+  return {ap, shortness, longness, driftRateHz, flutterRateHz, toneRateHz, targetIndex, depthSec, depthOct, targetDepthRatio, driftWeight, flutterWeight};
 }
 
 function drawChart(id, series, opts){
@@ -426,16 +434,16 @@ function buildCharts(){
   drawChart("rateChart", [
     {name:"current JIT 50 fast", color:"#80d6ff", points:xsMs.map(x=>({x,y:currentMetrics(x,50).fastRateHz}))},
     {name:"current JIT 100 fast", color:"#f3c85f", points:xsMs.map(x=>({x,y:currentMetrics(x,100).fastRateHz}))},
-    {name:"proposed JIT 50 flutter", color:"#9ee493", points:xsMs.map(x=>({x,y:proposedMetrics(x,50).flutterRateHz}))},
-    {name:"proposed JIT 100 flutter", color:"#ff7a7a", points:xsMs.map(x=>({x,y:proposedMetrics(x,100).flutterRateHz}))}
+    {name:"implemented JIT 50 flutter", color:"#9ee493", points:xsMs.map(x=>({x,y:proposedMetrics(x,50).flutterRateHz}))},
+    {name:"implemented JIT 100 flutter", color:"#ff7a7a", points:xsMs.map(x=>({x,y:proposedMetrics(x,100).flutterRateHz}))}
   ], {xMin:5,xMax:4000,logX:true,yMin:0,yMax:5000,xTicks:[10,30,60,115,231,462,1000,4000],xLabel:x=>x>=1000?(x/1000)+"s":x+"ms",yLabel:y=>y.toFixed(0)+"Hz"});
 
   drawChart("indexChart", [
     {name:"current JIT 50 index", color:"#80d6ff", points:xsMs.map(x=>({x,y:currentMetrics(x,50).index}))},
     {name:"current JIT 100 index", color:"#f3c85f", points:xsMs.map(x=>({x,y:currentMetrics(x,100).index}))},
-    {name:"proposed JIT 50 target", color:"#9ee493", points:xsMs.map(x=>({x,y:proposedMetrics(x,50).targetIndex}))},
-    {name:"proposed JIT 100 target", color:"#ff7a7a", points:xsMs.map(x=>({x,y:proposedMetrics(x,100).targetIndex}))}
-  ], {xMin:5,xMax:4000,logX:true,yMin:0,yMax:0.16,xTicks:[10,30,60,115,231,462,1000,4000],xLabel:x=>x>=1000?(x/1000)+"s":x+"ms",yLabel:y=>y.toFixed(3)});
+    {name:"implemented JIT 50 depth %", color:"#9ee493", points:xsMs.map(x=>({x,y:proposedMetrics(x,50).targetDepthRatio * 100}))},
+    {name:"implemented JIT 100 depth %", color:"#ff7a7a", points:xsMs.map(x=>({x,y:proposedMetrics(x,100).targetDepthRatio * 100}))}
+  ], {xMin:5,xMax:4000,logX:true,yMin:0,yMax:6,xTicks:[10,30,60,115,231,462,1000,4000],xLabel:x=>x>=1000?(x/1000)+"s":x+"ms",yLabel:y=>y.toFixed(1)+"%"});
 }
 
 function buildTable(){
@@ -447,11 +455,11 @@ function buildTable(){
       const m50 = currentMetrics(ms,50);
       const m100 = currentMetrics(ms,100);
       const p50 = proposedMetrics(ms,50);
-      return {label, ms, high:m100.highFreqDelay, fast50:m50.fastRateHz, fast100:m100.fastRateHz, idx50:m50.index, idx100:m100.index, pidx50:p50.targetIndex};
+      return {label, ms, high:m100.highFreqDelay, fast50:m50.fastRateHz, fast100:m100.fastRateHz, idx50:m50.index, idx100:m100.index, pDepth50:p50.targetDepthRatio * 100};
     });
-  let html = "<table><thead><tr><th>Sync</th><th>ms</th><th>highFreq</th><th>fast Hz JIT50</th><th>fast Hz JIT100</th><th>idx JIT50</th><th>idx JIT100</th><th>prop idx50</th></tr></thead><tbody>";
+  let html = "<table><thead><tr><th>Sync</th><th>ms</th><th>highFreq</th><th>fast Hz JIT50</th><th>fast Hz JIT100</th><th>idx JIT50</th><th>idx JIT100</th><th>impl depth% 50</th></tr></thead><tbody>";
   for (const r of rows) {
-    html += `<tr><td>${r.label}</td><td>${r.ms.toFixed(1)}</td><td>${r.high.toFixed(3)}</td><td>${r.fast50.toFixed(1)}</td><td>${r.fast100.toFixed(1)}</td><td>${r.idx50.toFixed(4)}</td><td>${r.idx100.toFixed(4)}</td><td>${r.pidx50.toFixed(4)}</td></tr>`;
+    html += `<tr><td>${r.label}</td><td>${r.ms.toFixed(1)}</td><td>${r.high.toFixed(3)}</td><td>${r.fast50.toFixed(1)}</td><td>${r.fast100.toFixed(1)}</td><td>${r.idx50.toFixed(4)}</td><td>${r.idx100.toFixed(4)}</td><td>${r.pDepth50.toFixed(2)}%</td></tr>`;
   }
   html += "</tbody></table>";
   document.getElementById("syncTable").innerHTML = html;

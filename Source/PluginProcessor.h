@@ -498,6 +498,7 @@ private:
 	float jitterTonePhase_[2]            = {};
 	float jitterToneRateHz_[2]           = {};
 	float jitterDelayOut_[2]             = {};
+	float jitterDelayDepthOct_[2]        = {};
 	juce::Random jitterDelayRng_[2];
 	juce::Random jitterDelayFastRng_[2];
 
@@ -514,6 +515,7 @@ private:
 	float jitterFeedbackFastDriftPhase_  = 0.0f;
 	float jitterFeedbackFastDriftFreqHz_ = 0.0f;
 	float jitterFeedbackOut_             = 0.0f;
+	float jitterFeedbackDepth_           = 0.0f;
 	juce::Random jitterFeedbackRng_;
 	juce::Random jitterFeedbackFastRng_;
 	void resetJitterState() noexcept;
@@ -813,6 +815,74 @@ private:
 		return t * t * (3.0f - 2.0f * t);
 	}
 
+	struct JitterMetrics
+	{
+		float amountMapped = 0.0f;
+		float delayMs = 1.0f;
+		float shortness = 0.0f;
+		float longness = 0.0f;
+		float driftRateHz = 0.1f;
+		float flutterRateHz = 4.0f;
+		float toneRateHz = 0.0f;
+		float driftWeight = 0.4f;
+		float flutterWeight = 0.5f;
+		float toneWeight = 0.0f;
+		float delayDepthOct = 0.0f;
+		float feedbackDepth = 0.0f;
+	};
+
+	inline JitterMetrics makeJitterMetrics (float baseDelaySamples, float amount, float sr, int channel) const noexcept
+	{
+		JitterMetrics m;
+		const float a = juce::jlimit (0.0f, 1.0f, amount);
+		m.amountMapped = 1.0f - std::pow (1.0f - a, 1.35f);
+
+		m.delayMs = juce::jmax (0.05f, juce::jmax (2.0f, baseDelaySamples) * 1000.0f / sr);
+		const float delaySeconds = m.delayMs * 0.001f;
+		const float delayHz = 1.0f / delaySeconds;
+
+		constexpr float kShortRefMs = 8.0f;
+		constexpr float kMidRefMs = 500.0f;
+		constexpr float kLongRefMs = 4000.0f;
+		m.shortness = juce::jlimit (0.0f, 1.0f,
+			std::log2 (kMidRefMs / m.delayMs) / std::log2 (kMidRefMs / kShortRefMs));
+		m.longness = juce::jlimit (0.0f, 1.0f,
+			std::log2 (m.delayMs / 250.0f) / std::log2 (kLongRefMs / 250.0f));
+
+		const float high = smoothStep01 ((m.amountMapped - 0.55f) / 0.45f);
+		const float extreme = smoothStep01 ((m.amountMapped - 0.82f) / 0.18f);
+
+		m.driftRateHz = (0.08f + (1.20f - 0.08f) * m.amountMapped)
+		              * (1.0f - 0.65f * m.longness)
+		              * (1.0f + 0.10f * m.shortness);
+		m.driftRateHz = juce::jlimit (0.03f, 2.0f, m.driftRateHz);
+
+		m.flutterRateHz = (4.0f + (130.0f - 4.0f) * m.amountMapped)
+		                * std::pow (250.0f / m.delayMs, 0.90f);
+		m.flutterRateHz = juce::jlimit (2.0f, 7000.0f, m.flutterRateHz);
+
+		const float toneAmount = smoothStep01 ((m.amountMapped - 0.18f) / 0.82f);
+		const float toneLift = 4.0f + 190.0f * m.amountMapped + high * 60.0f + extreme * 90.0f;
+		const float toneShort = std::pow (m.shortness, 0.70f);
+		const float harmonic = (channel == 0) ? 1.0f : 1.618f;
+		const float toneCeilHz = juce::jmin (12000.0f, sr * 0.22f);
+		m.toneRateHz = juce::jlimit (0.0f, toneCeilHz, delayHz * toneLift * toneShort * harmonic);
+
+		m.driftWeight = juce::jlimit (0.18f, 0.72f, 0.42f + 0.30f * m.longness - 0.14f * m.shortness);
+		m.flutterWeight = juce::jlimit (0.35f, 0.95f, 0.45f + 0.38f * m.shortness + 0.12f * high);
+		m.toneWeight = toneAmount * std::pow (m.shortness, 0.55f) * (0.35f + 0.55f * m.amountMapped);
+		m.toneWeight = juce::jlimit (0.0f, 0.78f, m.toneWeight);
+
+		const float targetDepthRatio = 0.055f * std::pow (m.amountMapped, 1.05f);
+		const float maxDepthSeconds = delaySeconds * 0.12f;
+		const float depthSeconds = juce::jlimit (1.0e-7f, maxDepthSeconds, delaySeconds * targetDepthRatio);
+		m.delayDepthOct = std::log2 ((delaySeconds + depthSeconds) / delaySeconds);
+
+		m.feedbackDepth = (0.010f + 0.055f * m.amountMapped) * m.amountMapped
+		                * (1.0f + 0.20f * m.shortness);
+		return m;
+	}
+
 	inline void advanceJitter (float baseDelaySamplesL, float baseDelaySamplesR) noexcept
 	{
 		const float sr = juce::jmax (1.0f, (float) currentSampleRate);
@@ -834,122 +904,87 @@ private:
 			jitterParamSmoothReady_ = false;
 			jitterActive_ = false;
 			jitterDelayOut_[0] = jitterDelayOut_[1] = 0.0f;
+			jitterDelayDepthOct_[0] = jitterDelayDepthOct_[1] = 0.0f;
 			jitterToneRateHz_[0] = jitterToneRateHz_[1] = 0.0f;
 			jitterFeedbackOut_ = 0.0f;
+			jitterFeedbackDepth_ = 0.0f;
 			return;
 		}
 
 		const float amt = juce::jlimit (0.0f, 1.0f, jitterAmountSmoothed_);
-		// Perceptual mapping: make 20-70% useful without changing the 0/100 endpoints.
-		const float amtMapped = 1.0f - std::pow (1.0f - amt, 1.75f);
-		const float high = smoothStep01 ((amtMapped - 0.40f) / 0.60f);
-		const float extreme = smoothStep01 ((amtMapped - 0.76f) / 0.24f);
-		const float fastMix = smoothStep01 ((amtMapped - 0.28f) / 0.72f) * (0.52f + extreme * 0.22f);
-		const float slowRateHz = 0.09f + amtMapped * 0.55f + high * 1.45f + extreme * 1.00f;
-		const float fastRateHzBase = 3.5f + amtMapped * amtMapped * 52.0f + high * 50.0f + extreme * 60.0f;
-		const float slowPeriod = sr / juce::jmax (0.01f, slowRateHz);
-		const float feedbackFastPeriod = sr / juce::jmax (0.01f, fastRateHzBase);
 		const int nCh = chaosStereo_ ? 2 : 1;
 		const float baseDelaySamples[2] = { baseDelaySamplesL, baseDelaySamplesR };
-		const float toneAmount = smoothStep01 ((amtMapped - 0.24f) / 0.76f);
-		const float toneRateSmooth = std::exp (-1.0f / (sr * 0.010f));
+		const float toneRateSmooth = std::exp (-1.0f / (sr * 0.006f));
 
 		for (int ch = 0; ch < nCh; ++ch)
 		{
 			float slowOut = 0.0f;
 			float fastOut = 0.0f;
-			const float delaySamples = juce::jmax (2.0f, baseDelaySamples[ch]);
-			const float delayMs = delaySamples * 1000.0f / sr;
-			const float microDelay = smoothStep01 ((8.0f - delayMs) / 8.0f);
-			const float veryShortDelay = smoothStep01 ((45.0f - delayMs) / 35.0f);
-			const float shortDelay = smoothStep01 ((180.0f - delayMs) / 160.0f);
-			const float midHighDelay = juce::jlimit (0.0f, 1.0f, shortDelay * (1.0f - veryShortDelay));
-			const float mediumDelay = smoothStep01 ((520.0f - delayMs) / 360.0f) * (1.0f - shortDelay);
-			const float longDelay = smoothStep01 ((delayMs - 260.0f) / 900.0f);
-			const float veryLongDelay = smoothStep01 ((delayMs - 900.0f) / 1600.0f);
-			const float highFreqDelay = smoothStep01 ((220.0f - delayMs) / 190.0f);
-			const float timeSpeedScale = juce::jlimit (0.14f, 9.00f,
-				1.0f - longDelay * 0.78f - veryLongDelay * 0.38f
-				    - midHighDelay * (0.22f + high * 0.18f)
-				    + highFreqDelay * (1.45f + high * 2.20f + extreme * 1.35f)
-				    + veryShortDelay * (1.85f + high * 2.80f + extreme * 1.60f)
-				    + microDelay * (3.60f + high * 4.20f + extreme * 2.80f));
-			const float shortSpeedBoost = 1.0f
-			                            + midHighDelay * (0.28f + high * 0.22f)
-			                            + highFreqDelay * (3.20f + high * 4.20f + extreme * 3.00f)
-			                            + veryShortDelay * (6.80f + high * 5.40f + extreme * 7.80f)
-			                            + microDelay * (12.00f + high * 10.00f + extreme * 10.00f);
-			const float slowPeriodForDelay = sr / juce::jmax (0.01f, slowRateHz * timeSpeedScale);
-			const float fastRateHz = fastRateHzBase * shortSpeedBoost * timeSpeedScale;
-			const float fastPeriod = sr / juce::jmax (0.01f, fastRateHz);
+			const JitterMetrics metrics = makeJitterMetrics (baseDelaySamples[ch], amt, sr, ch);
+			const float slowPeriodForDelay = sr / juce::jmax (0.01f, metrics.driftRateHz);
+			const float fastPeriod = sr / juce::jmax (0.01f, metrics.flutterRateHz);
 
 			advanceChaosEngine (jitterDelayPrev_[ch], jitterDelayCurr_[ch], jitterDelayNext_[ch],
 			                    jitterDelayPhase_[ch], jitterDelayDriftPhase_[ch],
 			                    jitterDelayDriftFreqHz_[ch], slowOut, jitterDelayRng_[ch],
-			                    slowPeriodForDelay, amtMapped, sr);
+			                    slowPeriodForDelay, metrics.amountMapped, sr);
 			advanceChaosEngine (jitterDelayFastPrev_[ch], jitterDelayFastCurr_[ch], jitterDelayFastNext_[ch],
 			                    jitterDelayFastPhase_[ch], jitterDelayFastDriftPhase_[ch],
 			                    jitterDelayFastDriftFreqHz_[ch], fastOut, jitterDelayFastRng_[ch],
-			                    fastPeriod, amtMapped, sr);
+			                    fastPeriod, metrics.amountMapped, sr);
 
-			float combined = slowOut * (1.0f - fastMix) + fastOut * fastMix;
-			const float toneMix = toneAmount * (0.50f * shortDelay + 0.24f * highFreqDelay + 0.10f * mediumDelay) * (1.0f + extreme * 0.34f);
-
-			if (toneMix > 0.000001f)
+			float toneOut = 0.0f;
+			if (metrics.toneWeight > 0.000001f && metrics.toneRateHz > 0.0f)
 			{
-				const float delayHz = sr / delaySamples;
-				const float harmonic = (ch == 0) ? 1.0f : 2.0f;
-				const float speedLift = 1.0f
-				                      + midHighDelay * toneAmount * 0.45f
-				                      + highFreqDelay * (4.80f + high * 7.20f + extreme * 5.20f)
-				                      + veryShortDelay * (6.80f + high * 10.50f + extreme * 8.20f)
-				                      + microDelay * (11.00f + high * 14.00f + extreme * 11.00f);
-				const float toneRateCeilHz = juce::jmin (12000.0f, sr * 0.24f);
-				const float targetToneRateHz = juce::jlimit (4.0f, toneRateCeilHz, delayHz * harmonic * speedLift);
-
 				if (jitterToneRateHz_[ch] <= 0.0f)
-					jitterToneRateHz_[ch] = targetToneRateHz;
+					jitterToneRateHz_[ch] = metrics.toneRateHz;
 				else
 					jitterToneRateHz_[ch] = jitterToneRateHz_[ch] * toneRateSmooth
-					                      + targetToneRateHz * (1.0f - toneRateSmooth);
+					                      + metrics.toneRateHz * (1.0f - toneRateSmooth);
 
 				jitterTonePhase_[ch] += jitterToneRateHz_[ch] / sr;
 				jitterTonePhase_[ch] -= std::floor (jitterTonePhase_[ch]);
 
 				const float phase = jitterTonePhase_[ch] * kTwoPi;
-				const float toneOut = std::sin (phase) * 0.78f
-				                    + std::sin (phase * 2.0f + (ch == 0 ? 0.73f : 1.37f)) * 0.17f
-				                    + std::sin (phase * 3.0f + (ch == 0 ? 1.91f : 2.47f)) * 0.05f;
-				combined += toneOut * toneMix;
+				toneOut = std::sin (phase) * 0.72f
+				        + std::sin (phase * 2.0f + (ch == 0 ? 0.73f : 1.37f)) * 0.20f
+				        + std::sin (phase * 3.0f + (ch == 0 ? 1.91f : 2.47f)) * 0.08f;
 			}
 			else
 			{
 				jitterToneRateHz_[ch] = 0.0f;
 			}
 
+			const float combined = slowOut * metrics.driftWeight
+			                     + fastOut * metrics.flutterWeight
+			                     + toneOut * metrics.toneWeight;
 			jitterDelayOut_[ch] = juce::jlimit (-1.25f, 1.25f, combined);
+			jitterDelayDepthOct_[ch] = metrics.delayDepthOct;
 		}
 
 		if (! chaosStereo_)
+		{
 			jitterDelayOut_[1] = jitterDelayOut_[0];
+			jitterDelayDepthOct_[1] = jitterDelayDepthOct_[0];
+		}
 
 		float feedbackSlow = 0.0f;
 		float feedbackFast = 0.0f;
 		const float feedbackDelaySamples = juce::jmax (2.0f, (baseDelaySamplesL + baseDelaySamplesR) * 0.5f);
-		const float feedbackDelayMs = feedbackDelaySamples * 1000.0f / sr;
-		const float feedbackShort = smoothStep01 ((220.0f - feedbackDelayMs) / 190.0f);
-		const float feedbackLong = smoothStep01 ((feedbackDelayMs - 260.0f) / 900.0f);
-		const float feedbackVeryLong = smoothStep01 ((feedbackDelayMs - 900.0f) / 1600.0f);
-		const float feedbackSpeedScale = juce::jlimit (0.18f, 3.80f,
-			1.0f + feedbackShort * (1.60f + high * 2.20f + extreme * 1.45f)
-			    - feedbackLong * 0.62f - feedbackVeryLong * 0.35f);
+		const JitterMetrics feedbackMetrics = makeJitterMetrics (feedbackDelaySamples, amt, sr, 0);
 		advanceChaosEngine (jitterFeedbackPrev_, jitterFeedbackCurr_, jitterFeedbackNext_,
 		                    jitterFeedbackPhase_, jitterFeedbackDriftPhase_, jitterFeedbackDriftFreqHz_,
-		                    feedbackSlow, jitterFeedbackRng_, (slowPeriod * 1.31f) / feedbackSpeedScale, amtMapped, sr);
+		                    feedbackSlow, jitterFeedbackRng_,
+		                    sr / juce::jmax (0.01f, feedbackMetrics.driftRateHz * 0.80f),
+		                    feedbackMetrics.amountMapped, sr);
 		advanceChaosEngine (jitterFeedbackFastPrev_, jitterFeedbackFastCurr_, jitterFeedbackFastNext_,
 		                    jitterFeedbackFastPhase_, jitterFeedbackFastDriftPhase_, jitterFeedbackFastDriftFreqHz_,
-		                    feedbackFast, jitterFeedbackFastRng_, (feedbackFastPeriod * 0.79f) / feedbackSpeedScale, amtMapped, sr);
-		jitterFeedbackOut_ = juce::jlimit (-1.0f, 1.0f, feedbackSlow * 0.70f + feedbackFast * fastMix * 0.75f);
+		                    feedbackFast, jitterFeedbackFastRng_,
+		                    sr / juce::jmax (0.01f, feedbackMetrics.flutterRateHz * 0.55f),
+		                    feedbackMetrics.amountMapped, sr);
+		jitterFeedbackOut_ = juce::jlimit (-1.0f, 1.0f,
+			feedbackSlow * 0.62f + feedbackFast * (0.24f + feedbackMetrics.shortness * 0.28f));
+		jitterFeedbackDepth_ = feedbackMetrics.feedbackDepth;
 	}
 
 	inline float getJitterDelayMultiplier (int channel, float baseDelaySamples) const noexcept
@@ -958,28 +993,9 @@ private:
 		if (! jitterActive_ || amt <= 0.000001f)
 			return 1.0f;
 
-		const float amtMapped = 1.0f - std::pow (1.0f - amt, 1.75f);
 		const int lane = juce::jlimit (0, 1, channel);
-		const float high = smoothStep01 ((amtMapped - 0.54f) / 0.46f);
-		const float sr = juce::jmax (1.0f, (float) currentSampleRate);
-		const float delayMs = juce::jmax (1.0f, baseDelaySamples) * 1000.0f / sr;
-		constexpr float kReferenceDelayMs = 250.0f;
-		const float delayDepthScale = juce::jlimit (0.45f, 4.0f, std::sqrt (kReferenceDelayMs / delayMs));
-		const float longDelay = smoothStep01 ((delayMs - 260.0f) / 740.0f);
-		const float veryLongDelay = smoothStep01 ((delayMs - 900.0f) / 1600.0f);
-		const float amountPush = smoothStep01 ((amtMapped - 0.18f) / 0.82f);
-		const float longDelayBoost = 1.0f + longDelay * amountPush * 2.10f + veryLongDelay * amountPush * 0.70f;
-		const float extreme = smoothStep01 ((amtMapped - 0.76f) / 0.24f);
-		const float creativeLift = 1.0f + high * 0.34f + extreme * 0.22f;
-		const float veryShortDelay = smoothStep01 ((45.0f - delayMs) / 35.0f);
-		const float shortDelay = smoothStep01 ((180.0f - delayMs) / 160.0f);
-		const float highFreqDelay = smoothStep01 ((220.0f - delayMs) / 190.0f);
-		const float midHighDelay = juce::jlimit (0.0f, 1.0f, shortDelay * (1.0f - veryShortDelay));
-		const float midHighLift = 1.0f + midHighDelay * amountPush * (0.58f + extreme * 0.32f);
-		const float shortDepthBoost = 1.0f + highFreqDelay * amountPush * (0.95f + high * 0.38f + extreme * 0.45f);
-		const float ultraTrim = 1.0f - veryShortDelay * 0.25f;
-		const float depthOct = (0.0040f + 0.030f * amtMapped) * amtMapped * creativeLift * delayDepthScale * longDelayBoost * midHighLift * shortDepthBoost * ultraTrim;
-		return std::exp2 (jitterDelayOut_[lane] * depthOct);
+		(void) baseDelaySamples;
+		return std::exp2 (jitterDelayOut_[lane] * jitterDelayDepthOct_[lane]);
 	}
 
 	inline float applyJitterToFeedbackMagnitude (float feedbackMagnitude) const noexcept
@@ -988,9 +1004,7 @@ private:
 		if (! jitterActive_ || amt <= 0.000001f || feedbackMagnitude <= 0.0f)
 			return feedbackMagnitude;
 
-		const float amtMapped = 1.0f - std::pow (1.0f - amt, 1.75f);
-		const float depth = (0.012f + 0.048f * amtMapped) * amtMapped;
-		return juce::jlimit (0.0f, 1.0f, feedbackMagnitude * (1.0f + jitterFeedbackOut_ * depth));
+		return juce::jlimit (0.0f, 1.0f, feedbackMagnitude * (1.0f + jitterFeedbackOut_ * jitterFeedbackDepth_));
 	}
 
 	inline void advanceChaosD() noexcept

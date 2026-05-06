@@ -674,10 +674,12 @@ void ECHOTRAudioProcessor::resetJitterState() noexcept
 	jitterParamSmoothReady_ = false;
 	jitterActive_ = false;
 	jitterDelayOut_[0] = jitterDelayOut_[1] = 0.0f;
+	jitterDelayDepthOct_[0] = jitterDelayDepthOct_[1] = 0.0f;
 	jitterTonePhase_[0] = 0.113f;
 	jitterTonePhase_[1] = 0.617f;
 	jitterToneRateHz_[0] = jitterToneRateHz_[1] = 0.0f;
 	jitterFeedbackOut_ = 0.0f;
+	jitterFeedbackDepth_ = 0.0f;
 
 	auto initLane = [] (float& prev, float& curr, float& next, float& phase,
 	                    float& driftPhase, float& driftFreqHz, float& out,
@@ -712,7 +714,9 @@ void ECHOTRAudioProcessor::resetJitterState() noexcept
 	          jitterFeedbackOut_, jitterFeedbackFastRng_, 0x4543484f4a495447ll);
 
 	jitterDelayOut_[0] = jitterDelayOut_[1] = 0.0f;
+	jitterDelayDepthOct_[0] = jitterDelayDepthOct_[1] = 0.0f;
 	jitterFeedbackOut_ = 0.0f;
+	jitterFeedbackDepth_ = 0.0f;
 }
 
 void ECHOTRAudioProcessor::releaseResources()
@@ -964,10 +968,11 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 	{
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
-		if (jitterActive_) advanceJitter (targetDelay, targetDelay);
-		const float targetDelayNow = juce::jmax (2.0f, targetDelay * getJitterDelayMultiplier (0, targetDelay));
-		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelayNow * (1.0f - smoothCoeff);
-		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelayNow;
+		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelay;
+		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamples);
+		const float readDelaySamples = juce::jmax (2.0f,
+			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -984,7 +989,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 		}
 		const float fbkMag  = applyJitterToFeedbackMagnitude (smoothedFeedback_);
 		
-		float readPosF = (float) writePos - smoothedDelaySamples;
+		float readPosF = (float) writePos - readDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
@@ -1100,10 +1105,11 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 	{
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
-		if (jitterActive_) advanceJitter (targetDelay, targetDelay);
-		const float targetDelayNow = juce::jmax (2.0f, targetDelay * getJitterDelayMultiplier (0, targetDelay));
-		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelayNow * (1.0f - smoothCoeff);
-		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelayNow;
+		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelay;
+		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamples);
+		const float readDelaySamples = juce::jmax (2.0f,
+			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1119,7 +1125,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 			}
 		}
 		const float fbkMag  = applyJitterToFeedbackMagnitude (smoothedFeedback_);
-		float readPosF = (float) writePos - smoothedDelaySamples;
+		float readPosF = (float) writePos - readDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
@@ -1188,10 +1194,11 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 	{
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
-		if (jitterActive_) advanceJitter (targetDelay, targetDelay);
-		const float targetDelayNow = juce::jmax (2.0f, targetDelay * getJitterDelayMultiplier (0, targetDelay));
-		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelayNow * (1.0f - smoothCoeff);
-		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelayNow;
+		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
+		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelay;
+		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamples);
+		const float readDelaySamples = juce::jmax (2.0f,
+			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1206,7 +1213,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 				smoothedFeedback_ = smoothedFeedback_ * c + absFbk * (1.0f - c);
 			}
 		}
-		float readPosF = (float) writePos - smoothedDelaySamples;
+		float readPosF = (float) writePos - readDelaySamples;
 		if (readPosF < 0.0f)
 			readPosF += (float) delayBufferLength;
 		
@@ -1285,13 +1292,15 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 	{
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
-		if (jitterActive_) advanceJitter (targetDelayL, targetDelayR);
-		const float targetDelayLNow = juce::jmax (2.0f, targetDelayL * getJitterDelayMultiplier (0, targetDelayL));
-		const float targetDelayRNow = juce::jmax (2.0f, targetDelayR * getJitterDelayMultiplier (1, targetDelayR));
-		smoothedDelaySamples  = smoothedDelaySamples  * smoothCoeff + targetDelayLNow * (1.0f - smoothCoeff);
-		smoothedDelaySamplesR = smoothedDelaySamplesR * smoothCoeff + targetDelayRNow * (1.0f - smoothCoeff);
-		if (smoothedDelaySamples  < 2.0f) smoothedDelaySamples  = targetDelayLNow;
-		if (smoothedDelaySamplesR < 2.0f) smoothedDelaySamplesR = targetDelayRNow;
+		smoothedDelaySamples  = smoothedDelaySamples  * smoothCoeff + targetDelayL * (1.0f - smoothCoeff);
+		smoothedDelaySamplesR = smoothedDelaySamplesR * smoothCoeff + targetDelayR * (1.0f - smoothCoeff);
+		if (smoothedDelaySamples  < 2.0f) smoothedDelaySamples  = targetDelayL;
+		if (smoothedDelaySamplesR < 2.0f) smoothedDelaySamplesR = targetDelayR;
+		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamplesR);
+		const float readDelayL = juce::jmax (2.0f,
+			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
+		const float readDelayR = juce::jmax (2.0f,
+			smoothedDelaySamplesR * getJitterDelayMultiplier (1, smoothedDelaySamplesR));
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1308,7 +1317,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		}
 
 		// L channel read position
-		float readPosL = (float) writePos - smoothedDelaySamples;
+		float readPosL = (float) writePos - readDelayL;
 		if (readPosL < 0.0f)
 			readPosL += (float) delayBufferLength;
 
@@ -1319,7 +1328,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		const float fracL = readPosL - static_cast<float>(static_cast<int>(readPosL));
 
 		// R channel read position (golden ratio offset)
-		float readPosR = (float) writePos - smoothedDelaySamplesR;
+		float readPosR = (float) writePos - readDelayR;
 		if (readPosR < 0.0f)
 			readPosR += (float) delayBufferLength;
 
@@ -1395,13 +1404,15 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 	{
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
-		if (jitterActive_) advanceJitter (targetDelayL, targetDelayR);
-		const float targetDelayLNow = juce::jmax (2.0f, targetDelayL * getJitterDelayMultiplier (0, targetDelayL));
-		const float targetDelayRNow = juce::jmax (2.0f, targetDelayR * getJitterDelayMultiplier (1, targetDelayR));
-		smoothedDelaySamples  = smoothedDelaySamples  * smoothCoeff + targetDelayLNow * (1.0f - smoothCoeff);
-		smoothedDelaySamplesR = smoothedDelaySamplesR * smoothCoeff + targetDelayRNow * (1.0f - smoothCoeff);
-		if (smoothedDelaySamples  < 2.0f) smoothedDelaySamples  = targetDelayLNow;
-		if (smoothedDelaySamplesR < 2.0f) smoothedDelaySamplesR = targetDelayRNow;
+		smoothedDelaySamples  = smoothedDelaySamples  * smoothCoeff + targetDelayL * (1.0f - smoothCoeff);
+		smoothedDelaySamplesR = smoothedDelaySamplesR * smoothCoeff + targetDelayR * (1.0f - smoothCoeff);
+		if (smoothedDelaySamples  < 2.0f) smoothedDelaySamples  = targetDelayL;
+		if (smoothedDelaySamplesR < 2.0f) smoothedDelaySamplesR = targetDelayR;
+		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamplesR);
+		const float readDelayL = juce::jmax (2.0f,
+			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
+		const float readDelayR = juce::jmax (2.0f,
+			smoothedDelaySamplesR * getJitterDelayMultiplier (1, smoothedDelaySamplesR));
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1418,7 +1429,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		}
 
 		// L channel read position
-		float readPosL = (float) writePos - smoothedDelaySamples;
+		float readPosL = (float) writePos - readDelayL;
 		if (readPosL < 0.0f)
 			readPosL += (float) delayBufferLength;
 
@@ -1429,7 +1440,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		const float fracL = readPosL - static_cast<float>(static_cast<int>(readPosL));
 
 		// R channel read position (half-time offset)
-		float readPosR = (float) writePos - smoothedDelaySamplesR;
+		float readPosR = (float) writePos - readDelayR;
 		if (readPosR < 0.0f)
 			readPosR += (float) delayBufferLength;
 
@@ -1529,10 +1540,11 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		// EMA smoothing — always tracks the user's nominal delay T
 		if (chaosDelayEnabled_) advanceChaosD();
 		if (chaosFilterEnabled_) advanceChaosF();
-		if (jitterActive_) advanceJitter (delaySamples, delaySamples);
-		const float jitteredDelaySamples = juce::jmax (2.0f, delaySamples * getJitterDelayMultiplier (0, delaySamples));
-		revSmoothedDelay = revSmoothedDelay * smoothCoeff + jitteredDelaySamples * (1.0f - smoothCoeff);
-		if (revSmoothedDelay < 2.0f) revSmoothedDelay = jitteredDelaySamples;
+		revSmoothedDelay = revSmoothedDelay * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
+		if (revSmoothedDelay < 2.0f) revSmoothedDelay = delaySamples;
+		if (jitterActive_) advanceJitter (revSmoothedDelay, revSmoothedDelay);
+		const float jitteredReverseDelay = juce::jmax (2.0f,
+			revSmoothedDelay * getJitterDelayMultiplier (0, revSmoothedDelay));
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1553,7 +1565,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		{
 			reverseAnchor    = writePos;
 			reverseCounter   = 0.0f;
-			const float candidateLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
+			const float candidateLen = juce::jmax (kMinChunkLen, jitteredReverseDelay);
 			reverseChunkLen  = juce::jmin (candidateLen, maxSafe);
 			reverseNeedsInit = false;
 		}
@@ -1569,7 +1581,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		// ════════════════════════════════════════════════════════════
 
 		// L channel forward read (at style-specific delay)
-		const float fwdDelayL = juce::jmax (2.0f, revSmoothedDelay * fbkRatioL);
+		const float fwdDelayL = juce::jmax (2.0f, jitteredReverseDelay * fbkRatioL);
 		float fwdReadPosL = (float) writePos - fwdDelayL;
 		if (fwdReadPosL < 0.0f) fwdReadPosL += (float) delayBufferLength;
 
@@ -1582,7 +1594,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		const float fwdDelayedL = hermite4pt (delayL[fLIdxM1], delayL[fLIdx0], delayL[fLIdx1], delayL[fLIdx2], fLFrac);
 
 		// R channel forward read (at style-specific delay)
-		const float fwdDelayR = juce::jmax (2.0f, revSmoothedDelay * fbkRatioR);
+		const float fwdDelayR = juce::jmax (2.0f, jitteredReverseDelay * fbkRatioR);
 		float fwdReadPosR = (float) writePos - fwdDelayR;
 		if (fwdReadPosR < 0.0f) fwdReadPosR += (float) delayBufferLength;
 
@@ -1700,7 +1712,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		{
 			reverseCounter  = 0.0f;
 			reverseAnchor   = writePos;
-			const float newLen = juce::jmax (kMinChunkLen, revSmoothedDelay);
+			const float newLen = juce::jmax (kMinChunkLen, jitteredReverseDelay);
 			reverseChunkLen = juce::jmin (newLen, maxSafe);
 		}
 	}
