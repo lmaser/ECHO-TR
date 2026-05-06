@@ -675,6 +675,8 @@ void ECHOTRAudioProcessor::resetJitterState() noexcept
 	jitterActive_ = false;
 	jitterDelayOut_[0] = jitterDelayOut_[1] = 0.0f;
 	jitterDelayDepthOct_[0] = jitterDelayDepthOct_[1] = 0.0f;
+	jitterDelayOffsetSamples_[0] = jitterDelayOffsetSamples_[1] = 0.0f;
+	jitterDelayOffsetReady_[0] = jitterDelayOffsetReady_[1] = false;
 	jitterTonePhase_[0] = 0.113f;
 	jitterTonePhase_[1] = 0.617f;
 	jitterToneRateHz_[0] = jitterToneRateHz_[1] = 0.0f;
@@ -715,6 +717,8 @@ void ECHOTRAudioProcessor::resetJitterState() noexcept
 
 	jitterDelayOut_[0] = jitterDelayOut_[1] = 0.0f;
 	jitterDelayDepthOct_[0] = jitterDelayDepthOct_[1] = 0.0f;
+	jitterDelayOffsetSamples_[0] = jitterDelayOffsetSamples_[1] = 0.0f;
+	jitterDelayOffsetReady_[0] = jitterDelayOffsetReady_[1] = false;
 	jitterFeedbackOut_ = 0.0f;
 	jitterFeedbackDepth_ = 0.0f;
 }
@@ -971,8 +975,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
 		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelay;
 		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamples);
-		const float readDelaySamples = juce::jmax (2.0f,
-			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
+		const float readDelaySamples = getJitteredReadDelaySamples (0, smoothedDelaySamples);
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1108,8 +1111,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
 		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelay;
 		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamples);
-		const float readDelaySamples = juce::jmax (2.0f,
-			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
+		const float readDelaySamples = getJitteredReadDelaySamples (0, smoothedDelaySamples);
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1197,8 +1199,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		smoothedDelaySamples = smoothedDelaySamples * smoothCoeff + targetDelay * (1.0f - smoothCoeff);
 		if (smoothedDelaySamples < 2.0f) smoothedDelaySamples = targetDelay;
 		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamples);
-		const float readDelaySamples = juce::jmax (2.0f,
-			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
+		const float readDelaySamples = getJitteredReadDelaySamples (0, smoothedDelaySamples);
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1297,10 +1298,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		if (smoothedDelaySamples  < 2.0f) smoothedDelaySamples  = targetDelayL;
 		if (smoothedDelaySamplesR < 2.0f) smoothedDelaySamplesR = targetDelayR;
 		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamplesR);
-		const float readDelayL = juce::jmax (2.0f,
-			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
-		const float readDelayR = juce::jmax (2.0f,
-			smoothedDelaySamplesR * getJitterDelayMultiplier (1, smoothedDelaySamplesR));
+		const float readDelayL = getJitteredReadDelaySamples (0, smoothedDelaySamples);
+		const float readDelayR = getJitteredReadDelaySamples (1, smoothedDelaySamplesR);
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1409,10 +1408,8 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		if (smoothedDelaySamples  < 2.0f) smoothedDelaySamples  = targetDelayL;
 		if (smoothedDelaySamplesR < 2.0f) smoothedDelaySamplesR = targetDelayR;
 		if (jitterActive_) advanceJitter (smoothedDelaySamples, smoothedDelaySamplesR);
-		const float readDelayL = juce::jmax (2.0f,
-			smoothedDelaySamples * getJitterDelayMultiplier (0, smoothedDelaySamples));
-		const float readDelayR = juce::jmax (2.0f,
-			smoothedDelaySamplesR * getJitterDelayMultiplier (1, smoothedDelaySamplesR));
+		const float readDelayL = getJitteredReadDelaySamples (0, smoothedDelaySamples);
+		const float readDelayR = getJitteredReadDelaySamples (1, smoothedDelaySamplesR);
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
@@ -1543,8 +1540,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		revSmoothedDelay = revSmoothedDelay * smoothCoeff + delaySamples * (1.0f - smoothCoeff);
 		if (revSmoothedDelay < 2.0f) revSmoothedDelay = delaySamples;
 		if (jitterActive_) advanceJitter (revSmoothedDelay, revSmoothedDelay);
-		const float jitteredReverseDelay = juce::jmax (2.0f,
-			revSmoothedDelay * getJitterDelayMultiplier (0, revSmoothedDelay));
+		const float jitteredReverseDelay = getJitteredReadDelaySamples (0, revSmoothedDelay);
 		smoothedInputGain  = smoothedInputGain  * kGainSmoothCoeff + inputGain  * (1.0f - kGainSmoothCoeff);
 		smoothedOutputGain = smoothedOutputGain * kGainSmoothCoeff + outputGain * (1.0f - kGainSmoothCoeff);
 		smoothedDryLevel   = smoothedDryLevel   * kGainSmoothCoeff + dryGainTarget_ * (1.0f - kGainSmoothCoeff);

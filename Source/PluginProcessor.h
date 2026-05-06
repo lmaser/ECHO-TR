@@ -499,6 +499,8 @@ private:
 	float jitterToneRateHz_[2]           = {};
 	float jitterDelayOut_[2]             = {};
 	float jitterDelayDepthOct_[2]        = {};
+	float jitterDelayOffsetSamples_[2]   = {};
+	bool  jitterDelayOffsetReady_[2]     = {};
 	juce::Random jitterDelayRng_[2];
 	juce::Random jitterDelayFastRng_[2];
 
@@ -905,6 +907,8 @@ private:
 			jitterActive_ = false;
 			jitterDelayOut_[0] = jitterDelayOut_[1] = 0.0f;
 			jitterDelayDepthOct_[0] = jitterDelayDepthOct_[1] = 0.0f;
+			jitterDelayOffsetSamples_[0] = jitterDelayOffsetSamples_[1] = 0.0f;
+			jitterDelayOffsetReady_[0] = jitterDelayOffsetReady_[1] = false;
 			jitterToneRateHz_[0] = jitterToneRateHz_[1] = 0.0f;
 			jitterFeedbackOut_ = 0.0f;
 			jitterFeedbackDepth_ = 0.0f;
@@ -996,6 +1000,35 @@ private:
 		const int lane = juce::jlimit (0, 1, channel);
 		(void) baseDelaySamples;
 		return std::exp2 (jitterDelayOut_[lane] * jitterDelayDepthOct_[lane]);
+	}
+
+	inline float getJitteredReadDelaySamples (int channel, float baseDelaySamples) noexcept
+	{
+		const int lane = juce::jlimit (0, 1, channel);
+		const float baseDelay = juce::jmax (2.0f, baseDelaySamples);
+		const float amt = juce::jlimit (0.0f, 1.0f, jitterAmountSmoothed_);
+
+		if (! jitterActive_ || amt <= 0.000001f)
+		{
+			jitterDelayOffsetSamples_[0] = jitterDelayOffsetSamples_[1] = 0.0f;
+			jitterDelayOffsetReady_[0] = jitterDelayOffsetReady_[1] = false;
+			return baseDelay;
+		}
+
+		const float targetOffset = baseDelay * (getJitterDelayMultiplier (lane, baseDelay) - 1.0f);
+		if (! jitterDelayOffsetReady_[lane])
+		{
+			jitterDelayOffsetSamples_[lane] = targetOffset;
+			jitterDelayOffsetReady_[lane] = true;
+		}
+		else
+		{
+			const float maxOffsetStep = 0.10f + 0.65f * amt;
+			const float delta = targetOffset - jitterDelayOffsetSamples_[lane];
+			jitterDelayOffsetSamples_[lane] += maxOffsetStep * std::tanh (delta / maxOffsetStep);
+		}
+
+		return juce::jmax (2.0f, baseDelay + jitterDelayOffsetSamples_[lane]);
 	}
 
 	inline float applyJitterToFeedbackMagnitude (float feedbackMagnitude) const noexcept
