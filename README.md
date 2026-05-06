@@ -61,6 +61,7 @@ Tape-style timing instability applied inside the delay engine.
 At low values it adds subtle wow/flutter movement; at high values it becomes more animated while staying smoothed and deterministic for repeatable playback.
 
 JITTER modulates delay time and feedback magnitude together, so the repeats breathe like a slightly unstable mechanical delay rather than adding a post-effect wobble.
+Short delay times add faster tonal flutter for resonator-style movement, while longer delays drift more slowly and visibly.
 0% is a true bypass.
 
 ### STYLE
@@ -217,7 +218,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - **Reverse taper**: Precomputed 129-point Tukey (raised-cosine) lookup table with linear interpolation. No per-sample trigonometry.
 - **Wet filter**: Biquad HP/LP on the wet signal. Transposed Direct Form II. Coefficients updated once per block (channel 0), shared across channels.
 - **Tilt EQ**: First-order symmetric shelf at 1 kHz. Coefficients cached with tolerance-based update.
-- **Jitter**: Deterministic smoothed sample-and-hold lanes plus drift modulation for internal delay-time and feedback movement. Bypassed at 0%.
+- **Jitter**: Deterministic smoothed slow/fast sample-and-hold lanes plus tonal flutter modulation for internal delay-time and feedback movement. Bypassed at 0%.
 - **Chaos**: Hermite cubic interpolation between random targets with per-channel quadrature drift LFO. Per-block coefficient precomputation.
 
 ### MIDI Implementation
@@ -257,4 +258,4 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Ported `drawToggleButton` with automatic text-shrinking from CAB-TR for consistent toggle rendering.
 - Added dual-stage transparent peak limiter with LIM THRESHOLD (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with 2 ms/10 ms leveler + instant/100 ms brickwall stages.
 - TIME numeric prompt and readout now support 3-decimal millisecond precision for consistency with the rest of the series.
-- Added JITTER (`JIT`) control for deterministic tape-style timing and feedback instability inside the delay engine.
+- Added JITTER (`JIT`) control for deterministic tape-style timing, tonal flutter, and feedback instability inside the delay engine.
