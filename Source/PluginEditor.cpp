@@ -73,14 +73,23 @@ static juce::String formatMidiChannelTooltip (int ch)
 // ── Env-feedback tooltip ──
 static juce::String formatAutoFbkTooltip (float tauPct, float attPct)
 {
-    return juce::String (juce::roundToInt (tauPct)) + "% | "
-         + juce::String (juce::roundToInt (attPct)) + "%";
+    return "TAU " + juce::String (juce::roundToInt (tauPct)) + "%"
+         + " | ATT " + juce::String (juce::roundToInt (attPct)) + "%";
 }
 
 static juce::String formatReverseSmoothTooltip (float smoothExp)
 {
     const float mult = std::exp2 (smoothExp);
-    return "x" + juce::String (mult, 2);
+    return "SMOOTH x" + juce::String (mult, 2);
+}
+
+static juce::String formatChaosTooltip (float amountPercent, float speedHz)
+{
+    return "AMT " + juce::String (juce::roundToInt (juce::jlimit (0.0f, 100.0f, amountPercent))) + "%"
+         + " | SPD " + juce::String (juce::jlimit (ECHOTRAudioProcessor::kChaosSpdMin,
+                                                   ECHOTRAudioProcessor::kChaosSpdMax,
+                                                   speedHz), 1)
+         + " Hz";
 }
 
 // ── Parameter listener IDs (shared by ctor + dtor) ──
@@ -290,7 +299,7 @@ void ECHOTRAudioProcessorEditor::MinimalLNF::drawPopupMenuBackground (
 
 juce::Font ECHOTRAudioProcessorEditor::MinimalLNF::getComboBoxFont (juce::ComboBox& box)
 {
-    const float h = juce::jlimit (10.0f, 18.0f, box.getHeight() * 0.55f);
+    const float h = juce::jlimit (12.0f, 24.0f, box.getHeight() * 0.59f);
     return juce::Font (juce::FontOptions (h).withStyle ("Bold"));
 }
 
@@ -863,7 +872,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     mixSlider.setNumDecimalPlacesToDisplay (1);
     tiltSlider.setNumDecimalPlacesToDisplay (1);
     panSlider.setNumDecimalPlacesToDisplay (1);
-    duckSlider.setNumDecimalPlacesToDisplay (0);
+    duckSlider.setNumDecimalPlacesToDisplay (1);
     limThresholdSlider.setNumDecimalPlacesToDisplay (1);
 
     // IO sliders start hidden (collapsible section, collapsed by default)
@@ -892,7 +901,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         chaosFilterDisplay.setText ("", juce::dontSendNotification);
         chaosFilterDisplay.setInterceptsMouseClicks (true, false);
         chaosFilterDisplay.addMouseListener (this, false);
-        chaosFilterDisplay.setTooltip (juce::String (juce::roundToInt (savedAmtF)) + "% | " + juce::String (juce::roundToInt (savedSpdF)) + " Hz");
+        chaosFilterDisplay.setTooltip (formatChaosTooltip (savedAmtF, savedSpdF));
         chaosFilterDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         chaosFilterDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         chaosFilterDisplay.setOpaque (false);
@@ -910,7 +919,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         chaosDelayDisplay.setText ("", juce::dontSendNotification);
         chaosDelayDisplay.setInterceptsMouseClicks (true, false);
         chaosDelayDisplay.addMouseListener (this, false);
-        chaosDelayDisplay.setTooltip (juce::String (juce::roundToInt (savedAmtD)) + "% | " + juce::String (juce::roundToInt (savedSpdD)) + " Hz");
+        chaosDelayDisplay.setTooltip (formatChaosTooltip (savedAmtD, savedSpdD));
         chaosDelayDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         chaosDelayDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         chaosDelayDisplay.setOpaque (false);
@@ -1073,7 +1082,7 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindSlider (duckAttachment, ECHOTRAudioProcessor::kParamDuck, duckSlider, 0.0);
     bindSlider (limThresholdAttachment, ECHOTRAudioProcessor::kParamLimThreshold, limThresholdSlider, kDefaultLimThreshold);
 
-    // Disable numeric popup for STYLE, ENGINE, and DUCK (slider-only operation)
+    // STYLE and ENGINE are discrete/model controls; the rest keep numeric prompts.
     modeSlider.setAllowNumericPopup (false);
     engineSlider.setAllowNumericPopup (false);
     engineSlider.onRightClick = [this] ()
@@ -1082,8 +1091,8 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
         if (mode > 0)  // SAT1 or SAT2
             openEnginePrompt();
     };
-    duckSlider.setAllowNumericPopup (false);
-    limThresholdSlider.setAllowNumericPopup (false);
+    duckSlider.setAllowNumericPopup (true);
+    limThresholdSlider.setAllowNumericPopup (true);
 
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
                            const char* paramId,
@@ -1607,6 +1616,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
             cachedTimeIntOnly = cachedMidiDisplay;
         else if (audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamSync)->load() > 0.5f)
             cachedTimeIntOnly = juce::String ((int) timeSlider.getValue());
+        else if ((float) timeSlider.getValue() >= 1000.0f)
+            cachedTimeIntOnly = juce::String ((float) timeSlider.getValue() / 1000.0f, 3) + "s";
         else
             cachedTimeIntOnly = juce::String ((float) timeSlider.getValue(), 3);
 
@@ -1641,7 +1652,7 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
         else
             cachedTiltIntOnly = juce::String ((int) tiltVal) + "dB";
 
-        cachedDuckIntOnly = juce::String ((int) std::lround (duckSlider.getValue())) + "%";
+        cachedDuckIntOnly = juce::String ((float) duckSlider.getValue(), 1) + "%";
     }
 
     cachedFilterTextFull  = "FILTER";
@@ -1655,9 +1666,9 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
     {
         const float limVal = (float) limThresholdSlider.getValue();
         if (std::abs (limVal) < 0.05f)
-            cachedLimThresholdIntOnly = "0dB";
+            cachedLimThresholdIntOnly = "0.0dB";
         else
-            cachedLimThresholdIntOnly = juce::String ((int) limVal) + "dB";
+            cachedLimThresholdIntOnly = juce::String (limVal, 1) + "dB";
     }
 
     const bool changed = oldTimeFull      != cachedTimeTextFull
@@ -2162,9 +2173,12 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     else if (&s == &outputSlider)    { suffix = " DB OUTPUT";  suffixShort = " DB OUT"; }
     else if (&s == &mixSlider)       { suffix = " % MIX";      suffixShort = " % MIX"; }
     else if (&s == &panSlider)       { suffix = " % PAN";      suffixShort = " %"; }
+    else if (&s == &tiltSlider)      { suffix = " DB TILT";    suffixShort = " DB TILT"; }
+    else if (&s == &duckSlider)      { suffix = " % DUCK";     suffixShort = " %"; }
+    else if (&s == &limThresholdSlider) { suffix = " DB LIM";  suffixShort = " DB LIM"; }
     const juce::String suffixText = suffix.trimStart();
     const juce::String suffixTextShort = suffixShort.trimStart();
-    const bool isPercentPrompt = (&s == &feedbackSlider || &s == &jitterSlider || &s == &mixSlider || &s == &panSlider);
+    const bool isPercentPrompt = (&s == &feedbackSlider || &s == &jitterSlider || &s == &mixSlider || &s == &panSlider || &s == &duckSlider);
 
     // Sin texto de prompt: solo input + OK/Cancel
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
@@ -2268,6 +2282,12 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             worstCaseText = "100.00";
         else if (&s == &panSlider)
             worstCaseText = "100";
+        else if (&s == &tiltSlider)
+            worstCaseText = "-6.0";
+        else if (&s == &duckSlider)
+            worstCaseText = "100.0";
+        else if (&s == &limThresholdSlider)
+            worstCaseText = "-36.0";
         else
             worstCaseText = "999.99";
 
@@ -2423,6 +2443,27 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             maxVal = 100.0;
             maxDecs = 0;
             maxLen = 3;
+        }
+        else if (&s == &tiltSlider)
+        {
+            minVal = ECHOTRAudioProcessor::kTiltMin;
+            maxVal = ECHOTRAudioProcessor::kTiltMax;
+            maxDecs = 1;
+            maxLen = 4; // "-6.0"
+        }
+        else if (&s == &duckSlider)
+        {
+            minVal = ECHOTRAudioProcessor::kDuckMin;
+            maxVal = ECHOTRAudioProcessor::kDuckMax;
+            maxDecs = 1;
+            maxLen = 5; // "100.0"
+        }
+        else if (&s == &limThresholdSlider)
+        {
+            minVal = ECHOTRAudioProcessor::kLimThresholdMin;
+            maxVal = ECHOTRAudioProcessor::kLimThresholdMax;
+            maxDecs = 1;
+            maxLen = 5; // "-36.0"
         }
 
         // Use special filter for time slider in sync mode
@@ -5019,10 +5060,11 @@ void ECHOTRAudioProcessorEditor::openChaosConfigPrompt (const char* amtParamId, 
             const float newSpd = juce::jlimit (ECHOTRAudioProcessor::kChaosSpdMin,
                                                 ECHOTRAudioProcessor::kChaosSpdMax,
                                                 std::exp (spdLogMin + juce::jlimit (0.0f, 1.0f, spdBar->value) * spdLogRange));
-            auto tip = juce::String (juce::roundToInt (newAmt)) + "% | "
-                     + juce::String (juce::roundToInt (newSpd)) + " Hz";
-            safeThis->chaosFilterDisplay.setTooltip (tip);
-            safeThis->chaosDelayDisplay.setTooltip (tip);
+            const auto tip = formatChaosTooltip (newAmt, newSpd);
+            if (juce::String (amtParamId) == ECHOTRAudioProcessor::kParamChaosAmtFilter)
+                safeThis->chaosFilterDisplay.setTooltip (tip);
+            else
+                safeThis->chaosDelayDisplay.setTooltip (tip);
         }),
         false);
 }
@@ -5533,6 +5575,8 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
     }
     
     const float ms = (float) timeSlider.getValue();
+    if (ms >= 1000.0f)
+        return juce::String (ms / 1000.0f, 3) + " s TIME";
     return juce::String (ms, 3) + " ms TIME";
 }
 
@@ -5549,6 +5593,8 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     }
     
     const float ms = (float) timeSlider.getValue();
+    if (ms >= 1000.0f)
+        return juce::String (ms / 1000.0f, 3) + "s";
     return juce::String (ms, 3) + "ms";
 }
 
@@ -5736,21 +5782,21 @@ juce::String ECHOTRAudioProcessorEditor::getPanTextShort() const
 
 juce::String ECHOTRAudioProcessorEditor::getDuckText() const
 {
-    const int pct = (int) std::lround (duckSlider.getValue());
-    return juce::String (pct) + "% DUCK";
+    const float pct = (float) duckSlider.getValue();
+    return juce::String (pct, 1) + "% DUCK";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getDuckTextShort() const
 {
-    const int pct = (int) std::lround (duckSlider.getValue());
-    return juce::String (pct) + "%";
+    const float pct = (float) duckSlider.getValue();
+    return juce::String (pct, 1) + "%";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getLimThresholdText() const
 {
     const float db = (float) limThresholdSlider.getValue();
     if (std::abs (db) < 0.05f)
-        return "0 dB LIMIT";
+        return "0.0 dB LIMIT";
     return juce::String (db, 1) + " dB LIMIT";
 }
 
@@ -5758,7 +5804,7 @@ juce::String ECHOTRAudioProcessorEditor::getLimThresholdTextShort() const
 {
     const float db = (float) limThresholdSlider.getValue();
     if (std::abs (db) < 0.05f)
-        return "0 dB LIM";
+        return "0.0 dB LIM";
     return juce::String (db, 1) + " dB LIM";
 }
 
@@ -5800,9 +5846,9 @@ namespace
     constexpr const char* kMixLegendShort = "100%";
     constexpr const char* kMixLegendInt   = "100%";
 
-    constexpr const char* kDuckLegendFull  = "100% DUCK";
-    constexpr const char* kDuckLegendShort = "100%";
-    constexpr const char* kDuckLegendInt   = "100%";
+    constexpr const char* kDuckLegendFull  = "100.0% DUCK";
+    constexpr const char* kDuckLegendShort = "100.0%";
+    constexpr const char* kDuckLegendInt   = "100.0%";
 
     constexpr int kValueAreaHeightPx = 44;
     constexpr int kValueAreaRightMarginPx = 24;
@@ -5855,10 +5901,10 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
                                            : m.btnRow1Y;
     m.availableForSliders = juce::jmax (40, sliderBottomRef - m.betweenSlidersAndButtons - m.topMargin);
 
-    // Bars below toggle: 8 IO bars when expanded (IN/OUT/TILT/FILTER/PAN/MIX/LIM_THRESHOLD/MODE_ROW),
-    // 7 main bars when collapsed (TIME/MOD/FBK/JIT/MODEL/STYLE/DUCK).
-    const int numSliders = ioExpanded ? 9 : 7;
-    const int numGaps    = ioExpanded ? 9 : 7;
+    // Match the compact-menu vertical density used by DISP/FREQ so the shared
+    // utility block keeps the same visual weight across plugins.
+    const int numSliders = ioExpanded ? 10 : 7;
+    const int numGaps    = ioExpanded ? 10 : 7;
 
     m.toggleBarH = 20;  // fixed visual height for click area
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -6087,13 +6133,18 @@ juce::Slider* ECHOTRAudioProcessorEditor::getSliderForValueAreaPoint (juce::Poin
         { 5, &modeSlider },
         { 6, &inputSlider },
         { 7, &outputSlider },
-        { 9, &mixSlider }
+        { 8, &tiltSlider },
+        { 9, &mixSlider },
+        { 10, &duckSlider }
     };
 
     for (const auto& entry : sliders)
         if (entry.valueAreaIndex < cachedValueAreas_.size()
             && cachedValueAreas_[entry.valueAreaIndex].contains (p))
             return entry.slider;
+
+    if (cachedLimThresholdValueArea_.contains (p))
+        return &limThresholdSlider;
 
     return nullptr;
 }
@@ -6314,7 +6365,10 @@ void ECHOTRAudioProcessorEditor::mouseDoubleClick (const juce::MouseEvent& e)
         else if (slider == &modSlider)        slider->setValue (1.0, juce::sendNotificationSync);
         else if (slider == &inputSlider)      slider->setValue (kDefaultInput, juce::sendNotificationSync);
         else if (slider == &outputSlider)     slider->setValue (kDefaultOutput, juce::sendNotificationSync);
+        else if (slider == &tiltSlider)       slider->setValue (kDefaultTilt, juce::sendNotificationSync);
         else if (slider == &mixSlider)        slider->setValue (kDefaultMix, juce::sendNotificationSync);
+        else if (slider == &duckSlider)       slider->setValue (ECHOTRAudioProcessor::kDuckDefault, juce::sendNotificationSync);
+        else if (slider == &limThresholdSlider) slider->setValue (kDefaultLimThreshold, juce::sendNotificationSync);
         return;
     }
 }
@@ -6529,29 +6583,29 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         if (limThresholdSlider.isVisible() && cachedLimThresholdValueArea_.getWidth() > 0)
             drawLegendForMode (cachedLimThresholdValueArea_, cachedLimThresholdTextFull, cachedLimThresholdTextShort, cachedLimThresholdIntOnly);
 
-        // Mode In / Mode Out / Sum Bus / Limiter Mode labels above combos
+        // Compact-menu combo labels.
         if (modeInCombo.isVisible())
         {
-            const auto font = juce::Font (juce::FontOptions (11.0f).withStyle ("Bold"));
+            const auto font = juce::Font (juce::FontOptions (15.0f).withStyle ("Bold"));
+            g.setColour (scheme.text);
             g.setFont (font);
             auto drawComboLabel = [&] (const juce::ComboBox& combo, const juce::String& full, const juce::String& shortTxt)
             {
-                const auto area = combo.getBounds().withHeight (14).translated (0, -15);
+                const auto area = combo.getBounds().withHeight (18).translated (0, -19);
                 const float comboW = (float) combo.getWidth();
                 juce::GlyphArrangement ga;
                 ga.addLineOfText (font, full, 0.0f, 0.0f);
                 const bool useShort = ga.getBoundingBox (0, -1, false).getWidth() > comboW;
                 g.drawText (useShort ? shortTxt : full, area, juce::Justification::centred);
             };
-            g.setColour (activeScheme.text);
             drawComboLabel (modeInCombo,  "MODE IN",  "IN");
             drawComboLabel (modeOutCombo, "MODE OUT", "OUT");
             drawComboLabel (sumBusCombo,  "SUM BUS",  "SUM");
             drawComboLabel (limModeCombo, "LIMIT",    "LIM");
-            drawComboLabel (mixModeCombo,   "MIX",    "MIX");
+            drawComboLabel (mixModeCombo, "MIX", "MIX");
             drawComboLabel (filterPosCombo, "F / T", "F/T");
-            drawComboLabel (invPolCombo,    "INV POL", "POL");
-            drawComboLabel (invStrCombo,    "INV STR", "STR");
+            drawComboLabel (invPolCombo, "INV POL", "POL");
+            drawComboLabel (invStrCombo, "INV STR", "STR");
         }
 
         // Chaos checkbox legends (when IO section is expanded)
@@ -6725,23 +6779,27 @@ void ECHOTRAudioProcessorEditor::resized()
 
         // Mode In / Mode Out / Sum Bus / Limiter Mode / MIX MODE / INV POL / INV STR — 7 combos on row 7-8
         {
-            const int modeRowPad = 10;
-            const int modeY = mainTop + 7 * step + modeRowPad;
             const int comboGap = 4;
             const int totalW = horizontalLayout.barW + horizontalLayout.valuePad + horizontalLayout.valueW;
             const int comboW = (totalW - comboGap * 3) / 4;
-            const int comboH = juce::jmax (24, verticalLayout.barH);
+            const int comboH = juce::jlimit (38, 48, verticalLayout.barH + 14);
+            const int labelOffset = 19;
+            const int comboBlockH = labelOffset + comboH + comboGap + labelOffset + comboH;
+            const int blockTopLimit = limThresholdSlider.getBottom() + verticalLayout.gapY;
+            const int blockBottomLimit = verticalLayout.chaosRowY - verticalLayout.gapY;
+            const int availableBlockH = juce::jmax (comboBlockH, blockBottomLimit - blockTopLimit);
+            const int visualTop = blockTopLimit + juce::jmax (0, (availableBlockH - comboBlockH) / 2);
+            const int modeY = visualTop + labelOffset;
             modeInCombo.setBounds  (horizontalLayout.leftX,                           modeY, comboW, comboH);
             modeOutCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap),      modeY, comboW, comboH);
             sumBusCombo.setBounds  (horizontalLayout.leftX + (comboW + comboGap) * 2,  modeY, comboW, comboH);
             limModeCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap) * 3,  modeY, comboW, comboH);
 
-            const int invY = modeY + comboH + comboGap + 15;  // +15 for legend label space
-            const int invW = (totalW - comboGap * 3) / 4;
-            mixModeCombo.setBounds  (horizontalLayout.leftX,                              invY, invW, comboH);
-            filterPosCombo.setBounds(horizontalLayout.leftX + (invW + comboGap),          invY, invW, comboH);
-            invPolCombo.setBounds   (horizontalLayout.leftX + (invW + comboGap) * 2,      invY, invW, comboH);
-            invStrCombo.setBounds   (horizontalLayout.leftX + (invW + comboGap) * 3,      invY, invW, comboH);
+            const int invY = modeY + comboH + comboGap + labelOffset;
+            mixModeCombo.setBounds  (horizontalLayout.leftX,                              invY, comboW, comboH);
+            filterPosCombo.setBounds(horizontalLayout.leftX + (comboW + comboGap),        invY, comboW, comboH);
+            invPolCombo.setBounds   (horizontalLayout.leftX + (comboW + comboGap) * 2,    invY, comboW, comboH);
+            invStrCombo.setBounds   (horizontalLayout.leftX + (comboW + comboGap) * 3,    invY, comboW, comboH);
         }
 
         // CHAOS checkboxes at chaosRowY (3rd button row above btnRow1)
