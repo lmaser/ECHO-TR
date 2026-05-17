@@ -843,7 +843,7 @@ private:
 	static constexpr float kJitterToneRange = 0.82f;
 	static constexpr float kJitterToneRateSmoothTauSeconds = 0.006f;
 	static constexpr float kJitterToneCeilHz = 12000.0f;
-	static constexpr float kJitterToneCeilSampleRateRatio = 0.22f;
+	static constexpr float kJitterToneCeilSampleRateRatio = 0.16f;
 	static constexpr float kJitterToneLiftBase = 4.0f;
 	static constexpr float kJitterToneLiftAmount = 190.0f;
 	static constexpr float kJitterToneLiftHigh = 60.0f;
@@ -853,7 +853,7 @@ private:
 	static constexpr float kJitterToneWeightShortnessPower = 0.55f;
 	static constexpr float kJitterToneWeightBase = 0.35f;
 	static constexpr float kJitterToneWeightAmount = 0.55f;
-	static constexpr float kJitterToneWeightMax = 0.78f;
+	static constexpr float kJitterToneWeightMax = 0.64f;
 	static constexpr float kJitterToneFundamentalWeight = 0.72f;
 	static constexpr float kJitterToneSecondWeight = 0.20f;
 	static constexpr float kJitterToneThirdWeight = 0.08f;
@@ -907,6 +907,12 @@ private:
 		return kJitterOffsetStepBase + kJitterOffsetStepRange * amount;
 	}
 
+	static float mapJitterAmount (float amount) noexcept
+	{
+		const float x = juce::jlimit (0.0f, 1.0f, amount);
+		return 0.52f * x + 0.48f * x * x * x * x * x;
+	}
+
 	static float softSlewToward (float current, float target, float maxStep) noexcept
 	{
 		const float delta = target - current;
@@ -932,8 +938,7 @@ private:
 	inline JitterMetrics makeJitterMetrics (float baseDelaySamples, float amount, float sr, int channel) const noexcept
 	{
 		JitterMetrics m;
-		const float a = juce::jlimit (0.0f, 1.0f, amount);
-		m.amountMapped = a;
+		m.amountMapped = mapJitterAmount (amount);
 
 		m.delayMs = juce::jmax (kJitterMinDelayMs, juce::jmax (kJitterMinDelaySamples, baseDelaySamples) * 1000.0f / sr);
 		const float delaySeconds = m.delayMs * 0.001f;
