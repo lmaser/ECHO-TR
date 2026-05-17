@@ -32,8 +32,8 @@ ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visib
 
 The value column to the right of each slider shows the current state in context:
 - TIME shows milliseconds, MIDI note name, or sync division depending on the active control source.
-- FEEDBACK shows percentage plus `FBK`.
-- JITTER shows percentage plus `JIT`.
+- FBK shows feedback percentage.
+- JIT shows jitter percentage.
 - STYLE shows `MONO`, `STEREO`, `WIDE`, `DUAL`, or `PING-PONG`.
 - MOD shows the frequency multiplier.
 - INPUT/OUTPUT show dB values.
@@ -45,7 +45,7 @@ The value column to the right of each slider shows the current state in context:
 
 Manual delay time. Overridden by MIDI or SYNC when active.  
 Smoothed per-sample via exponential moving average (80 ms time constant) for glitch-free pitch sweeps.
-The numeric prompt and readout support up to 3 decimals in ms mode.
+The numeric prompt supports up to 3 decimals in ms mode; the main readout adapts precision by range and switches to seconds for long times.
 
 When MIDI is active, TIME shows the note name instead of milliseconds. When the note releases, the delay glides back to the manual TIME knob value.
 
@@ -190,7 +190,7 @@ Each chaos target has its own toggle and shares two global controls:
 
 Uses Hermite cubic interpolation (Catmull-Rom) between random targets with a per-channel quadrature drift LFO for organic, stereo-decorrelated movement.
 
-### LIM THRESHOLD (-36 to 0 dB)
+### LIM (-36 to 0 dB)
 
 Peak limiter threshold. Sets the ceiling above which the limiter engages.
 At 0 dB (default) the limiter acts as a transparent safety net. Lower values compress the signal harder.
@@ -253,9 +253,9 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Added CHAOS engine with two independent targets: CHAOS F (filter modulation) and CHAOS D (post-delay micro-delay/decorrelation before wet coloration). Hermite cubic interpolation with quadrature drift LFO.
 - Added safety hard-limiter at +48 dBFS on all output paths (forward and reverse). Catches NaN/Inf runaways without ever engaging during normal operation.
 - INPUT/OUTPUT faders now use a -144 dB floor displayed as "-INF", with +24 dB maximum and 0 dB centered.
-- Numeric entry popup for percentage sliders: precision standardized to 1 decimal place.
+- Numeric entry popup for percentage sliders: precision standardized to 2 decimal places while the main UI keeps compact integer percentages.
 - Filter coefficient update now uses tolerance-based comparison, preventing unnecessary recalculation from floating-point noise.
 - Ported `drawToggleButton` with automatic text-shrinking from CAB-TR for consistent toggle rendering.
-- Added dual-stage transparent peak limiter with LIM THRESHOLD (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with 2 ms/10 ms leveler + instant/100 ms brickwall stages.
-- TIME numeric prompt and readout now support 3-decimal millisecond precision for consistency with the rest of the series.
+- Added dual-stage transparent peak limiter with LIM (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with 2 ms/10 ms leveler + instant/100 ms brickwall stages.
+- TIME numeric prompt supports 3-decimal millisecond precision; the main readout adapts between ms and seconds for consistency with the rest of the series.
 - Added JITTER (`JIT`) control for deterministic tape-style timing, tonal flutter, and feedback instability inside the delay engine.

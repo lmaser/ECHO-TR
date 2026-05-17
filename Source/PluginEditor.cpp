@@ -36,8 +36,22 @@ static juce::String formatGainFaderDb (float dB)
     if (isGainFaderFloor (dB))
         return "-INF dB";
     if (std::abs (dB) < 0.05f)
-        return "0 dB";
+        return "0.0 dB";
     return juce::String (dB, 1) + " dB";
+}
+
+static juce::String formatEchoTimeValue (float ms, bool spacedUnit)
+{
+    const auto unitSep = spacedUnit ? juce::String (" ") : juce::String();
+
+    if (ms >= 1000.0f)
+        return juce::String (ms / 1000.0f, 2) + unitSep + "s";
+    if (ms >= 100.0f)
+        return juce::String (ms, 1) + unitSep + "ms";
+    if (ms >= 1.0f)
+        return juce::String (ms, 2) + unitSep + "ms";
+
+    return juce::String (ms, 3) + unitSep + "ms";
 }
 
 // ── Mod slider ↔ multiplier conversion ──
@@ -654,12 +668,12 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::updateTooltipForTarget (Dra
     if (target == HP)
     {
         const int hz = juce::roundToInt (hpFreq_);
-        setTooltip ("HP: " + juce::String (hz) + " Hz");
+        setTooltip ("HP " + juce::String (hz) + " Hz");
     }
     else if (target == LP)
     {
         const int hz = juce::roundToInt (lpFreq_);
-        setTooltip ("LP: " + juce::String (hz) + " Hz");
+        setTooltip ("LP " + juce::String (hz) + " Hz");
     }
     else
     {
@@ -861,18 +875,18 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     }
 
     timeSlider.setNumDecimalPlacesToDisplay (3);
-    feedbackSlider.setNumDecimalPlacesToDisplay (1);
-    jitterSlider.setNumDecimalPlacesToDisplay (1);
+    feedbackSlider.setNumDecimalPlacesToDisplay (2);
+    jitterSlider.setNumDecimalPlacesToDisplay (2);
     modeSlider.setNumDecimalPlacesToDisplay (0);
     modSlider.setNumDecimalPlacesToDisplay (2);
     inputSlider.setNumDecimalPlacesToDisplay (1);
     outputSlider.setNumDecimalPlacesToDisplay (1);
     inputSlider.setSkewFactor (ECHOTRAudioProcessor::kGainSkew);
     outputSlider.setSkewFactor (ECHOTRAudioProcessor::kGainSkew);
-    mixSlider.setNumDecimalPlacesToDisplay (1);
+    mixSlider.setNumDecimalPlacesToDisplay (2);
     tiltSlider.setNumDecimalPlacesToDisplay (1);
     panSlider.setNumDecimalPlacesToDisplay (1);
-    duckSlider.setNumDecimalPlacesToDisplay (1);
+    duckSlider.setNumDecimalPlacesToDisplay (2);
     limThresholdSlider.setNumDecimalPlacesToDisplay (1);
 
     // IO sliders start hidden (collapsible section, collapsed by default)
@@ -1616,10 +1630,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
             cachedTimeIntOnly = cachedMidiDisplay;
         else if (audioProcessor.apvts.getRawParameterValue (ECHOTRAudioProcessor::kParamSync)->load() > 0.5f)
             cachedTimeIntOnly = juce::String ((int) timeSlider.getValue());
-        else if ((float) timeSlider.getValue() >= 1000.0f)
-            cachedTimeIntOnly = juce::String ((float) timeSlider.getValue() / 1000.0f, 3) + "s";
         else
-            cachedTimeIntOnly = juce::String ((float) timeSlider.getValue(), 3);
+            cachedTimeIntOnly = formatEchoTimeValue ((float) timeSlider.getValue(), false);
 
         cachedModIntOnly      = juce::String ((int) modSlider.getValue());
         cachedFeedbackIntOnly = juce::String ((int) std::lround (feedbackSlider.getValue() * 100.0)) + "%";
@@ -1627,9 +1639,9 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
         cachedModeIntOnly     = juce::String ((int) modeSlider.getValue());
         cachedEngineIntOnly   = getEngineTextShort();
         cachedInputIntOnly    = isGainFaderFloor ((float) inputSlider.getValue())
-                                ? "-INFdB" : juce::String ((int) inputSlider.getValue()) + "dB";
+                                ? "-INFdB" : juce::String ((float) inputSlider.getValue(), 1) + "dB";
         cachedOutputIntOnly   = isGainFaderFloor ((float) outputSlider.getValue())
-                                ? "-INFdB" : juce::String ((int) outputSlider.getValue()) + "dB";
+                                ? "-INFdB" : juce::String ((float) outputSlider.getValue(), 1) + "dB";
 
         if (mixModeCombo.getSelectedId() == 2)
         {
@@ -1638,8 +1650,8 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
             const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
             const juce::String suffix = isDry ? " DRY" : " WET";
             if (dB <= -100.0f) cachedMixIntOnly = "-INF" + suffix;
-            else if (std::abs (dB) < 0.05f) cachedMixIntOnly = "0dB" + suffix;
-            else cachedMixIntOnly = juce::String ((int) dB) + "dB" + suffix;
+            else if (std::abs (dB) < 0.05f) cachedMixIntOnly = "0.0dB" + suffix;
+            else cachedMixIntOnly = juce::String (dB, 1) + "dB" + suffix;
         }
         else
         {
@@ -1648,11 +1660,11 @@ bool ECHOTRAudioProcessorEditor::refreshLegendTextCache()
 
         const float tiltVal = (float) tiltSlider.getValue();
         if (std::abs (tiltVal) < 0.05f)
-            cachedTiltIntOnly = "0dB";
+            cachedTiltIntOnly = "0.0dB";
         else
-            cachedTiltIntOnly = juce::String ((int) tiltVal) + "dB";
+            cachedTiltIntOnly = juce::String (tiltVal, 1) + "dB";
 
-        cachedDuckIntOnly = juce::String ((float) duckSlider.getValue(), 1) + "%";
+        cachedDuckIntOnly = juce::String ((int) std::lround (duckSlider.getValue())) + "%";
     }
 
     cachedFilterTextFull  = "FILTER";
@@ -2165,8 +2177,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             suffixShort = " MS";
         }
     }
-    else if (&s == &feedbackSlider)  { suffix = " % FEEDBACK"; suffixShort = " % FBK"; }
-    else if (&s == &jitterSlider)    { suffix = " % JITTER";   suffixShort = " % JIT"; }
+    else if (&s == &feedbackSlider)  { suffix = " % FBK";      suffixShort = " % FBK"; }
+    else if (&s == &jitterSlider)    { suffix = " % JIT";      suffixShort = " % JIT"; }
     else if (&s == &modeSlider)      { suffix = " MODE";       suffixShort = " MODE"; }
     else if (&s == &modSlider)       { suffix = " X MOD";      suffixShort = " X"; }
     else if (&s == &inputSlider)     { suffix = " DB INPUT";   suffixShort = " DB IN"; }
@@ -2191,6 +2203,14 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     if (&s == &modSlider)
     {
         currentDisplay = juce::String (modSliderToMultiplier (s.getValue()), 2);
+    }
+    else if (&s == &feedbackSlider || &s == &mixSlider)
+    {
+        currentDisplay = juce::String (juce::jlimit (-100.0, 100.0, s.getValue() * 100.0), 2);
+    }
+    else if (&s == &jitterSlider || &s == &duckSlider)
+    {
+        currentDisplay = juce::String (juce::jlimit (0.0, 100.0, s.getValue()), 2);
     }
     else if (&s == &panSlider)
     {
@@ -2285,7 +2305,7 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         else if (&s == &tiltSlider)
             worstCaseText = "-6.0";
         else if (&s == &duckSlider)
-            worstCaseText = "100.0";
+            worstCaseText = "100.00";
         else if (&s == &limThresholdSlider)
             worstCaseText = "-36.0";
         else
@@ -2392,15 +2412,15 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         {
             minVal = -100.0;
             maxVal = 100.0;    // user types percent (-100% to 100%)
-            maxDecs = 1;
-            maxLen = 6; // "-100.0"
+            maxDecs = 2;
+            maxLen = 7; // "-100.00"
         }
         else if (&s == &jitterSlider)
         {
             minVal = 0.0;
             maxVal = 100.0;
-            maxDecs = 1;
-            maxLen = 5; // "100.0"
+            maxDecs = 2;
+            maxLen = 6; // "100.00"
         }
         else if (&s == &modeSlider)
         {
@@ -2434,8 +2454,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         {
             minVal = 0.0;
             maxVal = 100.0;    // user types percent
-            maxDecs = 1;
-            maxLen = 5; // "100.0"
+            maxDecs = 2;
+            maxLen = 6; // "100.00"
         }
         else if (&s == &panSlider)
         {
@@ -2455,8 +2475,8 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         {
             minVal = ECHOTRAudioProcessor::kDuckMin;
             maxVal = ECHOTRAudioProcessor::kDuckMax;
-            maxDecs = 1;
-            maxLen = 5; // "100.0"
+            maxDecs = 2;
+            maxLen = 6; // "100.00"
         }
         else if (&s == &limThresholdSlider)
         {
@@ -2745,12 +2765,12 @@ void ECHOTRAudioProcessorEditor::openFilterPrompt()
     };
 
     // HP section
-    aw->addTextEditor ("hpFreq", juce::String (juce::roundToInt (hpFreq)), juce::String());
+    aw->addTextEditor ("hpFreq", juce::String (hpFreq, 2), juce::String());
     auto* hpBar = new PromptBar (scheme, freqToNorm (hpFreq), freqToNorm (ECHOTRAudioProcessor::kFilterHpFreqDefault));
     aw->addAndMakeVisible (hpBar);
 
     // LP section
-    aw->addTextEditor ("lpFreq", juce::String (juce::roundToInt (lpFreq)), juce::String());
+    aw->addTextEditor ("lpFreq", juce::String (lpFreq, 2), juce::String());
     auto* lpBar = new PromptBar (scheme, freqToNorm (lpFreq), freqToNorm (ECHOTRAudioProcessor::kFilterLpFreqDefault));
     aw->addAndMakeVisible (lpBar);
 
@@ -2805,8 +2825,8 @@ void ECHOTRAudioProcessorEditor::openFilterPrompt()
 
         auto* hpTe = aw->getTextEditor ("hpFreq");
         auto* lpTe = aw->getTextEditor ("lpFreq");
-        float hpF = hpTe ? juce::jlimit (20.0f, 20000.0f, (float) hpTe->getText().getIntValue()) : 20.0f;
-        float lpF = lpTe ? juce::jlimit (20.0f, 20000.0f, (float) lpTe->getText().getIntValue()) : 20000.0f;
+        float hpF = hpTe ? juce::jlimit (20.0f, 20000.0f, (float) hpTe->getText().getFloatValue()) : 20.0f;
+        float lpF = lpTe ? juce::jlimit (20.0f, 20000.0f, (float) lpTe->getText().getFloatValue()) : 20000.0f;
         if (hpF > lpF) { const float mid = (hpF + lpF) * 0.5f; hpF = mid; lpF = mid; }
         if (hpTe) setP (ECHOTRAudioProcessor::kParamFilterHpFreq, hpF);
         if (lpTe) setP (ECHOTRAudioProcessor::kParamFilterLpFreq, lpF);
@@ -2894,9 +2914,9 @@ void ECHOTRAudioProcessorEditor::openFilterPrompt()
     {
         if (*syncing || te == nullptr || bar == nullptr) return;
         *syncing = true;
-        float freq = juce::jlimit (20.0f, 20000.0f, (float) te->getText().getIntValue());
+        float freq = juce::jlimit (20.0f, 20000.0f, (float) te->getText().getFloatValue());
         auto* otherTe = aw->getTextEditor (isHp ? "lpFreq" : "hpFreq");
-        const float otherFreq = otherTe ? juce::jlimit (20.0f, 20000.0f, (float) otherTe->getText().getIntValue()) : (isHp ? 20000.0f : 20.0f);
+        const float otherFreq = otherTe ? juce::jlimit (20.0f, 20000.0f, (float) otherTe->getText().getFloatValue()) : (isHp ? 20000.0f : 20.0f);
         if (isHp)
             freq = juce::jmin (freq, otherFreq);
         else
@@ -5575,9 +5595,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeText() const
     }
     
     const float ms = (float) timeSlider.getValue();
-    if (ms >= 1000.0f)
-        return juce::String (ms / 1000.0f, 3) + " s TIME";
-    return juce::String (ms, 3) + " ms TIME";
+    return formatEchoTimeValue (ms, true) + " TIME";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
@@ -5593,15 +5611,13 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     }
     
     const float ms = (float) timeSlider.getValue();
-    if (ms >= 1000.0f)
-        return juce::String (ms / 1000.0f, 3) + "s";
-    return juce::String (ms, 3) + "ms";
+    return formatEchoTimeValue (ms, false);
 }
 
 juce::String ECHOTRAudioProcessorEditor::getFeedbackText() const
 {
     const int pct = (int) std::lround (feedbackSlider.getValue() * 100.0);
-    return juce::String (pct) + "% FEEDBACK";
+    return juce::String (pct) + "% FBK";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getFeedbackTextShort() const
@@ -5613,7 +5629,7 @@ juce::String ECHOTRAudioProcessorEditor::getFeedbackTextShort() const
 juce::String ECHOTRAudioProcessorEditor::getJitterText() const
 {
     const int pct = (int) std::lround (jitterSlider.getValue());
-    return juce::String (pct) + "% JITTER";
+    return juce::String (pct) + "% JIT";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getJitterTextShort() const
@@ -5723,7 +5739,7 @@ juce::String ECHOTRAudioProcessorEditor::getMixText() const
         const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
         const juce::String suffix = isDry ? " DRY" : " WET";
         if (dB <= -100.0f) return "-INF dB" + suffix;
-        if (std::abs (dB) < 0.05f) return "0 dB" + suffix;
+        if (std::abs (dB) < 0.05f) return "0.0 dB" + suffix;
         return juce::String (dB, 1) + " dB" + suffix;
     }
     const int pct = (int) std::lround (mixSlider.getValue() * 100.0);
@@ -5739,7 +5755,7 @@ juce::String ECHOTRAudioProcessorEditor::getMixTextShort() const
         const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
         const juce::String suffix = isDry ? " DRY" : " WET";
         if (dB <= -100.0f) return "-INF" + suffix;
-        if (std::abs (dB) < 0.05f) return "0dB" + suffix;
+        if (std::abs (dB) < 0.05f) return "0.0dB" + suffix;
         return juce::String (dB, 1) + "dB" + suffix;
     }
     const int pct = (int) std::lround (mixSlider.getValue() * 100.0);
@@ -5750,7 +5766,7 @@ juce::String ECHOTRAudioProcessorEditor::getTiltText() const
 {
     const float db = (float) tiltSlider.getValue();
     if (std::abs (db) < 0.05f)
-        return "0 dB TILT";
+        return "0.0 dB TILT";
     return juce::String (db, 1) + " dB TILT";
 }
 
@@ -5758,7 +5774,7 @@ juce::String ECHOTRAudioProcessorEditor::getTiltTextShort() const
 {
     const float db = (float) tiltSlider.getValue();
     if (std::abs (db) < 0.05f)
-        return "0 dB TLT";
+        return "0.0 dB TLT";
     return juce::String (db, 1) + " dB TLT";
 }
 
@@ -5782,22 +5798,22 @@ juce::String ECHOTRAudioProcessorEditor::getPanTextShort() const
 
 juce::String ECHOTRAudioProcessorEditor::getDuckText() const
 {
-    const float pct = (float) duckSlider.getValue();
-    return juce::String (pct, 1) + "% DUCK";
+    const int pct = (int) std::lround (duckSlider.getValue());
+    return juce::String (pct) + "% DUCK";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getDuckTextShort() const
 {
-    const float pct = (float) duckSlider.getValue();
-    return juce::String (pct, 1) + "%";
+    const int pct = (int) std::lround (duckSlider.getValue());
+    return juce::String (pct) + "%";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getLimThresholdText() const
 {
     const float db = (float) limThresholdSlider.getValue();
     if (std::abs (db) < 0.05f)
-        return "0.0 dB LIMIT";
-    return juce::String (db, 1) + " dB LIMIT";
+        return "0.0 dB LIM";
+    return juce::String (db, 1) + " dB LIM";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getLimThresholdTextShort() const
@@ -5810,15 +5826,15 @@ juce::String ECHOTRAudioProcessorEditor::getLimThresholdTextShort() const
 
 namespace
 {
-    constexpr const char* kTimeLegendFull  = "5000.000 ms TIME";
-    constexpr const char* kTimeLegendShort = "5000.000ms";
-    constexpr const char* kTimeLegendInt   = "5000.000";
+    constexpr const char* kTimeLegendFull  = "5.00 s TIME";
+    constexpr const char* kTimeLegendShort = "5.00s";
+    constexpr const char* kTimeLegendInt   = "500.0ms";
 
-    constexpr const char* kFeedbackLegendFull  = "100% FEEDBACK";
+    constexpr const char* kFeedbackLegendFull  = "100% FBK";
     constexpr const char* kFeedbackLegendShort = "100% FBK";
     constexpr const char* kFeedbackLegendInt   = "100%";
 
-    constexpr const char* kJitterLegendFull  = "100% JITTER";
+    constexpr const char* kJitterLegendFull  = "100% JIT";
     constexpr const char* kJitterLegendShort = "100% JIT";
     constexpr const char* kJitterLegendInt   = "100%";
 
@@ -5846,9 +5862,9 @@ namespace
     constexpr const char* kMixLegendShort = "100%";
     constexpr const char* kMixLegendInt   = "100%";
 
-    constexpr const char* kDuckLegendFull  = "100.0% DUCK";
-    constexpr const char* kDuckLegendShort = "100.0%";
-    constexpr const char* kDuckLegendInt   = "100.0%";
+    constexpr const char* kDuckLegendFull  = "100% DUCK";
+    constexpr const char* kDuckLegendShort = "100%";
+    constexpr const char* kDuckLegendInt   = "100%";
 
     constexpr int kValueAreaHeightPx = 44;
     constexpr int kValueAreaRightMarginPx = 24;
@@ -6767,7 +6783,7 @@ void ECHOTRAudioProcessorEditor::resized()
 
     if (ioSectionExpanded_)
     {
-        // Expanded: [toggle bar] → INPUT, OUTPUT, TILT, FILTER, PAN, MIX, LIM THRESHOLD, MODE combos, CHAOS; main params hidden
+        // Expanded: [toggle bar] -> INPUT, OUTPUT, TILT, FILTER, PAN, MIX, LIM, MODE combos, CHAOS; main params hidden
         inputSlider.setBounds  (horizontalLayout.leftX, mainTop + 0 * step, horizontalLayout.barW, verticalLayout.barH);
         outputSlider.setBounds (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
         tiltSlider.setBounds   (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);

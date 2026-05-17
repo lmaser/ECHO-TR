@@ -80,18 +80,15 @@ private:
             if (owner != nullptr && (this == &owner->feedbackSlider || this == &owner->mixSlider))
             {
                 double percent = v * 100.0;
-                return juce::String (percent, 1);
+                return juce::String (percent, 2);
             }
 
             if (owner != nullptr && this == &owner->duckSlider)
-                return juce::String (v, 1);
+                return juce::String (v, 2);
 
             // For time_ms (0-2000 ms)
             if (owner != nullptr && this == &owner->timeSlider)
-            {
-                const double rounded2 = std::round (v * 100.0) / 100.0;
-                return juce::String (rounded2, 2);
-            }
+                return juce::String (v, 3);
 
             // For input/output gain / limiter threshold
             if (owner != nullptr && (this == &owner->inputSlider || this == &owner->outputSlider || this == &owner->limThresholdSlider))

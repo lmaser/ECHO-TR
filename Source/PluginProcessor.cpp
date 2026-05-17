@@ -2663,9 +2663,20 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (limMode == 2)
 	{
 		auto* chL = buffer.getWritePointer (0);
-		auto* chR = (numChannels >= 2) ? buffer.getWritePointer (1) : chL;
-		for (int i = 0; i < numSamples; ++i)
-			applyLimiter (chL[i], chR[i], nextLimiterThreshold());
+		if (numChannels >= 2)
+		{
+			auto* chR = buffer.getWritePointer (1);
+			for (int i = 0; i < numSamples; ++i)
+				applyLimiter (chL[i], chR[i], nextLimiterThreshold());
+		}
+		else
+		{
+			for (int i = 0; i < numSamples; ++i)
+			{
+				float linkedMono = chL[i];
+				applyLimiter (chL[i], linkedMono, nextLimiterThreshold());
+			}
+		}
 	}
 
 	// ── Invert Polarity / Stereo (GLOBAL mode: after Limiter GLOBAL, before safety clip) ──
