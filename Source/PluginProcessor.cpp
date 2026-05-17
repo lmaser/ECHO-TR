@@ -268,10 +268,19 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	// Bind parameter pointers
 	timeMsParam = apvts.getRawParameterValue (kParamTimeMs);
 	timeSyncParam = apvts.getRawParameterValue (kParamTimeSync);
+	modParam = apvts.getRawParameterValue (kParamMod);
 	feedbackParam = apvts.getRawParameterValue (kParamFeedback);
+
+	engineParam     = apvts.getRawParameterValue (kParamEngine);
+	sat1DriveParam  = apvts.getRawParameterValue (kParamSat1Drive);
+	sat1GritParam   = apvts.getRawParameterValue (kParamSat1Grit);
+	sat2DriveParam  = apvts.getRawParameterValue (kParamSat2Drive);
+	sat2GritParam   = apvts.getRawParameterValue (kParamSat2Grit);
+
+	duckParam = apvts.getRawParameterValue (kParamDuck);
 	jitterParam = apvts.getRawParameterValue (kParamJitter);
 	modeParam = apvts.getRawParameterValue (kParamMode);
-	modParam = apvts.getRawParameterValue (kParamMod);
+
 	inputParam = apvts.getRawParameterValue (kParamInput);
 	outputParam = apvts.getRawParameterValue (kParamOutput);
 	mixParam = apvts.getRawParameterValue (kParamMix);
@@ -298,12 +307,6 @@ ECHOTRAudioProcessor::ECHOTRAudioProcessor()
 	chaosSpdParam  = apvts.getRawParameterValue (kParamChaosSpd);
 	chaosAmtFilterParam = apvts.getRawParameterValue (kParamChaosAmtFilter);
 	chaosSpdFilterParam = apvts.getRawParameterValue (kParamChaosSpdFilter);
-	engineParam     = apvts.getRawParameterValue (kParamEngine);
-	sat1DriveParam  = apvts.getRawParameterValue (kParamSat1Drive);
-	sat1GritParam   = apvts.getRawParameterValue (kParamSat1Grit);
-	sat2DriveParam  = apvts.getRawParameterValue (kParamSat2Drive);
-	sat2GritParam   = apvts.getRawParameterValue (kParamSat2Grit);
-	duckParam      = apvts.getRawParameterValue (kParamDuck);
 	modeInParam    = apvts.getRawParameterValue (kParamModeIn);
 	modeOutParam   = apvts.getRawParameterValue (kParamModeOut);
 	sumBusParam    = apvts.getRawParameterValue (kParamSumBus);
@@ -2800,8 +2803,36 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 		kParamTimeSync, "Time Sync", getTimeSyncChoices(), kTimeSyncDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamMod, "Mod",
+		juce::NormalisableRange<float> (kModMin, kModMax, 0.0f, 1.0f), kModDefault));
+
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamFeedback, "Feedback",
 		juce::NormalisableRange<float> (kFeedbackMin, kFeedbackMax, 0.0f, 1.0f), kFeedbackDefault));
+
+	// Model (feedback-loop character: CLEAN / SAT1 / SAT2)
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamEngine, "Model",
+		juce::NormalisableRange<float> ((float) kEngineMin, (float) kEngineMax, 1.0f, 1.0f), (float) kEngineDefault));
+
+	// Saturation Drive (intensity of waveshaper, 0-100%) - independent per mode
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamSat1Drive, "Sat1 Drive",
+		juce::NormalisableRange<float> (kSatDriveMin, kSatDriveMax, 0.1f), kSatDriveDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamSat1Grit, "Sat1 Grit",
+		juce::NormalisableRange<float> (kSatGritMin, kSatGritMax, 0.1f), kSatGritDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamSat2Drive, "Sat2 Drive",
+		juce::NormalisableRange<float> (kSatDriveMin, kSatDriveMax, 0.1f), kSatDriveDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamSat2Grit, "Sat2 Grit",
+		juce::NormalisableRange<float> (kSatGritMin, kSatGritMax, 0.1f), kSatGritDefault));
+
+	// Duck (Valhalla-style 1-knob ducking: 0-100%)
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamDuck, "Duck",
+		juce::NormalisableRange<float> (kDuckMin, kDuckMax, 1.0f), kDuckDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamJitter, "Jitter",
@@ -2810,10 +2841,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamMode, "Style",
 		juce::NormalisableRange<float> ((float)kModeMin, (float)kModeMax, 1.0f, 1.0f), kModeDefault));
-
-	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamMod, "Mod",
-		juce::NormalisableRange<float> (kModMin, kModMax, 0.0f, 1.0f), kModDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamInput, "Input",
@@ -2881,30 +2908,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamChaosSpdFilter, "Chaos Filter Speed",
 		juce::NormalisableRange<float> (kChaosSpdMin, kChaosSpdMax, 0.01f, 0.3f), kChaosSpdDefault));
-
-	// Model (feedback-loop character: CLEAN / SAT1 / SAT2)
-	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamEngine, "Model",
-		juce::NormalisableRange<float> ((float) kEngineMin, (float) kEngineMax, 1.0f, 1.0f), (float) kEngineDefault));
-
-	// Saturation Drive (intensity of waveshaper, 0-100%) — independent per mode
-	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamSat1Drive, "Sat1 Drive",
-		juce::NormalisableRange<float> (kSatDriveMin, kSatDriveMax, 0.1f), kSatDriveDefault));
-	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamSat1Grit, "Sat1 Grit",
-		juce::NormalisableRange<float> (kSatGritMin, kSatGritMax, 0.1f), kSatGritDefault));
-	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamSat2Drive, "Sat2 Drive",
-		juce::NormalisableRange<float> (kSatDriveMin, kSatDriveMax, 0.1f), kSatDriveDefault));
-	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamSat2Grit, "Sat2 Grit",
-		juce::NormalisableRange<float> (kSatGritMin, kSatGritMax, 0.1f), kSatGritDefault));
-
-	// Duck (Valhalla-style 1-knob ducking: 0-100%)
-	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamDuck, "Duck",
-		juce::NormalisableRange<float> (kDuckMin, kDuckMax, 1.0f), kDuckDefault));
 
 	// Mode In / Mode Out / Sum Bus
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (

@@ -14,16 +14,29 @@ public:
 	ECHOTRAudioProcessor();
 	~ECHOTRAudioProcessor() override;
 
-	// Parameter IDs
+	// Main parameter IDs
 	static constexpr const char* kParamTimeMs     = "time_ms";
 	static constexpr const char* kParamTimeSync   = "time_sync";
+	static constexpr const char* kParamMod        = "mod";
 	static constexpr const char* kParamFeedback   = "feedback";
+
+	// Model parameter IDs
+	static constexpr const char* kParamEngine     = "engine";
+	static constexpr const char* kParamSat1Drive  = "sat1_drive";
+	static constexpr const char* kParamSat1Grit   = "sat1_grit";
+	static constexpr const char* kParamSat2Drive  = "sat2_drive";
+	static constexpr const char* kParamSat2Grit   = "sat2_grit";
+
+	static constexpr const char* kParamDuck       = "duck";
 	static constexpr const char* kParamJitter     = "jitter";
 	static constexpr const char* kParamMode       = "mode";
-	static constexpr const char* kParamMod        = "mod";
+
+	// Global IO parameter IDs
 	static constexpr const char* kParamInput      = "input";
 	static constexpr const char* kParamOutput     = "output";
 	static constexpr const char* kParamMix        = "mix";
+
+	// Performance parameter IDs
 	static constexpr const char* kParamSync       = "sync";
 	static constexpr const char* kParamMidi       = "midi";
 	static constexpr const char* kParamAutoFbk    = "auto_fbk";
@@ -44,13 +57,6 @@ public:
 	static constexpr const char* kParamTilt = "tilt";
 	static constexpr const char* kParamPan  = "pan";
 
-	// Engine parameter IDs
-	static constexpr const char* kParamEngine     = "engine";
-	static constexpr const char* kParamSat1Drive  = "sat1_drive";
-	static constexpr const char* kParamSat1Grit   = "sat1_grit";
-	static constexpr const char* kParamSat2Drive  = "sat2_drive";
-	static constexpr const char* kParamSat2Grit   = "sat2_grit";
-
 	// Chaos parameter IDs
 	static constexpr const char* kParamChaos     = "chaos";      // filter chaos (CHS F)
 	static constexpr const char* kParamChaosD    = "chaos_d";    // delay chaos  (CHS D)
@@ -58,7 +64,6 @@ public:
 	static constexpr const char* kParamChaosSpd  = "chaos_spd";
 	static constexpr const char* kParamChaosAmtFilter = "chaos_amt_filter";
 	static constexpr const char* kParamChaosSpdFilter = "chaos_spd_filter";
-	static constexpr const char* kParamDuck           = "duck";
 
 	// Mode In / Mode Out / Sum Bus parameter IDs
 	static constexpr const char* kParamModeIn  = "mode_in";
@@ -99,9 +104,31 @@ public:
 	static constexpr int kTimeSyncMax = 28;
 	static constexpr int kTimeSyncDefault = 10;
 
+	static constexpr float kModMin = 0.0f;
+	static constexpr float kModMax = 1.0f;
+	static constexpr float kModDefault = 0.5f;
+
 	static constexpr float kFeedbackMin = -1.0f;
 	static constexpr float kFeedbackMax =  1.0f;
 	static constexpr float kFeedbackDefault = 0.0f;
+
+	// Model ranges and defaults
+	static constexpr int kEngineMin     = 0;       // 0=CLEAN
+	static constexpr int kEngineMax     = 2;       // 2=SAT2
+	static constexpr int kEngineDefault = 0;       // CLEAN
+
+	// Saturation drive / grit ranges and defaults
+	static constexpr float kSatDriveMin     = 0.0f;
+	static constexpr float kSatDriveMax     = 100.0f;
+	static constexpr float kSatDriveDefault = 50.0f;
+	static constexpr float kSatGritMin      = 0.0f;
+	static constexpr float kSatGritMax      = 100.0f;
+	static constexpr float kSatGritDefault  = 0.0f;
+
+	// Duck ranges and defaults
+	static constexpr float kDuckMin     = 0.0f;
+	static constexpr float kDuckMax     = 100.0f;
+	static constexpr float kDuckDefault = 0.0f;    // off by default
 
 	static constexpr float kJitterMin = 0.0f;
 	static constexpr float kJitterMax = 100.0f;
@@ -110,10 +137,6 @@ public:
 	static constexpr int kModeMin = 0;
 	static constexpr int kModeMax = 4; // 0=MONO, 1=STEREO, 2=WIDE, 3=DUAL, 4=PING-PONG ("Style" in UI)
 	static constexpr float kModeDefault = 1.0f;
-
-	static constexpr float kModMin = 0.0f;
-	static constexpr float kModMax = 1.0f;
-	static constexpr float kModDefault = 0.5f;
 
 	static constexpr float kGainFloorDb  = -144.0f;
 	static constexpr float kGainMaxDb    =   24.0f;
@@ -172,24 +195,6 @@ public:
 	static constexpr float kChaosSpdMin     = 0.01f;   // Hz
 	static constexpr float kChaosSpdMax     = 100.0f;  // Hz
 	static constexpr float kChaosSpdDefault = 5.0f;    // Hz
-
-	// Model ranges and defaults
-	static constexpr int kEngineMin     = 0;       // 0=CLEAN
-	static constexpr int kEngineMax     = 2;       // 2=SAT2
-	static constexpr int kEngineDefault = 0;       // CLEAN
-
-	// Saturation drive / grit ranges and defaults
-	static constexpr float kSatDriveMin     = 0.0f;
-	static constexpr float kSatDriveMax     = 100.0f;
-	static constexpr float kSatDriveDefault = 50.0f;
-	static constexpr float kSatGritMin      = 0.0f;
-	static constexpr float kSatGritMax      = 100.0f;
-	static constexpr float kSatGritDefault  = 0.0f;
-
-	// Duck ranges and defaults
-	static constexpr float kDuckMin     = 0.0f;
-	static constexpr float kDuckMax     = 100.0f;
-	static constexpr float kDuckDefault = 0.0f;    // off by default
 
 	// Mode In / Mode Out / Sum Bus defaults
 	static constexpr int   kModeInOutDefault = 0;   // 0=L+R  1=MID  2=SIDE
@@ -1811,10 +1816,19 @@ private:
 
 	std::atomic<float>* timeMsParam = nullptr;
 	std::atomic<float>* timeSyncParam = nullptr;
+	std::atomic<float>* modParam = nullptr;
 	std::atomic<float>* feedbackParam = nullptr;
+
+	std::atomic<float>* engineParam      = nullptr;
+	std::atomic<float>* sat1DriveParam   = nullptr;
+	std::atomic<float>* sat1GritParam    = nullptr;
+	std::atomic<float>* sat2DriveParam   = nullptr;
+	std::atomic<float>* sat2GritParam    = nullptr;
+
+	std::atomic<float>* duckParam = nullptr;
 	std::atomic<float>* jitterParam = nullptr;
 	std::atomic<float>* modeParam = nullptr;
-	std::atomic<float>* modParam = nullptr;
+
 	std::atomic<float>* inputParam = nullptr;
 	std::atomic<float>* outputParam = nullptr;
 	std::atomic<float>* mixParam = nullptr;
@@ -1840,12 +1854,6 @@ private:
 	std::atomic<float>* chaosSpdParam    = nullptr;
 	std::atomic<float>* chaosAmtFilterParam = nullptr;
 	std::atomic<float>* chaosSpdFilterParam = nullptr;
-	std::atomic<float>* engineParam      = nullptr;
-	std::atomic<float>* sat1DriveParam   = nullptr;
-	std::atomic<float>* sat1GritParam    = nullptr;
-	std::atomic<float>* sat2DriveParam   = nullptr;
-	std::atomic<float>* sat2GritParam    = nullptr;
-	std::atomic<float>* duckParam       = nullptr;
 
 	std::atomic<float>* modeInParam   = nullptr;
 	std::atomic<float>* modeOutParam  = nullptr;

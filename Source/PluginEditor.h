@@ -120,17 +120,17 @@ private:
     };
 
     BarSlider timeSlider;
+    BarSlider modSlider;
     BarSlider feedbackSlider;
+    BarSlider engineSlider;
+    BarSlider duckSlider;
     BarSlider jitterSlider;
     BarSlider modeSlider;
-    BarSlider modSlider;
-    BarSlider engineSlider;
     BarSlider inputSlider;
     BarSlider outputSlider;
     BarSlider tiltSlider;
     BarSlider panSlider;
     BarSlider mixSlider;
-    BarSlider duckSlider;
     BarSlider limThresholdSlider;
 
     juce::ToggleButton syncButton;

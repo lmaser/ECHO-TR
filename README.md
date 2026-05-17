@@ -34,6 +34,7 @@ The value column to the right of each slider shows the current state in context:
 - TIME shows milliseconds, MIDI note name, or sync division depending on the active control source.
 - FBK shows feedback percentage.
 - JIT shows jitter percentage.
+- MODEL shows `CLEAN`, `SAT1`, or `SAT2`.
 - STYLE shows `MONO`, `STEREO`, `WIDE`, `DUAL`, or `PING-PONG`.
 - MOD shows the frequency multiplier.
 - INPUT/OUTPUT show dB values.
@@ -51,9 +52,9 @@ When MIDI is active, TIME shows the note name instead of milliseconds. When the 
 
 ### FEEDBACK (-100 to +100%)
 
-Signal fed back into the delay line. 100% = infinite sustain / self-oscillation. Negative values invert the feedback polarity, producing pitch-inverted repetitions and a different comb-filter character.  
+Signal fed back into the delay line. 100% = infinite sustain / self-oscillation. Negative values invert the feedback polarity, producing pitch-inverted repetitions and a different comb-filter character.
 Sign-preserving smoothstep mapping (`3x^2 - 2x^3`) gives finer control at both extremes, especially near +/-100% where self-oscillation lives.  
-Only a DC blocker (5 Hz high-pass) sits in the feedback path - no filtering and no saturation.
+In `CLEAN`, the feedback path stays maximally transparent apart from DC blocking and delay-time compensation. `SAT1` and `SAT2` intentionally add model-specific filtering, saturation, and dynamics inside the feedback loop.
 
 ### JITTER (0-100%)
 
@@ -61,7 +62,8 @@ Tape-style timing instability applied inside the delay engine.
 At low values it adds subtle wow/flutter movement; at high values it becomes more animated while staying smoothed and deterministic for repeatable playback.
 
 JITTER modulates delay time and feedback magnitude together, so the repeats breathe like a slightly unstable mechanical delay rather than adding a post-effect wobble.
-Short delay times add faster tonal flutter for resonator-style movement, while longer delays drift more slowly and visibly.
+The control uses a perceptual curve: the lower half stays subtle, while the upper range opens into stronger movement without bunching all usable action at the end.
+Short delay times add faster tonal flutter for resonator-style movement, with the highest tonal component gently capped to avoid harsh fizz; longer delays drift more slowly and visibly.
 0% is a true bypass.
 
 ### STYLE
@@ -111,8 +113,8 @@ Slope modes:
 
 ### SYNC
 
-Locks delay time to DAW tempo. Provides 30 musical subdivisions:  
-`1/64` through `8/1`, each with triplet, normal, and dotted variants.  
+Locks delay time to DAW tempo. Provides 29 musical subdivisions, ordered by real duration and capped at `8/1`:
+fast triplet/straight/dotted divisions through long bar-length values.
 Disabled when MIDI is active (MIDI takes priority).
 
 ### MIDI
@@ -163,12 +165,12 @@ Maps to a multiplier: `2^(value)`.
 
 The taper is proportional to chunk length (`1/16 * multiplier`) so high MIDI notes (short chunks) are never silenced by a fixed-length taper.
 
-### ENGINE
+### MODEL
 
 Delay character mode:
 - **CLEAN** (default): Transparent digital delay. No coloration.
-- **TAPE**: Applies subtle saturation and frequency-dependent rolloff to the feedback path, emulating analog tape delay.
-- **BBD**: Emulates bucket-brigade device delays with band-limited frequency response and mild distortion characteristics.
+- **SAT1**: Tape-like feedback-loop coloration with gentle saturation, high-frequency loss, and analog drift.
+- **SAT2**: BBD-like feedback-loop coloration with stronger band-limiting, compander-style behavior, and clock/noise character.
 
 ### TILT (-6 to +6 dB)
 
@@ -214,7 +216,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - **Buffer**: Power-of-2 circular buffer with bitwise AND wrapping.
 - **Interpolation**: 4-point Hermite cubic on all delay reads.
 - **Smoothing**: One-pole smoothing and short ramps for delay time, gain, mix, pan, limiter threshold, and modulation helpers where needed.
-- **Feedback path**: DC blocker only (one-pole HP at 5 Hz). Sign-preserving bipolar smoothstep mapping. No saturation and no filtering.
+- **Feedback path**: Sign-preserving bipolar smoothstep mapping with DC blocking and delay-time compensated feedback gain. `CLEAN` stays transparent; `SAT1` and `SAT2` add model-specific filtering, saturation, dynamics, and feedback-loop conditioning.
 - **Reverse taper**: Precomputed 129-point Tukey (raised-cosine) lookup table with linear interpolation. No per-sample trigonometry.
 - **Wet filter**: Biquad HP/LP on the wet signal. Transposed Direct Form II. Coefficients updated once per block (channel 0), shared across channels.
 - **Tilt EQ**: First-order symmetric shelf at 1 kHz. Coefficients cached with tolerance-based update.
@@ -248,7 +250,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 
 ### v1.4
 - Feedback is now bipolar (-100% to +100%). Negative feedback inverts polarity, producing pitch-inverted repetitions and alternate comb-filter character.
-- Added ENGINE selector: CLEAN (default), TAPE, and BBD delay character modes.
+- Added MODEL selector: CLEAN (default), SAT1, and SAT2 delay character modes.
 - Added TILT EQ (-6 to +6 dB) - first-order spectral tilt on the wet signal.
 - Added CHAOS engine with two independent targets: CHAOS F (filter modulation) and CHAOS D (post-delay micro-delay/decorrelation before wet coloration). Hermite cubic interpolation with quadrature drift LFO.
 - Added safety hard-limiter at +48 dBFS on all output paths (forward and reverse). Catches NaN/Inf runaways without ever engaging during normal operation.

@@ -822,7 +822,7 @@ void ECHOTRAudioProcessorEditor::FilterBarComponent::mouseDoubleClick (const juc
 ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
 : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    const std::array<BarSlider*, 13> barSliders { &timeSlider, &modSlider, &feedbackSlider, &jitterSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &duckSlider, &limThresholdSlider };
+    const std::array<BarSlider*, 13> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &duckSlider, &jitterSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &limThresholdSlider };
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
     crtEnabled = audioProcessor.getUiCrtEnabled();
@@ -1084,8 +1084,9 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     }
     
     bindSlider (feedbackAttachment, ECHOTRAudioProcessor::kParamFeedback, feedbackSlider, kDefaultFeedback);
-    bindSlider (jitterAttachment, ECHOTRAudioProcessor::kParamJitter, jitterSlider, kDefaultJitter);
     bindSlider (engineAttachment, ECHOTRAudioProcessor::kParamEngine, engineSlider, 0.0);
+    bindSlider (duckAttachment, ECHOTRAudioProcessor::kParamDuck, duckSlider, 0.0);
+    bindSlider (jitterAttachment, ECHOTRAudioProcessor::kParamJitter, jitterSlider, kDefaultJitter);
     bindSlider (modeAttachment, ECHOTRAudioProcessor::kParamMode, modeSlider, 0.0);
     bindSlider (modAttachment, ECHOTRAudioProcessor::kParamMod, modSlider, 0.5);
     bindSlider (inputAttachment, ECHOTRAudioProcessor::kParamInput, inputSlider, kDefaultInput);
@@ -1093,7 +1094,6 @@ ECHOTRAudioProcessorEditor::ECHOTRAudioProcessorEditor (ECHOTRAudioProcessor& p)
     bindSlider (tiltAttachment, ECHOTRAudioProcessor::kParamTilt, tiltSlider, kDefaultTilt);
     bindSlider (panAttachment,  ECHOTRAudioProcessor::kParamPan,  panSlider,  0.5);
     bindSlider (mixAttachment, ECHOTRAudioProcessor::kParamMix, mixSlider, kDefaultMix);
-    bindSlider (duckAttachment, ECHOTRAudioProcessor::kParamDuck, duckSlider, 0.0);
     bindSlider (limThresholdAttachment, ECHOTRAudioProcessor::kParamLimThreshold, limThresholdSlider, kDefaultLimThreshold);
 
     // STYLE and ENGINE are discrete/model controls; the rest keep numeric prompts.
@@ -1181,7 +1181,7 @@ ECHOTRAudioProcessorEditor::~ECHOTRAudioProcessorEditor()
     dismissEditorOwnedModalPrompts (lnf);
     setPromptOverlayActive (false);
 
-    const std::array<BarSlider*, 13> barSliders { &timeSlider, &modSlider, &feedbackSlider, &jitterSlider, &engineSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &duckSlider, &limThresholdSlider };
+    const std::array<BarSlider*, 13> barSliders { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &duckSlider, &jitterSlider, &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &limThresholdSlider };
     for (auto* slider : barSliders)
         slider->removeListener (this);
 
@@ -1275,8 +1275,8 @@ void ECHOTRAudioProcessorEditor::setPromptOverlayActive (bool shouldBeActive)
         promptOverlay.toFront (false);
 
     const bool enableControls = ! shouldBeActive;
-    const std::array<juce::Component*, 12> interactiveControls {
-        &timeSlider, &feedbackSlider, &jitterSlider, &modeSlider, &modSlider,
+    const std::array<juce::Component*, 14> interactiveControls {
+        &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &duckSlider, &jitterSlider, &modeSlider,
         &inputSlider, &outputSlider, &mixSlider,
         &syncButton, &autoFbkButton, &reverseButton, &midiButton
     };
@@ -5952,22 +5952,22 @@ void ECHOTRAudioProcessorEditor::updateCachedLayout()
     cachedHLayout_ = buildHorizontalLayout (getWidth(), getTargetValueColumnWidth());
     cachedVLayout_ = buildVerticalLayout (getHeight(), kLayoutVerticalBiasPx, ioSectionExpanded_);
 
-    const juce::Slider* sliders[11] = { &timeSlider, &modSlider, &feedbackSlider, &jitterSlider, &engineSlider, &modeSlider,
-                                        &inputSlider, &outputSlider, &tiltSlider, &mixSlider, &duckSlider };
+    const juce::Slider* sliders[11] = { &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &duckSlider, &jitterSlider,
+                                        &modeSlider, &inputSlider, &outputSlider, &tiltSlider, &mixSlider };
 
     for (int i = 0; i < 11; ++i)
     {
         if (! sliders[i]->isVisible())
         {
-            // MIX row (index 9): use dualMixBar_ bounds when SEND mode is active
-            if (i == 9 && dualMixBar_.isVisible())
+            // MIX row (index 10): use dualMixBar_ bounds when SEND mode is active
+            if (i == 10 && dualMixBar_.isVisible())
             {
                 const auto& bb = dualMixBar_.getBounds();
                 const int valueX = bb.getRight() + cachedHLayout_.valuePad;
                 const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
                 const int vw   = juce::jmin (cachedHLayout_.valueW, maxW);
                 const int y    = bb.getCentreY() - (kValueAreaHeightPx / 2);
-                cachedValueAreas_[9] = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
+                cachedValueAreas_[10] = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
                 continue;
             }
             cachedValueAreas_[(size_t) i] = {};
@@ -6145,13 +6145,14 @@ juce::Slider* ECHOTRAudioProcessorEditor::getSliderForValueAreaPoint (juce::Poin
         { 0, &timeSlider },
         { 1, &modSlider },
         { 2, &feedbackSlider },
-        { 3, &jitterSlider },
-        { 5, &modeSlider },
-        { 6, &inputSlider },
-        { 7, &outputSlider },
-        { 8, &tiltSlider },
-        { 9, &mixSlider },
-        { 10, &duckSlider }
+        { 3, &engineSlider },
+        { 4, &duckSlider },
+        { 5, &jitterSlider },
+        { 6, &modeSlider },
+        { 7, &inputSlider },
+        { 8, &outputSlider },
+        { 9, &tiltSlider },
+        { 10, &mixSlider }
     };
 
     for (const auto& entry : sliders)
@@ -6559,25 +6560,25 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
 
     {
         const juce::String* fullTexts[11]  = { &cachedTimeTextFull, &cachedModTextFull, &cachedFeedbackTextFull,
-                                               &cachedJitterTextFull, &cachedEngineTextFull, &cachedModeTextFull,
-                                               &cachedInputTextFull, &cachedOutputTextFull, &cachedTiltTextFull,
-                                               &cachedMixTextFull, &cachedDuckTextFull };
+                                               &cachedEngineTextFull, &cachedDuckTextFull, &cachedJitterTextFull,
+                                               &cachedModeTextFull, &cachedInputTextFull, &cachedOutputTextFull,
+                                               &cachedTiltTextFull, &cachedMixTextFull };
         const juce::String* shortTexts[11] = { &cachedTimeTextShort, &cachedModTextShort, &cachedFeedbackTextShort,
-                                               &cachedJitterTextShort, &cachedEngineTextShort, &cachedModeTextShort,
-                                               &cachedInputTextShort, &cachedOutputTextShort, &cachedTiltTextShort,
-                                               &cachedMixTextShort, &cachedDuckTextShort };
+                                               &cachedEngineTextShort, &cachedDuckTextShort, &cachedJitterTextShort,
+                                               &cachedModeTextShort, &cachedInputTextShort, &cachedOutputTextShort,
+                                               &cachedTiltTextShort, &cachedMixTextShort };
         const juce::String* intTexts[11] = {
             &cachedTimeIntOnly,
             &cachedModIntOnly,
             &cachedFeedbackIntOnly,
-            &cachedJitterIntOnly,
             &cachedEngineIntOnly,
+            &cachedDuckIntOnly,
+            &cachedJitterIntOnly,
             &cachedModeIntOnly,
             &cachedInputIntOnly,
             &cachedOutputIntOnly,
             &cachedTiltIntOnly,
-            &cachedMixIntOnly,
-            &cachedDuckIntOnly
+            &cachedMixIntOnly
         };
 
         for (int i = 0; i < 11; ++i)
@@ -6856,18 +6857,18 @@ void ECHOTRAudioProcessorEditor::resized()
         timeSlider.setBounds (0, 0, 0, 0);
         modSlider.setBounds (0, 0, 0, 0);
         feedbackSlider.setBounds (0, 0, 0, 0);
-        jitterSlider.setBounds (0, 0, 0, 0);
         engineSlider.setBounds (0, 0, 0, 0);
-        modeSlider.setBounds (0, 0, 0, 0);
         duckSlider.setBounds (0, 0, 0, 0);
+        jitterSlider.setBounds (0, 0, 0, 0);
+        modeSlider.setBounds (0, 0, 0, 0);
 
         timeSlider.setVisible (false);
         modSlider.setVisible (false);
         feedbackSlider.setVisible (false);
-        jitterSlider.setVisible (false);
         engineSlider.setVisible (false);
-        modeSlider.setVisible (false);
         duckSlider.setVisible (false);
+        jitterSlider.setVisible (false);
+        modeSlider.setVisible (false);
 
         reverseButton.setVisible (false);
         autoFbkButton.setVisible (false);
@@ -6879,22 +6880,22 @@ void ECHOTRAudioProcessorEditor::resized()
     }
     else
     {
-        // Collapsed: [toggle bar] → main params; IO hidden
+        // Collapsed: [toggle bar] -> TIME, MOD, FBK, MODEL, DUCK, JIT, STYLE; IO hidden
         timeSlider.setBounds     (horizontalLayout.leftX, mainTop + 0 * step, horizontalLayout.barW, verticalLayout.barH);
         modSlider.setBounds      (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
         feedbackSlider.setBounds (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
-        jitterSlider.setBounds   (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
-        engineSlider.setBounds   (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
-        modeSlider.setBounds     (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
-        duckSlider.setBounds     (horizontalLayout.leftX, mainTop + 6 * step, horizontalLayout.barW, verticalLayout.barH);
+        engineSlider.setBounds   (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
+        duckSlider.setBounds     (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
+        jitterSlider.setBounds   (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
+        modeSlider.setBounds     (horizontalLayout.leftX, mainTop + 6 * step, horizontalLayout.barW, verticalLayout.barH);
 
         timeSlider.setVisible (true);
         modSlider.setVisible (true);
         feedbackSlider.setVisible (true);
-        jitterSlider.setVisible (true);
         engineSlider.setVisible (true);
-        modeSlider.setVisible (true);
         duckSlider.setVisible (true);
+        jitterSlider.setVisible (true);
+        modeSlider.setVisible (true);
 
         inputSlider.setBounds (0, 0, 0, 0);
         outputSlider.setBounds (0, 0, 0, 0);
