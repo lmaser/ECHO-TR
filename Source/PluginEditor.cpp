@@ -2173,21 +2173,21 @@ void ECHOTRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         }
         else
         {
-            suffix = " MS";
-            suffixShort = " MS";
+            suffix = " ms";
+            suffixShort = " ms";
         }
     }
     else if (&s == &feedbackSlider)  { suffix = " % FBK";      suffixShort = " % FBK"; }
     else if (&s == &jitterSlider)    { suffix = " % JIT";      suffixShort = " % JIT"; }
     else if (&s == &modeSlider)      { suffix = " MODE";       suffixShort = " MODE"; }
-    else if (&s == &modSlider)       { suffix = " X MOD";      suffixShort = " X"; }
-    else if (&s == &inputSlider)     { suffix = " DB INPUT";   suffixShort = " DB IN"; }
-    else if (&s == &outputSlider)    { suffix = " DB OUTPUT";  suffixShort = " DB OUT"; }
+    else if (&s == &modSlider)       { suffix = " X MOD";      suffixShort = " X MOD"; }
+    else if (&s == &inputSlider)     { suffix = " dB INPUT";   suffixShort = " dB IN"; }
+    else if (&s == &outputSlider)    { suffix = " dB OUTPUT";  suffixShort = " dB OUT"; }
     else if (&s == &mixSlider)       { suffix = " % MIX";      suffixShort = " % MIX"; }
-    else if (&s == &panSlider)       { suffix = " % PAN";      suffixShort = " %"; }
-    else if (&s == &tiltSlider)      { suffix = " DB TILT";    suffixShort = " DB TILT"; }
-    else if (&s == &duckSlider)      { suffix = " % DUCK";     suffixShort = " %"; }
-    else if (&s == &limThresholdSlider) { suffix = " DB LIM";  suffixShort = " DB LIM"; }
+    else if (&s == &panSlider)       { suffix = " % PAN";      suffixShort = " % PAN"; }
+    else if (&s == &tiltSlider)      { suffix = " dB TILT";    suffixShort = " dB TILT"; }
+    else if (&s == &duckSlider)      { suffix = " % DUCK";     suffixShort = " % DUCK"; }
+    else if (&s == &limThresholdSlider) { suffix = " dB LIM";  suffixShort = " dB LIM"; }
     const juce::String suffixText = suffix.trimStart();
     const juce::String suffixTextShort = suffixShort.trimStart();
     const bool isPercentPrompt = (&s == &feedbackSlider || &s == &jitterSlider || &s == &mixSlider || &s == &panSlider || &s == &duckSlider);
@@ -5611,7 +5611,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     }
     
     const float ms = (float) timeSlider.getValue();
-    return formatEchoTimeValue (ms, false);
+    return formatEchoTimeValue (ms, false) + " TM";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getFeedbackText() const
@@ -5805,7 +5805,7 @@ juce::String ECHOTRAudioProcessorEditor::getDuckText() const
 juce::String ECHOTRAudioProcessorEditor::getDuckTextShort() const
 {
     const int pct = (int) std::lround (duckSlider.getValue());
-    return juce::String (pct) + "%";
+    return juce::String (pct) + "% DUCK";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getLimThresholdText() const
@@ -5827,7 +5827,7 @@ juce::String ECHOTRAudioProcessorEditor::getLimThresholdTextShort() const
 namespace
 {
     constexpr const char* kTimeLegendFull  = "5.00 s TIME";
-    constexpr const char* kTimeLegendShort = "5.00s";
+    constexpr const char* kTimeLegendShort = "5.00s TM";
     constexpr const char* kTimeLegendInt   = "500.0ms";
 
     constexpr const char* kFeedbackLegendFull  = "100% FBK";
@@ -5863,7 +5863,7 @@ namespace
     constexpr const char* kMixLegendInt   = "100%";
 
     constexpr const char* kDuckLegendFull  = "100% DUCK";
-    constexpr const char* kDuckLegendShort = "100%";
+    constexpr const char* kDuckLegendShort = "100% DUCK";
     constexpr const char* kDuckLegendInt   = "100%";
 
     constexpr int kValueAreaHeightPx = 44;
@@ -6227,7 +6227,7 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getReverseLabelArea() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
 {
-    return makeToggleLabelArea (midiButton, getWidth() - kToggleLegendCollisionPadPx, "MIDI", "MD");
+    return makeToggleLabelArea (midiButton, getWidth() - kToggleLegendCollisionPadPx, "MIDI", "MIDI");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getChaosLabelArea() const
@@ -6661,7 +6661,7 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const juce::String revLabel  = chooseToggleLabel (reverseButton, revCR,  "REVERSE",  "RVS");
         const juce::String autoLabel = chooseToggleLabel (autoFbkButton, autoCR, "ENV FBK", "ENV");
         const juce::String syncLabel = chooseToggleLabel (syncButton,    syncCR, "SYNC",     "SYN");
-        const juce::String midiLabel = chooseToggleLabel (midiButton,    midiCR, "MIDI",     "MD");
+        const juce::String midiLabel = chooseToggleLabel (midiButton,    midiCR, "MIDI",     "MIDI");
         
         auto drawToggleLegend = [&] (const juce::Rectangle<int>& labelArea,
                                      const juce::String& labelText,

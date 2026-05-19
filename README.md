@@ -28,7 +28,7 @@ ECHO-TR uses a text-based UI with horizontal bar sliders. All controls are visib
 - **Filter bar**: Visible in the INPUT/OUTPUT/MIX section. Click to open the HP/LP filter configuration prompt with frequency, slope, and enable/disable controls for each filter.
 - **Gear icon** (top-right): Opens the info popup with version, credits, and a link to Graphics settings.
 - **Graphics popup**: Toggle CRT post-processing effect and switch between default/custom colour palettes.
-- **Resize**: Drag the bottom-right corner. Size persists across sessions.
+- **Resize**: Drag the bottom-right corner. Editor width persists across sessions.
 
 The value column to the right of each slider shows the current state in context:
 - TIME shows milliseconds, MIDI note name, or sync division depending on the active control source.
@@ -56,12 +56,12 @@ Signal fed back into the delay line. 100% = infinite sustain / self-oscillation.
 Sign-preserving smoothstep mapping (`3x^2 - 2x^3`) gives finer control at both extremes, especially near +/-100% where self-oscillation lives.  
 In `CLEAN`, the feedback path stays maximally transparent apart from DC blocking and delay-time compensation. `SAT1` and `SAT2` intentionally add model-specific filtering, saturation, and dynamics inside the feedback loop.
 
-### JITTER (0-100%)
+### JIT (Jitter, 0-100%)
 
 Tape-style timing instability applied inside the delay engine.
 At low values it adds subtle wow/flutter movement; at high values it becomes more animated while staying smoothed and deterministic for repeatable playback.
 
-JITTER modulates delay time and feedback magnitude together, so the repeats breathe like a slightly unstable mechanical delay rather than adding a post-effect wobble.
+JIT modulates delay time and feedback magnitude together, so the repeats breathe like a slightly unstable mechanical delay rather than adding a post-effect wobble.
 The control uses a perceptual curve: the lower half stays subtle, while the upper range opens into stronger movement without bunching all usable action at the end.
 Short delay times add faster tonal flutter for resonator-style movement, with the highest tonal component gently capped to avoid harsh fizz; longer delays drift more slowly and visibly.
 0% is a true bypass.
@@ -260,4 +260,4 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Ported `drawToggleButton` with automatic text-shrinking from CAB-TR for consistent toggle rendering.
 - Added dual-stage transparent peak limiter with LIM (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with 2 ms/10 ms leveler + instant/100 ms brickwall stages.
 - TIME numeric prompt supports 3-decimal millisecond precision; the main readout adapts between ms and seconds for consistency with the rest of the series.
-- Added JITTER (`JIT`) control for deterministic tape-style timing, tonal flutter, and feedback instability inside the delay engine.
+- Added `JIT` control for deterministic tape-style timing, tonal flutter, and feedback instability inside the delay engine.
