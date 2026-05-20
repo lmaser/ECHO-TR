@@ -1881,7 +1881,7 @@ private:
 
 	// UI state atomics
 	std::atomic<int> uiEditorWidth { 360 };
-	std::atomic<int> uiEditorHeight { 480 };
+	std::atomic<int> uiEditorHeight { 752 };
 	std::atomic<int> uiUseCustomPalette { 0 };
 	std::atomic<int> uiCrtEnabled { 0 };
 	std::array<std::atomic<juce::uint32>, 2> uiCustomPalette {
