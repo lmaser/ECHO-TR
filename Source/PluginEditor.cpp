@@ -1274,17 +1274,8 @@ void ECHOTRAudioProcessorEditor::setPromptOverlayActive (bool shouldBeActive)
     if (shouldBeActive)
         promptOverlay.toFront (false);
 
-    const bool enableControls = ! shouldBeActive;
-    const std::array<juce::Component*, 14> interactiveControls {
-        &timeSlider, &modSlider, &feedbackSlider, &engineSlider, &duckSlider, &jitterSlider, &modeSlider,
-        &inputSlider, &outputSlider, &mixSlider,
-        &syncButton, &autoFbkButton, &reverseButton, &midiButton
-    };
-    for (auto* control : interactiveControls)
-        control->setEnabled (enableControls);
-
-    if (resizerCorner != nullptr)
-        resizerCorner->setEnabled (enableControls);
+    // promptOverlay intercepts mouse input while the modal prompt is open. Do not disable
+    // the underlying controls here, otherwise overlay dimming stacks with disabled alpha.
 
     repaint();
 
