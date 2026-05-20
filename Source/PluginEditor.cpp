@@ -5895,12 +5895,15 @@ ECHOTRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     const int nominalBarH = juce::jlimit (14, 120, m.rhythm * 6);
     const int nominalGapY = juce::jmax (4, m.rhythm * 4);
 
-    m.titleH = juce::jlimit (24, 56, m.rhythm * 4);
+    constexpr int kCompactTitleMaxHeightPx = 48;
+    constexpr int kCompactToggleTopY = 85;
+
+    m.titleH = juce::jlimit (24, kCompactTitleMaxHeightPx, m.rhythm * 4);
     m.titleAreaH = m.titleH + 4;
     const int computedTitleTopPad = 6 + biasY;
     m.titleTopPad = (computedTitleTopPad > 8) ? computedTitleTopPad : 8;
     const int titleGap = m.titleTopPad;
-    m.topMargin = m.titleTopPad + m.titleAreaH + titleGap;
+    m.topMargin = juce::jmax (kCompactToggleTopY, m.titleTopPad + m.titleAreaH + titleGap);
     m.betweenSlidersAndButtons = juce::jmax (8, m.rhythm * 2);
     m.bottomMargin = m.titleTopPad;
 
@@ -6466,26 +6469,33 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
         const int titleW = juce::jmax (0, juce::jmin (contentW, W - titleX));
         const int titleY = verticalLayout.titleTopPad;
 
-        auto titleFont = g.getCurrentFont();
-        titleFont.setHeight ((float) titleH);
-        g.setFont (titleFont);
-
         const auto titleArea = juce::Rectangle<int> (titleX, titleY, titleW, titleH + kTitleAreaExtraHeightPx);
         const juce::String titleText ("ECHO-TR");
-
-        g.drawText (titleText, titleArea.getX(), titleArea.getY(), titleArea.getWidth(), titleArea.getHeight(), juce::Justification::left, false);
-
-        // If horizontal space is too tight, fix only the base title text by overdrawing a fitted version.
         const auto infoIconArea = getInfoIconArea();
-        const int titleRightLimit = infoIconArea.getX() - kTitleRightGapToInfoPx;
+        const juce::String versionText = juce::String ("v") + InfoContent::version;
+
+        auto titleFont = g.getCurrentFont();
+        titleFont.setHeight ((float) titleH);
+
+        auto versionFont = juce::Font (juce::FontOptions (juce::jmax (10.0f, (float) titleH * UiMetrics::versionFontRatio)).withStyle ("Bold"));
+        const int versionH = juce::jlimit (10, infoIconArea.getHeight(), (int) std::round ((double) infoIconArea.getHeight() * UiMetrics::versionHeightRatio));
+        const int versionY = infoIconArea.getBottom() - versionH;
+        const int versionRight = infoIconArea.getX() - kVersionGapPx;
+        const int measuredVersionW = stringWidth (versionFont, versionText) + 2;
+        const int maxVersionW = juce::jmax (0, versionRight - titleArea.getX());
+        const int versionW = juce::jmin (maxVersionW, juce::jmax (28, measuredVersionW));
+        const int versionX = juce::jmax (titleArea.getX(), versionRight - versionW);
+
+        // Fit against the version label, not just the gear icon, so ECHO-TR cannot collide with v1.4.
+        const int titleRightLimit = versionX - kTitleRightGapToInfoPx;
         const int titleMaxW = juce::jmax (0, titleRightLimit - titleArea.getX());
         const int titleBaseW = stringWidth (titleFont, titleText);
         const int originalTitleLimitW = juce::jmax (0, juce::jmin (titleW, barW));
         const bool originalWouldClipTitle = titleBaseW > originalTitleLimitW;
 
+        auto fittedTitleFont = titleFont;
         if (titleMaxW > 0 && (originalWouldClipTitle || titleBaseW > titleMaxW))
         {
-            auto fittedTitleFont = titleFont;
             fittedTitleFont.setHorizontalScale (1.0f);
             const float titleMinScale = juce::jlimit (0.4f, 1.0f, 12.0f / (float) titleH);
             for (float s = 1.0f; s >= titleMinScale; s -= 0.025f)
@@ -6495,27 +6505,18 @@ void ECHOTRAudioProcessorEditor::paint (juce::Graphics& g)
                     break;
             }
 
-            g.setColour (scheme.text);
-            g.setFont (fittedTitleFont);
-            g.drawText (titleText, titleArea.getX(), titleArea.getY(), titleMaxW, titleArea.getHeight(), juce::Justification::left, false);
         }
 
         g.setColour (scheme.text);
+        g.setFont (fittedTitleFont);
+        g.drawText (titleText, titleArea.getX(), titleArea.getY(),
+                    titleMaxW > 0 ? juce::jmin (titleArea.getWidth(), titleMaxW) : titleArea.getWidth(),
+                    titleArea.getHeight(), juce::Justification::left, false);
 
-        auto versionFont = juce::Font (juce::FontOptions (juce::jmax (10.0f, (float) titleH * UiMetrics::versionFontRatio)).withStyle ("Bold"));
         g.setFont (versionFont);
 
-        const int versionH = juce::jlimit (10, infoIconArea.getHeight(), (int) std::round ((double) infoIconArea.getHeight() * UiMetrics::versionHeightRatio));
-        const int versionY = infoIconArea.getBottom() - versionH;
-
-        const int desiredVersionW = juce::jlimit (28, 64, (int) std::round ((double) infoIconArea.getWidth() * UiMetrics::versionDesiredWidthRatio));
-        const int versionRight = infoIconArea.getX() - kVersionGapPx;
-        const int versionLeftLimit = titleArea.getX();
-        const int versionX = juce::jmax (versionLeftLimit, versionRight - desiredVersionW);
-        const int versionW = juce::jmax (0, versionRight - versionX);
-
         if (versionW > 0)
-            g.drawText (juce::String ("v") + InfoContent::version,
+            g.drawText (versionText,
                         versionX, versionY, versionW, versionH,
                         juce::Justification::bottomRight, false);
 
