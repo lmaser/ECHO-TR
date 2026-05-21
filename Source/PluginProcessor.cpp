@@ -460,7 +460,6 @@ void ECHOTRAudioProcessor::changeProgramName (int index, const juce::String& new
 //==============================================================================
 void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-	juce::ignoreUnused (samplesPerBlock);
 	currentSampleRate = sampleRate;
 	cachedDelaySmoothCoeff = smoothCoeffFromTau (sampleRate, kDelaySmoothTauSeconds);
 	
@@ -474,6 +473,8 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	delayBufferLength = powerOf2;
 	delayBuffer.setSize (2, delayBufferLength);
 	delayBuffer.clear();
+	sumBusDryBuffer.setSize (2, juce::jmax (samplesPerBlock, 8192));
+	sumBusDryBuffer.clear();
 	delayBufferWritePos = 0;
 	feedbackState[0] = 0.0f;
 	feedbackState[1] = 0.0f;
@@ -2374,11 +2375,13 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	limThreshTargetLin_ = limThreshLin;
 	limThreshStep_ = (limThreshTargetLin_ - limThreshLin_) / static_cast<float> (juce::jmax (1, numSamples));
 
-	// Save original dry signal for Sum Bus reconstruction
-	juce::AudioBuffer<float> dryBuffer;
+	// Save original dry signal for Sum Bus reconstruction.
 	if (sumBusVal != 0 && numChannels >= 2)
 	{
-		dryBuffer.makeCopyOf (buffer);
+		if (sumBusDryBuffer.getNumChannels() < numChannels || sumBusDryBuffer.getNumSamples() < numSamples)
+			sumBusDryBuffer.setSize (numChannels, numSamples, false, false, true);
+		for (int ch = 0; ch < numChannels; ++ch)
+			sumBusDryBuffer.copyFrom (ch, 0, buffer, ch, 0, numSamples);
 	}
 
 	// Mode In: M/S encode input buffer before delay processing
@@ -2578,8 +2581,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		auto* chL = buffer.getWritePointer (0);
 		auto* chR = buffer.getWritePointer (1);
-		const auto* dL = dryBuffer.getReadPointer (0);
-		const auto* dR = dryBuffer.getReadPointer (1);
+		const auto* dL = sumBusDryBuffer.getReadPointer (0);
+		const auto* dR = sumBusDryBuffer.getReadPointer (1);
 
 		for (int i = 0; i < numSamples; ++i)
 		{

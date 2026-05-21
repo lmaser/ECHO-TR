@@ -1390,10 +1390,8 @@ void ECHOTRAudioProcessorEditor::timerCallback()
         crtTime += 0.1f;              // ~10 Hz tick
         crtEffect.setTime (crtTime);
 
-        // Skip the timer-driven repaint while a slider is actively
-        // dragged — sliderValueChanged already triggers a repaint that
-        // will pick up the updated crtTime.  Avoids an expensive
-        // duplicate full-image CRT pass per timer tick during drag.
+        // Avoid a duplicate full-image CRT pass while a slider drag is already
+        // causing repaints, but keep CRT noise/flicker animated at rest.
         const bool anySliderDragging = timeSlider.isMouseButtonDown()
                                     || feedbackSlider.isMouseButtonDown()
                                     || jitterSlider.isMouseButtonDown()

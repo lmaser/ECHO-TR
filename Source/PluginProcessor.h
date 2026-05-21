@@ -326,6 +326,7 @@ private:
 	float cachedDelaySmoothCoeff = 0.0f;   // precomputed EMA coeff at current SR
 	
 	juce::AudioBuffer<float> delayBuffer;
+	juce::AudioBuffer<float> sumBusDryBuffer;
 	int delayBufferWritePos = 0;
 	int delayBufferLength = 0;
 	float smoothedDelaySamples = 0.0f;
