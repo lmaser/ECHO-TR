@@ -783,7 +783,7 @@ private:
 	// Per-sample duck envelope follower — returns feedback/wet gains [0,1]
 	static constexpr float kDuckSmoothCoeff_ = 0.9955f; // same as kGainSmoothCoeff (~5 ms @ 44.1 kHz)
 	static constexpr float kDuckMaxRangeDb_ = 72.0f;
-	static constexpr float kDuckMaxDetectorDriveDb_ = 24.0f;
+	static constexpr float kDuckMaxDetectorDriveDb_ = 12.0f;
 	static constexpr float kDbPerOctave_ = 6.020599913f;
 	static inline float smoothstep01 (float x) noexcept
 	{
@@ -795,7 +795,7 @@ private:
 	{
 		smoothedDuck_ = smoothedDuck_ * kDuckSmoothCoeff_ + duckAmount_ * (1.0f - kDuckSmoothCoeff_);
 		const float depthNorm = smoothstep01 (smoothedDuck_);
-		const float driveNorm = smoothedDuck_ * smoothedDuck_;
+		const float driveNorm = smoothstep01 (smoothedDuck_);
 		const float detectorDrive = std::exp2 ((kDuckMaxDetectorDriveDb_ * driveNorm) / kDbPerOctave_);
 		const float peakIn = juce::jmin (1.0f, juce::jmax (std::abs (inL), std::abs (inR)) * detectorDrive);
 		const float dCoeff = (peakIn > duckEnvelope_) ? duckAttackCoeff_ : duckReleaseCoeff_;
