@@ -1015,7 +1015,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 			{
 				const float inputR = channelR[i];
 				const float delayedR = hermite4pt (delayR[idxM1], delayR[idx0], delayR[idx1], delayR[idx2], frac);
-				const float duckGain = advanceDuck (inputL, inputR);
+				const auto duckGains = advanceDuck (inputL * smoothedInputGain, inputR * smoothedInputGain);
 				float fbkL = delayedL * fbkSign;
 				float fbkR = delayedR * fbkSign;
 
@@ -1030,8 +1030,8 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 #ifdef ECHOTR_FBK_DUMP
 				dbgPostFbkMagPk_ = juce::jmax (std::abs (fbkL), std::abs (fbkR));
 #endif
-				fbkL *= duckGain;
-				fbkR *= duckGain;
+				fbkL *= duckGains.feedback;
+				fbkR *= duckGains.feedback;
 
 				const float wrL = sanitiseDelay (inputL * smoothedInputGain + fbkL);
 				const float wrR = sanitiseDelay (inputR * smoothedInputGain + fbkR);
@@ -1049,8 +1049,8 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
 				if (!tiltPre_)  tiltWetSample (wetL, wetR);
 				if (!filterPre_) filterWetSample (wetL, wetR);
-				float wL = wetL * smoothedOutputGain * duckGain;
-				float wR = wetR * smoothedOutputGain * duckGain;
+				float wL = wetL * smoothedOutputGain * duckGains.wet;
+				float wR = wetR * smoothedOutputGain * duckGains.wet;
 				applyWetDcBlock (wL, wR);
 				if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 				channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
@@ -1063,11 +1063,11 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 			}
 			else
 			{
-				const float duckGain = advanceDuck (inputL, inputL);
+				const auto duckGains = advanceDuck (inputL * smoothedInputGain, inputL * smoothedInputGain);
 				float fbkL = delayedL * fbkSign;
 				{ float fbkR = fbkL; applyEngineToFeedback (fbkL, fbkR); applyFeedbackDcBlock (fbkL, fbkR); }
 				fbkL *= fbkMag;
-				fbkL *= duckGain;
+				fbkL *= duckGains.feedback;
 				delayL[writePos] = sanitiseDelay (inputL * smoothedInputGain + fbkL);
 				float wetL = delayedL, wetR = delayedL;
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
@@ -1076,7 +1076,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
 				if (!tiltPre_)  tiltWetSample (wetL, wetR);
 				if (!filterPre_) filterWetSample (wetL, wetR);
-				float wL = wetL * smoothedOutputGain * duckGain;
+				float wL = wetL * smoothedOutputGain * duckGains.wet;
 				float wR = wL;
 				applyWetDcBlock (wL, wR);
 				if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
@@ -1146,13 +1146,13 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : inputL;
 		const float inputMid = (inputL + inputR) * 0.5f;
-		const float duckGain = advanceDuck (inputL, inputR);
+		const auto duckGains = advanceDuck (inputL * smoothedInputGain, inputR * smoothedInputGain);
 		
 		float fbkMono = delayed * fbkSign;
 
 		{ float fbkR = fbkMono; applyEngineToFeedback (fbkMono, fbkR); applyFeedbackDcBlock (fbkMono, fbkR); }
 		fbkMono *= fbkMag;
-		fbkMono *= duckGain;
+		fbkMono *= duckGains.feedback;
 
 		const float toWrite = sanitiseDelay (inputMid * smoothedInputGain + fbkMono);
 		delayL[writePos] = toWrite;
@@ -1165,8 +1165,8 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
 		if (!tiltPre_)  tiltWetSample (wetL, wetR);
 		if (!filterPre_) filterWetSample (wetL, wetR);
-		float wL = wetL * smoothedOutputGain * duckGain;
-		float wR = wetR * smoothedOutputGain * duckGain;
+		float wL = wetL * smoothedOutputGain * duckGains.wet;
+		float wR = wetR * smoothedOutputGain * duckGains.wet;
 		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
@@ -1234,7 +1234,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
 		const float inputMono = (inputL + inputR) * 0.5f;
-		const float duckGain = advanceDuck (inputL, inputR);
+		const auto duckGains = advanceDuck (inputL * smoothedInputGain, inputR * smoothedInputGain);
 		const float fbkMag  = applyJitterToFeedbackMagnitude (smoothedFeedback_);
 		
 		float fbkPpL = delayedR * fbkSign;
@@ -1244,8 +1244,8 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		applyFeedbackDcBlock (fbkPpL, fbkPpR);
 		fbkPpL *= fbkMag;
 		fbkPpR *= fbkMag;
-		fbkPpL *= duckGain;
-		fbkPpR *= duckGain;
+		fbkPpL *= duckGains.feedback;
+		fbkPpR *= duckGains.feedback;
 
 		delayL[writePos] = sanitiseDelay (inputMono * smoothedInputGain + fbkPpL);
 		delayR[writePos] = sanitiseDelay (fbkPpR);
@@ -1257,8 +1257,8 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
 		if (!tiltPre_)  tiltWetSample (wetL, wetR);
 		if (!filterPre_) filterWetSample (wetL, wetR);
-		float wL = wetL * smoothedOutputGain * duckGain;
-		float wR = wetR * smoothedOutputGain * duckGain;
+		float wL = wetL * smoothedOutputGain * duckGains.wet;
+		float wR = wetR * smoothedOutputGain * duckGains.wet;
 		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
@@ -1346,7 +1346,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
-		const float duckGain = advanceDuck (inputL, inputR);
+		const auto duckGains = advanceDuck (inputL * smoothedInputGain, inputR * smoothedInputGain);
 
 		// Cross-feedback: L reads from R delay, R reads from L delay
 		// Both channels receive their own stereo input
@@ -1358,8 +1358,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		applyFeedbackDcBlock (fbkL, fbkR);
 		fbkL *= fbkMag;
 		fbkR *= fbkMag;
-		fbkL *= duckGain;
-		fbkR *= duckGain;
+		fbkL *= duckGains.feedback;
+		fbkR *= duckGains.feedback;
 
 		delayL[writePos] = sanitiseDelay (inputL * smoothedInputGain + fbkL);
 		delayR[writePos] = sanitiseDelay (inputR * smoothedInputGain + fbkR);
@@ -1371,8 +1371,8 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
 		if (!tiltPre_)  tiltWetSample (wetL, wetR);
 		if (!filterPre_) filterWetSample (wetL, wetR);
-		float wL = wetL * smoothedOutputGain * duckGain;
-		float wR = wetR * smoothedOutputGain * duckGain;
+		float wL = wetL * smoothedOutputGain * duckGains.wet;
+		float wR = wetR * smoothedOutputGain * duckGains.wet;
 		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
@@ -1456,7 +1456,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
-		const float duckGain = advanceDuck (inputL, inputR);
+		const auto duckGains = advanceDuck (inputL * smoothedInputGain, inputR * smoothedInputGain);
 
 		// Independent feedback: no cross-feedback between L and R
 		const float fbkMag  = applyJitterToFeedbackMagnitude (smoothedFeedback_);
@@ -1467,8 +1467,8 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		applyFeedbackDcBlock (fbkL, fbkR);
 		fbkL *= fbkMag;
 		fbkR *= fbkMag;
-		fbkL *= duckGain;
-		fbkR *= duckGain;
+		fbkL *= duckGains.feedback;
+		fbkR *= duckGains.feedback;
 
 		delayL[writePos] = sanitiseDelay (inputL * smoothedInputGain + fbkL);
 		delayR[writePos] = sanitiseDelay (inputR * smoothedInputGain + fbkR);
@@ -1480,8 +1480,8 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		if (engineMode_ > 0) applyAnalogOutputSat (wetL, wetR);
 		if (!tiltPre_)  tiltWetSample (wetL, wetR);
 		if (!filterPre_) filterWetSample (wetL, wetR);
-		float wL = wetL * smoothedOutputGain * duckGain;
-		float wR = wetR * smoothedOutputGain * duckGain;
+		float wL = wetL * smoothedOutputGain * duckGains.wet;
+		float wR = wetR * smoothedOutputGain * duckGains.wet;
 		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 		if (channelL != nullptr) channelL[i] = inputL * smoothedDryLevel + wL * smoothedWetLevel;
@@ -1574,7 +1574,7 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 
 		const float inputL = channelL != nullptr ? channelL[i] : 0.0f;
 		const float inputR = channelR != nullptr ? channelR[i] : 0.0f;
-		const float duckGain = advanceDuck (inputL, inputR);
+		const auto duckGains = advanceDuck (inputL * smoothedInputGain, inputR * smoothedInputGain);
 
 		// ════════════════════════════════════════════════════════════
 		// FEEDBACK PATH: forward read (style-aware per-channel delays)
@@ -1624,8 +1624,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		applyFeedbackDcBlock (fbkL, fbkR);
 		fbkL *= fbkMag;
 		fbkR *= fbkMag;
-		fbkL *= duckGain;
-		fbkR *= duckGain;
+		fbkL *= duckGains.feedback;
+		fbkR *= duckGains.feedback;
 
 		// Write to buffer (style-aware input routing)
 		if (monoInput)
@@ -1687,8 +1687,8 @@ void ECHOTRAudioProcessor::processReverseDelay (juce::AudioBuffer<float>& buffer
 		if (!tiltPre_)  tiltWetSample (wetL, wetR);
 		if (!filterPre_) filterWetSample (wetL, wetR);
 
-		float wL = wetL * smoothedOutputGain * duckGain;
-		float wR = wetR * smoothedOutputGain * duckGain;
+		float wL = wetL * smoothedOutputGain * duckGains.wet;
+		float wR = wetR * smoothedOutputGain * duckGains.wet;
 		applyWetDcBlock (wL, wR);
 		if (wetLimiterActive_) applyLimiter (wL, wR, nextLimiterThreshold());
 
@@ -1845,7 +1845,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	jitterActive_           = jitterTargetNorm_ > 0.000001f
 	                       || jitterAmountSmoothed_ > 0.000001f
 	                       || jitterParamSmoothReady_;
-	duckAmount_             = loadAtomicOrDefault (duckParam, kDuckDefault) * 0.01f;  // 0-100 → 0-1
+	duckAmount_ = loadAtomicOrDefault (duckParam, kDuckDefault) * 0.01f;  // 0-100 → 0-1
 	
 	// Fast dB→linear (std::exp2 instead of std::pow via Decibels::decibelsToGain)
 	const float inputGain  = gainFaderDecibelsToGain (inputGainDb);

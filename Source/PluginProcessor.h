@@ -774,16 +774,34 @@ private:
 		sampleR *= gr;
 	}
 
-	// Per-sample duck envelope follower — returns duck gain [0,1]
-	static constexpr float kDuckSmoothCoeff_ = 0.9955f; // same as kGainSmoothCoeff (~5 ms @ 44.1 kHz)
-	inline float advanceDuck (float inL, float inR) noexcept
+	struct DuckGains
 	{
-		const float effectiveDuck = 1.0f - std::pow (1.0f - duckAmount_, 1.25f);
-		smoothedDuck_ = smoothedDuck_ * kDuckSmoothCoeff_ + effectiveDuck * (1.0f - kDuckSmoothCoeff_);
-		const float peakIn = juce::jmax (std::abs (inL), std::abs (inR));
+		float feedback = 1.0f;
+		float wet = 1.0f;
+	};
+
+	// Per-sample duck envelope follower — returns feedback/wet gains [0,1]
+	static constexpr float kDuckSmoothCoeff_ = 0.9955f; // same as kGainSmoothCoeff (~5 ms @ 44.1 kHz)
+	static constexpr float kDuckMaxRangeDb_ = 72.0f;
+	static constexpr float kDuckMaxDetectorDriveDb_ = 24.0f;
+	static constexpr float kDbPerOctave_ = 6.020599913f;
+	inline DuckGains advanceDuck (float inL, float inR) noexcept
+	{
+		smoothedDuck_ = smoothedDuck_ * kDuckSmoothCoeff_ + duckAmount_ * (1.0f - kDuckSmoothCoeff_);
+		const float depthNorm = juce::jlimit (0.0f, 1.0f, smoothedDuck_ * 2.0f);
+		const float driveNorm = juce::jlimit (0.0f, 1.0f, (smoothedDuck_ - 0.5f) * 2.0f);
+		const float detectorDrive = std::exp2 ((kDuckMaxDetectorDriveDb_ * driveNorm) / kDbPerOctave_);
+		const float peakIn = juce::jmin (1.0f, juce::jmax (std::abs (inL), std::abs (inR)) * detectorDrive);
 		const float dCoeff = (peakIn > duckEnvelope_) ? duckAttackCoeff_ : duckReleaseCoeff_;
 		duckEnvelope_ += dCoeff * (peakIn - duckEnvelope_);
-		return juce::jmax (0.0f, 1.0f - smoothedDuck_ * duckEnvelope_);
+
+		const float levelNorm = juce::jlimit (0.0f, 1.0f, duckEnvelope_);
+		const float duckDepth = depthNorm * depthNorm;
+		const float duckReductionDb = kDuckMaxRangeDb_ * duckDepth * levelNorm;
+
+		// Post-only ducking: feedback keeps blooming internally while the audible wet output ducks.
+		const float wetGain = std::exp2 (-duckReductionDb / kDbPerOctave_);
+		return { 1.0f, wetGain };
 	}
 
 	// Generic smooth S&H + Drift chaos engine (per-sample advance)
