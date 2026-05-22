@@ -616,7 +616,7 @@ private:
 	float smoothedDuck_     = 0.0f;   // EMA-smoothed duck amount (0-1)
 	float duckEnvelope_     = 0.0f;   // peak envelope of input signal
 	float duckAttackCoeff_  = 0.0f;   // ~0.5 ms attack
-	float duckReleaseCoeff_ = 0.0f;   // ~250 ms release
+	float duckReleaseCoeff_ = 0.0f;   // ~100 ms release
 	float duckAmount_       = 0.0f;   // target duck depth (0-1, set per block)
 
 	// Engine micro-oscillation — mode-dependent drift
@@ -778,7 +778,8 @@ private:
 	static constexpr float kDuckSmoothCoeff_ = 0.9955f; // same as kGainSmoothCoeff (~5 ms @ 44.1 kHz)
 	inline float advanceDuck (float inL, float inR) noexcept
 	{
-		smoothedDuck_ = smoothedDuck_ * kDuckSmoothCoeff_ + duckAmount_ * (1.0f - kDuckSmoothCoeff_);
+		const float effectiveDuck = 1.0f - std::pow (1.0f - duckAmount_, 1.25f);
+		smoothedDuck_ = smoothedDuck_ * kDuckSmoothCoeff_ + effectiveDuck * (1.0f - kDuckSmoothCoeff_);
 		const float peakIn = juce::jmax (std::abs (inL), std::abs (inR));
 		const float dCoeff = (peakIn > duckEnvelope_) ? duckAttackCoeff_ : duckReleaseCoeff_;
 		duckEnvelope_ += dCoeff * (peakIn - duckEnvelope_);
