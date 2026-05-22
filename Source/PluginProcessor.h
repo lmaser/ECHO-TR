@@ -900,8 +900,8 @@ private:
 	static constexpr float kJitterDriftWeightBase = 0.42f;
 	static constexpr float kJitterDriftWeightLongness = 0.30f;
 	static constexpr float kJitterDriftWeightShortness = 0.14f;
-	static constexpr float kJitterRhythmicTonalRefMs = 180.0f;
-	static constexpr float kJitterRhythmicTonalPower = 2.0f;
+	static constexpr float kJitterRhythmicTonalRefMs = 40.0f;
+	static constexpr float kJitterRhythmicTonalPower = 3.20f;
 	static constexpr float kJitterRhythmicRateCyclesPerDelay = 0.10f;
 	static constexpr float kJitterRhythmicRateMinHz = 0.01f;
 	static constexpr float kJitterRhythmicRateMaxHz = 24.0f;
@@ -909,6 +909,8 @@ private:
 	static constexpr float kJitterRhythmicFlutterWeightPower = 2.0f;
 	static constexpr float kJitterRhythmicToneWeightPower = 2.50f;
 	static constexpr float kJitterRhythmicDriftWeightBoost = 0.24f;
+	static constexpr float kJitterRhythmicDepthLiftMax = 1.0f;
+	static constexpr float kJitterRhythmicDepthLiftPower = 0.85f;
 	static constexpr float kJitterFlutterWeightMin = 0.35f;
 	static constexpr float kJitterFlutterWeightMax = 0.95f;
 	static constexpr float kJitterFlutterWeightBase = 0.45f;
@@ -1041,7 +1043,10 @@ private:
 		m.toneWeight *= std::pow (tonalness, kJitterRhythmicToneWeightPower);
 		m.toneWeight = juce::jlimit (0.0f, kJitterToneWeightMax, m.toneWeight);
 
-		const float targetDepthRatio = kJitterDepthRatio * std::pow (m.amountMapped, kJitterDepthPower);
+		const float rhythmicDepthLift = 1.0f + kJitterRhythmicDepthLiftMax
+		                                      * std::pow (rhythmicness, kJitterRhythmicDepthLiftPower);
+		const float targetDepthRatio = kJitterDepthRatio * std::pow (m.amountMapped, kJitterDepthPower)
+		                             * rhythmicDepthLift;
 		const float maxDepthSeconds = delaySeconds * kJitterMaxDepthRatio;
 		const float depthSeconds = juce::jlimit (kJitterMinDepthSeconds, maxDepthSeconds, delaySeconds * targetDepthRatio);
 		m.delayDepthOct = std::log2 ((delaySeconds + depthSeconds) / delaySeconds);

@@ -2754,12 +2754,12 @@ void ECHOTRAudioProcessorEditor::openFilterPrompt()
     };
 
     // HP section
-    aw->addTextEditor ("hpFreq", juce::String (hpFreq, 2), juce::String());
+    aw->addTextEditor ("hpFreq", juce::String (juce::roundToInt (hpFreq)), juce::String());
     auto* hpBar = new PromptBar (scheme, freqToNorm (hpFreq), freqToNorm (ECHOTRAudioProcessor::kFilterHpFreqDefault));
     aw->addAndMakeVisible (hpBar);
 
     // LP section
-    aw->addTextEditor ("lpFreq", juce::String (lpFreq, 2), juce::String());
+    aw->addTextEditor ("lpFreq", juce::String (juce::roundToInt (lpFreq)), juce::String());
     auto* lpBar = new PromptBar (scheme, freqToNorm (lpFreq), freqToNorm (ECHOTRAudioProcessor::kFilterLpFreqDefault));
     aw->addAndMakeVisible (lpBar);
 
@@ -2967,6 +2967,10 @@ void ECHOTRAudioProcessorEditor::openFilterPrompt()
     // ── Prepare TextEditors ──
     preparePromptTextEditor (*aw, "hpFreq", scheme.bg, scheme.text, scheme.fg, promptFont, false);
     preparePromptTextEditor (*aw, "lpFreq", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    if (auto* te = aw->getTextEditor ("hpFreq"))
+        te->setInputRestrictions (5, "0123456789");
+    if (auto* te = aw->getTextEditor ("lpFreq"))
+        te->setInputRestrictions (5, "0123456789");
 
     // Clicking the HP / LP name label toggles its checkbox
     struct ToggleForwarder : public juce::MouseListener
@@ -3069,6 +3073,10 @@ void ECHOTRAudioProcessorEditor::openFilterPrompt()
 
     preparePromptTextEditor (*aw, "hpFreq", scheme.bg, scheme.text, scheme.fg, promptFont, false);
     preparePromptTextEditor (*aw, "lpFreq", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    if (auto* te = aw->getTextEditor ("hpFreq"))
+        te->setInputRestrictions (5, "0123456789");
+    if (auto* te = aw->getTextEditor ("lpFreq"))
+        te->setInputRestrictions (5, "0123456789");
     layoutRows();
 
     styleAlertButtons (*aw, lnf);
