@@ -900,6 +900,15 @@ private:
 	static constexpr float kJitterDriftWeightBase = 0.42f;
 	static constexpr float kJitterDriftWeightLongness = 0.30f;
 	static constexpr float kJitterDriftWeightShortness = 0.14f;
+	static constexpr float kJitterRhythmicTonalRefMs = 180.0f;
+	static constexpr float kJitterRhythmicTonalPower = 2.0f;
+	static constexpr float kJitterRhythmicRateCyclesPerDelay = 0.10f;
+	static constexpr float kJitterRhythmicRateMinHz = 0.01f;
+	static constexpr float kJitterRhythmicRateMaxHz = 24.0f;
+	static constexpr float kJitterRhythmicFlutterRateBlendPower = 1.50f;
+	static constexpr float kJitterRhythmicFlutterWeightPower = 2.0f;
+	static constexpr float kJitterRhythmicToneWeightPower = 2.50f;
+	static constexpr float kJitterRhythmicDriftWeightBoost = 0.24f;
 	static constexpr float kJitterFlutterWeightMin = 0.35f;
 	static constexpr float kJitterFlutterWeightMax = 0.95f;
 	static constexpr float kJitterFlutterWeightBase = 0.45f;
@@ -934,6 +943,18 @@ private:
 	{
 		return juce::jlimit (0.0f, 1.0f,
 			std::log2 (delayMs / kJitterLongnessRefMs) / std::log2 (kJitterLongRefMs / kJitterLongnessRefMs));
+	}
+
+	static float jitterTonalness (float delayMs) noexcept
+	{
+		const float normalizedDelay = juce::jmax (0.0f, delayMs) / kJitterRhythmicTonalRefMs;
+		return 1.0f / (1.0f + std::pow (normalizedDelay, kJitterRhythmicTonalPower));
+	}
+
+	static float jitterRhythmicRateHz (float delaySeconds) noexcept
+	{
+		return juce::jlimit (kJitterRhythmicRateMinHz, kJitterRhythmicRateMaxHz,
+		                     kJitterRhythmicRateCyclesPerDelay / juce::jmax (delaySeconds, 0.001f));
 	}
 
 	static float jitterOffsetStepLimit (float amount) noexcept
@@ -980,18 +1001,24 @@ private:
 
 		m.shortness = jitterShortness (m.delayMs);
 		m.longness = jitterLongness (m.delayMs);
+		const float tonalness = jitterTonalness (m.delayMs);
+		const float rhythmicness = 1.0f - tonalness;
+		const float rhythmicRateHz = jitterRhythmicRateHz (delaySeconds);
 
 		const float high = smoothStep01 ((m.amountMapped - kJitterHighStart) / kJitterHighRange);
 		const float extreme = smoothStep01 ((m.amountMapped - kJitterExtremeStart) / kJitterExtremeRange);
 
-		m.driftRateHz = (kJitterDriftRateBaseHz + (kJitterDriftRateTopHz - kJitterDriftRateBaseHz) * m.amountMapped)
-		              * (1.0f - kJitterDriftLongnessDamping * m.longness)
-		              * (1.0f + kJitterDriftShortnessBoost * m.shortness);
-		m.driftRateHz = juce::jlimit (kJitterDriftRateMinHz, kJitterDriftRateMaxHz, m.driftRateHz);
+		const float baseDriftRateHz = juce::jlimit (kJitterDriftRateMinHz, kJitterDriftRateMaxHz,
+			(kJitterDriftRateBaseHz + (kJitterDriftRateTopHz - kJitterDriftRateBaseHz) * m.amountMapped)
+			* (1.0f - kJitterDriftLongnessDamping * m.longness)
+			* (1.0f + kJitterDriftShortnessBoost * m.shortness));
+		m.driftRateHz = rhythmicRateHz + (baseDriftRateHz - rhythmicRateHz) * tonalness;
 
-		m.flutterRateHz = (kJitterFlutterRateBaseHz + (kJitterFlutterRateTopHz - kJitterFlutterRateBaseHz) * m.amountMapped)
-		                * std::pow (kJitterFlutterRefMs / m.delayMs, kJitterFlutterDelayPower);
-		m.flutterRateHz = juce::jlimit (kJitterFlutterRateMinHz, kJitterFlutterRateMaxHz, m.flutterRateHz);
+		const float fastFlutterRateHz = juce::jlimit (kJitterFlutterRateMinHz, kJitterFlutterRateMaxHz,
+			(kJitterFlutterRateBaseHz + (kJitterFlutterRateTopHz - kJitterFlutterRateBaseHz) * m.amountMapped)
+			* std::pow (kJitterFlutterRefMs / m.delayMs, kJitterFlutterDelayPower));
+		const float fastRateBlend = std::pow (tonalness, kJitterRhythmicFlutterRateBlendPower);
+		m.flutterRateHz = rhythmicRateHz + (fastFlutterRateHz - rhythmicRateHz) * fastRateBlend;
 
 		const float toneAmount = smoothStep01 ((m.amountMapped - kJitterToneStart) / kJitterToneRange);
 		const float toneLift = kJitterToneLiftBase + kJitterToneLiftAmount * m.amountMapped
@@ -1003,12 +1030,15 @@ private:
 
 		m.driftWeight = juce::jlimit (kJitterDriftWeightMin, kJitterDriftWeightMax,
 			kJitterDriftWeightBase + kJitterDriftWeightLongness * m.longness
-			- kJitterDriftWeightShortness * m.shortness);
+			- kJitterDriftWeightShortness * m.shortness
+			+ kJitterRhythmicDriftWeightBoost * rhythmicness);
 		m.flutterWeight = juce::jlimit (kJitterFlutterWeightMin, kJitterFlutterWeightMax,
 			kJitterFlutterWeightBase + kJitterFlutterWeightShortness * m.shortness
 			+ kJitterFlutterWeightHigh * high);
+		m.flutterWeight *= std::pow (tonalness, kJitterRhythmicFlutterWeightPower);
 		m.toneWeight = toneAmount * std::pow (m.shortness, kJitterToneWeightShortnessPower)
 		             * (kJitterToneWeightBase + kJitterToneWeightAmount * m.amountMapped);
+		m.toneWeight *= std::pow (tonalness, kJitterRhythmicToneWeightPower);
 		m.toneWeight = juce::jlimit (0.0f, kJitterToneWeightMax, m.toneWeight);
 
 		const float targetDepthRatio = kJitterDepthRatio * std::pow (m.amountMapped, kJitterDepthPower);
