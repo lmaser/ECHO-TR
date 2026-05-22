@@ -616,7 +616,8 @@ private:
 	float smoothedDuck_     = 0.0f;   // EMA-smoothed duck amount (0-1)
 	float duckEnvelope_     = 0.0f;   // peak envelope of input signal
 	float duckAttackCoeff_  = 0.0f;   // ~1 ms attack
-	float duckReleaseCoeff_ = 0.0f;   // ~180 ms release
+	float duckReleaseCoeffMin_ = 0.0f; // ~120 ms release
+	float duckReleaseCoeffMax_ = 0.0f; // ~200 ms release
 	float duckAmount_       = 0.0f;   // target duck depth (0-1, set per block)
 
 	// Engine micro-oscillation — mode-dependent drift
@@ -785,20 +786,23 @@ private:
 	static constexpr float kDuckMaxRangeDb_ = 72.0f;
 	static constexpr float kDuckMaxDetectorDriveDb_ = 12.0f;
 	static constexpr float kDbPerOctave_ = 6.020599913f;
-	static inline float smoothstep01 (float x) noexcept
+	static constexpr float kDuckRangeCurve_ = 1.1f;
+	static constexpr float kDuckDriveCurve_ = 0.9f;
+	static inline float powFast01 (float x, float exponent) noexcept
 	{
 		x = juce::jlimit (0.0f, 1.0f, x);
-		return x * x * (3.0f - 2.0f * x);
+		return (x <= 0.0f) ? 0.0f : std::exp2 (std::log2 (x) * exponent);
 	}
 
 	inline DuckGains advanceDuck (float inL, float inR) noexcept
 	{
 		smoothedDuck_ = smoothedDuck_ * kDuckSmoothCoeff_ + duckAmount_ * (1.0f - kDuckSmoothCoeff_);
-		const float depthNorm = smoothstep01 (smoothedDuck_);
-		const float driveNorm = smoothstep01 (smoothedDuck_);
+		const float depthNorm = powFast01 (smoothedDuck_, kDuckRangeCurve_);
+		const float driveNorm = powFast01 (smoothedDuck_, kDuckDriveCurve_);
 		const float detectorDrive = std::exp2 ((kDuckMaxDetectorDriveDb_ * driveNorm) / kDbPerOctave_);
 		const float peakIn = juce::jmin (1.0f, juce::jmax (std::abs (inL), std::abs (inR)) * detectorDrive);
-		const float dCoeff = (peakIn > duckEnvelope_) ? duckAttackCoeff_ : duckReleaseCoeff_;
+		const float releaseCoeff = duckReleaseCoeffMin_ + (duckReleaseCoeffMax_ - duckReleaseCoeffMin_) * smoothedDuck_;
+		const float dCoeff = (peakIn > duckEnvelope_) ? duckAttackCoeff_ : releaseCoeff;
 		duckEnvelope_ += dCoeff * (peakIn - duckEnvelope_);
 
 		const float levelNorm = juce::jlimit (0.0f, 1.0f, duckEnvelope_);
