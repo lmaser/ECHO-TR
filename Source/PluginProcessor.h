@@ -615,8 +615,8 @@ private:
 	// Duck envelope follower (Valhalla-style 1-knob ducking)
 	float smoothedDuck_     = 0.0f;   // EMA-smoothed duck amount (0-1)
 	float duckEnvelope_     = 0.0f;   // peak envelope of input signal
-	float duckAttackCoeff_  = 0.0f;   // ~0.5 ms attack
-	float duckReleaseCoeff_ = 0.0f;   // ~100 ms release
+	float duckAttackCoeff_  = 0.0f;   // ~1 ms attack
+	float duckReleaseCoeff_ = 0.0f;   // ~180 ms release
 	float duckAmount_       = 0.0f;   // target duck depth (0-1, set per block)
 
 	// Engine micro-oscillation — mode-dependent drift
@@ -785,19 +785,24 @@ private:
 	static constexpr float kDuckMaxRangeDb_ = 72.0f;
 	static constexpr float kDuckMaxDetectorDriveDb_ = 24.0f;
 	static constexpr float kDbPerOctave_ = 6.020599913f;
+	static inline float smoothstep01 (float x) noexcept
+	{
+		x = juce::jlimit (0.0f, 1.0f, x);
+		return x * x * (3.0f - 2.0f * x);
+	}
+
 	inline DuckGains advanceDuck (float inL, float inR) noexcept
 	{
 		smoothedDuck_ = smoothedDuck_ * kDuckSmoothCoeff_ + duckAmount_ * (1.0f - kDuckSmoothCoeff_);
-		const float depthNorm = juce::jlimit (0.0f, 1.0f, smoothedDuck_ * 2.0f);
-		const float driveNorm = juce::jlimit (0.0f, 1.0f, (smoothedDuck_ - 0.5f) * 2.0f);
+		const float depthNorm = smoothstep01 (smoothedDuck_);
+		const float driveNorm = smoothedDuck_ * smoothedDuck_;
 		const float detectorDrive = std::exp2 ((kDuckMaxDetectorDriveDb_ * driveNorm) / kDbPerOctave_);
 		const float peakIn = juce::jmin (1.0f, juce::jmax (std::abs (inL), std::abs (inR)) * detectorDrive);
 		const float dCoeff = (peakIn > duckEnvelope_) ? duckAttackCoeff_ : duckReleaseCoeff_;
 		duckEnvelope_ += dCoeff * (peakIn - duckEnvelope_);
 
 		const float levelNorm = juce::jlimit (0.0f, 1.0f, duckEnvelope_);
-		const float duckDepth = depthNorm * depthNorm;
-		const float duckReductionDb = kDuckMaxRangeDb_ * duckDepth * levelNorm;
+		const float duckReductionDb = kDuckMaxRangeDb_ * depthNorm * levelNorm;
 
 		// Post-only ducking: feedback keeps blooming internally while the audible wet output ducks.
 		const float wetGain = std::exp2 (-duckReductionDb / kDbPerOctave_);

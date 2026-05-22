@@ -646,8 +646,8 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	duckAmount_ = 0.0f;
 	{
 		const double sr = getSampleRate();
-		duckAttackCoeff_  = static_cast<float> (1.0 - std::exp (-1.0 / (sr * 0.0005)));  // ~0.5 ms
-		duckReleaseCoeff_ = static_cast<float> (1.0 - std::exp (-1.0 / (sr * 0.100)));   // ~100 ms
+		duckAttackCoeff_  = static_cast<float> (1.0 - std::exp (-1.0 / (sr * 0.001)));  // ~1 ms
+		duckReleaseCoeff_ = static_cast<float> (1.0 - std::exp (-1.0 / (sr * 0.180)));  // ~180 ms
 	}
 	smoothedChaosFilterMaxOct_ = 0.0f;
 	smoothedChaosDelayMaxSamples_ = 0.0f;
