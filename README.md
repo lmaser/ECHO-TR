@@ -77,7 +77,7 @@ Routing topology for the delay:
 
 All modes share the same interpolation (4-point Hermite) and feedback processing.
 
-### MOD (0-100%)
+### MOD (x0.25-x4.0)
 
 Frequency multiplier applied to the delay time.  
 0% = `x0.25` (4x longer delay), 50% = `x1.0` (no change), 100% = `x4.0` (4x shorter delay).  

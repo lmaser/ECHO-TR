@@ -2476,6 +2476,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dryGainTarget_ = dryLevel;
 		wetGainTarget_ = wetLevel;
 	}
+	const float sumBusDryLevelStart = smoothedDryLevel;
 
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
 	if (reverseEnabled)
@@ -2587,9 +2588,13 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		auto* chR = buffer.getWritePointer (1);
 		const auto* dL = sumBusDryBuffer.getReadPointer (0);
 		const auto* dR = sumBusDryBuffer.getReadPointer (1);
+		float dryGainForSum = sumBusDryLevelStart;
 
 		for (int i = 0; i < numSamples; ++i)
 		{
+			dryGainForSum = dryGainForSum * kGainSmoothCoeff
+			               + dryGainTarget_ * (1.0f - kGainSmoothCoeff);
+
 			// Recompute the dry contribution as it exists after Mode In and Mode Out,
 			// so wet isolation for Sum Bus stays aligned with the realtime signal path.
 			float encL = dL[i], encR = dR[i];
@@ -2611,14 +2616,14 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				}
 			}
 
-			const float dryContribL = encL * dryGainTarget_;
-			const float dryContribR = encR * dryGainTarget_;
+			const float dryContribL = encL * dryGainForSum;
+			const float dryContribR = encR * dryGainForSum;
 			const float wetL = chL[i] - dryContribL;
 			const float wetR = chR[i] - dryContribR;
 
 			// Original dry pass-through (pre-Mode-In, preserves stereo image)
-			const float origDryL = dL[i] * dryGainTarget_;
-			const float origDryR = dR[i] * dryGainTarget_;
+			const float origDryL = dL[i] * dryGainForSum;
+			const float origDryR = dR[i] * dryGainForSum;
 
 			if (sumBusVal == 1) // →M: wet collapsed to mono mid
 			{
@@ -2926,10 +2931,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout ECHOTRAudioProcessor::create
 
 	// Limiter
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamLimThreshold, "Limiter Threshold",
+		kParamLimThreshold, "Lim Threshold",
 		juce::NormalisableRange<float> (kLimThresholdMin, kLimThresholdMax, 0.1f), kLimThresholdDefault));
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
-		kParamLimMode, "Limiter Mode", juce::StringArray { "NONE", "WET", "GLOBAL" }, kLimModeDefault));
+		kParamLimMode, "Lim Mode", juce::StringArray { "NONE", "WET", "GLOBAL" }, kLimModeDefault));
 
 	// Invert Polarity / Invert Stereo
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
