@@ -1241,8 +1241,9 @@ void ECHOTRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
 {
     auto isBarSlider = [&] (const juce::Slider* s)
     {
-        return s == &timeSlider || s == &feedbackSlider || s == &jitterSlider || s == &modeSlider || s == &modSlider
-            || s == &inputSlider || s == &outputSlider || s == &mixSlider;
+        return s == &timeSlider || s == &modSlider || s == &feedbackSlider || s == &engineSlider || s == &duckSlider
+            || s == &jitterSlider || s == &modeSlider || s == &inputSlider || s == &outputSlider || s == &tiltSlider
+            || s == &panSlider || s == &mixSlider || s == &limThresholdSlider;
     };
 
     refreshLegendTextCache();
