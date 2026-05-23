@@ -1871,7 +1871,6 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float requestedDelaySamples = delaySamples;
 	constexpr float kMinSafeDelaySamples = 2.0f;
 	const float lowDelayBlend = smoothStep01 (requestedDelaySamples / kMinSafeDelaySamples);
-	const float lowDelayWetScale = lowDelayBlend;
 	const float lowDelayFeedbackScale = lowDelayBlend * lowDelayBlend;
 	const float processDelaySamples = juce::jmax (kMinSafeDelaySamples, requestedDelaySamples);
 
@@ -1978,8 +1977,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 
 	// Below two samples Hermite would read the current write position. Keep
-	// DSP continuous by processing at the safe floor while crossfading wet and
-	// feedback out according to the requested time, instead of hard-bypassing.
+	// DSP continuous by processing at the safe floor while fading feedback out
+	// according to the requested time, without bypassing the wet routing.
 	delaySamples = processDelaySamples;
 	
 	// Delay smoothing coefficients (cached; only recompute for MIDI glide).
@@ -2468,14 +2467,14 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// ── Dry/Wet gain targets (unified for INSERT and SEND modes) ──
 	if (mixMode == 0) // INSERT: classic crossfade
 	{
-		const float wetTarget = mixValue * lowDelayWetScale;
+		const float wetTarget = mixValue;
 		dryGainTarget_ = 1.0f - wetTarget;
 		wetGainTarget_ = wetTarget;
 	}
 	else // SEND: independent dry + wet levels
 	{
 		dryGainTarget_ = dryLevel;
-		wetGainTarget_ = wetLevel * lowDelayWetScale;
+		wetGainTarget_ = wetLevel;
 	}
 
 	// Reverse mode: chunk-based backward playback (works with any mode routing)
