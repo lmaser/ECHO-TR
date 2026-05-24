@@ -205,8 +205,8 @@ Limiter insertion point:
 - **GLOBAL**: Limiter applied to the final output (after output gain and dry/wet mix).
 
 The limiter is a dual-stage transparent peak limiter:
-- **Stage 1 (Leveler)**: 2 ms attack, 10 ms release - catches sustained overs.
-- **Stage 2 (Brickwall)**: Instant attack, 100 ms release - catches transient peaks.
+- **Stage 1 (Leveler)**: catches sustained overs.
+- **Stage 2 (Brickwall)**: catches transient peaks.
 
 Stereo-linked gain reduction ensures consistent imaging.
 
@@ -258,6 +258,6 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Numeric entry popup for percentage sliders: precision standardized to 2 decimal places while the main UI keeps compact integer percentages.
 - Filter coefficient update now uses tolerance-based comparison, preventing unnecessary recalculation from floating-point noise.
 - Ported `drawToggleButton` with automatic text-shrinking from CAB-TR for consistent toggle rendering.
-- Added dual-stage transparent peak limiter with LIM (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with 2 ms/10 ms leveler + instant/100 ms brickwall stages.
+- Added dual-stage transparent peak limiter with LIM (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with leveler + brickwall stages.
 - TIME numeric prompt supports 3-decimal millisecond precision; the main readout adapts between ms and seconds for consistency with the rest of the series.
 - Added `JIT` control for deterministic tape-style timing, tonal flutter, and feedback instability inside the delay engine.
