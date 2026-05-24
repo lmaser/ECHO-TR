@@ -2660,14 +2660,16 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 
 	// ── Final DC blocker: before GLOBAL limiter and safety clip ──
-	if (numChannels >= 2)
+	// WET limiting already includes wet-path DC blocking before the limiter;
+	// running another DC blocker after it can recreate peaks above the WET ceiling.
+	if (limMode != 1 && numChannels >= 2)
 	{
 		auto* chL = buffer.getWritePointer (0);
 		auto* chR = buffer.getWritePointer (1);
 		for (int i = 0; i < numSamples; ++i)
 			applyOutputDcBlock (chL[i], chR[i]);
 	}
-	else if (numChannels == 1)
+	else if (limMode != 1 && numChannels == 1)
 	{
 		auto* ch = buffer.getWritePointer (0);
 		for (int i = 0; i < numSamples; ++i)
