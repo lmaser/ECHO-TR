@@ -5700,8 +5700,8 @@ juce::String ECHOTRAudioProcessorEditor::getModTextShort() const
 {
     const float mult = (float) modSliderToMultiplier (modSlider.getValue());
     if (std::abs (mult - 1.0f) < kMultEpsilon)
-        return "X1";
-    return "X" + juce::String (mult, 2);
+        return "X1 MOD";
+    return "X" + juce::String (mult, 2) + " MOD";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getInputText() const
