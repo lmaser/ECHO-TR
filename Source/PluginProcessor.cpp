@@ -1993,12 +1993,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	delaySamples = processDelaySamples;
 	
 	// Delay smoothing coefficients (cached; only recompute for MIDI glide).
-	// Direct and reverse use DIFFERENT velocity→tau curves because their
-	// architectures make glide perceptible in very different ways:
-	//   • Direct: continuous per-sample EMA → glide is very audible.
-	//   • Reverse: chunk-quantised → glide only manifests at chunk edges.
-	// Both share kTauMax/kTauMin and velocity mapping, but exponents differ
-	// so the PERCEIVED glide is identical across modes.
+	// Direct and reverse use the same velocity→tau curve so MIDI glide
+	// responds identically in both playback directions.
 	float delaySmoothCoeff    = cachedDelaySmoothCoeff;
 	float revDelaySmoothCoeff = cachedDelaySmoothCoeff;
 	if (midiNoteActive)
@@ -2023,17 +2019,9 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			delaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
 		}
 
-		// ── Reverse mode: gentler curve (exponent 0.12) ──
-		// Chunk-based playback naturally quantises glide to chunk boundaries,
-		// reducing perceived pitch-slide.  A wider tau range compensates so
-		// the musical result feels identical to direct mode.
-		//   vel 127 → tau ≈ 0.2 ms  (instant)
-		//   vel 100 → tau ≈ 6 ms    (barely noticeable — hidden by chunks)
-		//   vel  60 → tau ≈ 18 ms   (subtle)
-		//   vel  30 → tau ≈ 40 ms   (gentle glide)
-		//   vel   1 → tau ≈ 200 ms  (full portamento)
+		// ── Reverse mode: same curve as direct mode ──
 		{
-			const float t   = std::pow (tLin, 0.12f);
+			const float t   = std::pow (tLin, 0.05f);
 			const float tau = kTauMax - t * (kTauMax - kTauMin);
 			revDelaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
 		}
