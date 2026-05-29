@@ -338,6 +338,10 @@ private:
 	float smoothedWetLevel = 1.0f;
 	float dryGainTarget_ = 0.0f;
 	float wetGainTarget_ = 1.0f;
+	float zeroDelayWetBlendTarget_ = 0.0f;
+	float zeroDelayWetBlendSmoothed_ = 0.0f;
+	float zeroDelayWetBlendCoeff_ = 0.999f;
+	bool  zeroDelayWetBlendReady_ = false;
 	std::array<float, 2> feedbackState { 0.0f, 0.0f };
 
 	// Single-voice reverse delay state.
@@ -935,6 +939,8 @@ private:
 	static constexpr bool kJitterModulatesFeedback = false;
 	static constexpr float kJitterOffsetStepBase = 0.12f;
 	static constexpr float kJitterOffsetStepRange = 0.78f;
+	static constexpr float kZeroDelayWetBlendRangeSamples = 1.0f;
+	static constexpr float kZeroDelayWetBlendTauSeconds = 0.0005f;
 
 	static float jitterShortness (float delayMs) noexcept
 	{
@@ -1212,6 +1218,33 @@ private:
 			return feedbackMagnitude;
 
 		return juce::jlimit (0.0f, 1.0f, feedbackMagnitude * (1.0f + jitterFeedbackOut_ * jitterFeedbackDepth_));
+	}
+
+	inline float advanceZeroDelayWetBlend() noexcept
+	{
+		const float target = juce::jlimit (0.0f, 1.0f, zeroDelayWetBlendTarget_);
+		if (! zeroDelayWetBlendReady_)
+		{
+			zeroDelayWetBlendSmoothed_ = target;
+			zeroDelayWetBlendReady_ = true;
+		}
+		else
+		{
+			zeroDelayWetBlendSmoothed_ = zeroDelayWetBlendSmoothed_ * zeroDelayWetBlendCoeff_
+			                           + target * (1.0f - zeroDelayWetBlendCoeff_);
+		}
+
+		return zeroDelayWetBlendSmoothed_;
+	}
+
+	inline void applyZeroDelayWetBlend (float& wetL, float& wetR, float directL, float directR) noexcept
+	{
+		const float blend = advanceZeroDelayWetBlend();
+		if (blend <= kJitterEpsilon)
+			return;
+
+		wetL += (directL - wetL) * blend;
+		wetR += (directR - wetR) * blend;
 	}
 
 	inline void advanceChaosD() noexcept

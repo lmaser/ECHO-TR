@@ -462,6 +462,7 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 {
 	currentSampleRate = sampleRate;
 	cachedDelaySmoothCoeff = smoothCoeffFromTau (sampleRate, kDelaySmoothTauSeconds);
+	zeroDelayWetBlendCoeff_ = smoothCoeffFromTau (sampleRate, kZeroDelayWetBlendTauSeconds);
 	
 	// Allocate delay buffer (power of 2 for bitwise wrap)
 	const int requestedSamples = (int) std::ceil (sampleRate * (kTimeMsMaxSync / 1000.0)) + 1024;
@@ -485,6 +486,9 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedMix = 0.5f;
 	smoothedDryLevel = 1.0f;
 	smoothedWetLevel = 1.0f;
+	zeroDelayWetBlendTarget_ = 0.0f;
+	zeroDelayWetBlendSmoothed_ = 0.0f;
+	zeroDelayWetBlendReady_ = false;
 	lastMidiNote.store (-1, std::memory_order_relaxed);
 	lastMidiVelocity.store (0, std::memory_order_relaxed);
 	currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
@@ -1048,6 +1052,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				delayR[writePos] = wrR;
 
 				float wetL = delayedL, wetR = delayedR;
+				applyZeroDelayWetBlend (wetL, wetR, inputL * smoothedInputGain, inputR * smoothedInputGain);
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 				if (filterPre_) filterWetSample (wetL, wetR);
 				if (tiltPre_)   tiltWetSample (wetL, wetR);
@@ -1075,6 +1080,7 @@ void ECHOTRAudioProcessor::processStereoDelay (juce::AudioBuffer<float>& buffer,
 				fbkL *= duckGains.feedback;
 				delayL[writePos] = sanitiseDelay (inputL * smoothedInputGain + fbkL);
 				float wetL = delayedL, wetR = delayedL;
+				applyZeroDelayWetBlend (wetL, wetR, inputL * smoothedInputGain, inputL * smoothedInputGain);
 				if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 				if (filterPre_) filterWetSample (wetL, wetR);
 				if (tiltPre_)   tiltWetSample (wetL, wetR);
@@ -1164,6 +1170,7 @@ void ECHOTRAudioProcessor::processMonoDelay (juce::AudioBuffer<float>& buffer, i
 		delayR[writePos] = toWrite;
 
 		float wetL = delayed, wetR = delayed;
+		applyZeroDelayWetBlend (wetL, wetR, inputMid * smoothedInputGain, inputMid * smoothedInputGain);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		if (filterPre_) filterWetSample (wetL, wetR);
 		if (tiltPre_)   tiltWetSample (wetL, wetR);
@@ -1256,6 +1263,7 @@ void ECHOTRAudioProcessor::processPingPongDelay (juce::AudioBuffer<float>& buffe
 		delayR[writePos] = sanitiseDelay (fbkPpR);
 
 		float wetL = delayedL, wetR = delayedR;
+		applyZeroDelayWetBlend (wetL, wetR, inputL * smoothedInputGain, inputR * smoothedInputGain);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		if (filterPre_) filterWetSample (wetL, wetR);
 		if (tiltPre_)   tiltWetSample (wetL, wetR);
@@ -1370,6 +1378,7 @@ void ECHOTRAudioProcessor::processWideDelay (juce::AudioBuffer<float>& buffer, i
 		delayR[writePos] = sanitiseDelay (inputR * smoothedInputGain + fbkR);
 
 		float wetL = delayedL, wetR = delayedR;
+		applyZeroDelayWetBlend (wetL, wetR, inputL * smoothedInputGain, inputR * smoothedInputGain);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		if (filterPre_) filterWetSample (wetL, wetR);
 		if (tiltPre_)   tiltWetSample (wetL, wetR);
@@ -1479,6 +1488,7 @@ void ECHOTRAudioProcessor::processDualDelay (juce::AudioBuffer<float>& buffer, i
 		delayR[writePos] = sanitiseDelay (inputR * smoothedInputGain + fbkR);
 
 		float wetL = delayedL, wetR = delayedR;
+		applyZeroDelayWetBlend (wetL, wetR, inputL * smoothedInputGain, inputR * smoothedInputGain);
 		if (chaosDelayEnabled_) applyChaosDelay (wetL, wetR);
 		if (filterPre_) filterWetSample (wetL, wetR);
 		if (tiltPre_)   tiltWetSample (wetL, wetR);
@@ -1872,6 +1882,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	constexpr float kMinSafeDelaySamples = 2.0f;
 	const float lowDelayBlend = smoothStep01 (requestedDelaySamples / kMinSafeDelaySamples);
 	const float lowDelayFeedbackScale = lowDelayBlend * lowDelayBlend;
+	zeroDelayWetBlendTarget_ = 1.0f - smoothStep01 (requestedDelaySamples / kZeroDelayWetBlendRangeSamples);
 	const float processDelaySamples = juce::jmax (kMinSafeDelaySamples, requestedDelaySamples);
 
 	// Auto feedback: envelope resets to 0 on note/time/MOD change, then ramps
