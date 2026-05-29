@@ -932,6 +932,7 @@ private:
 	static constexpr float kJitterFeedbackFastWeightBase = 0.24f;
 	static constexpr float kJitterFeedbackFastShortnessWeight = 0.28f;
 	static constexpr float kJitterFeedbackOutputLimit = 1.0f;
+	static constexpr bool kJitterModulatesFeedback = false;
 	static constexpr float kJitterOffsetStepBase = 0.12f;
 	static constexpr float kJitterOffsetStepRange = 0.78f;
 
@@ -1207,7 +1208,7 @@ private:
 	inline float applyJitterToFeedbackMagnitude (float feedbackMagnitude) const noexcept
 	{
 		const float amt = juce::jlimit (0.0f, 1.0f, jitterAmountSmoothed_);
-		if (! jitterActive_ || amt <= kJitterEpsilon || feedbackMagnitude <= 0.0f)
+		if (! kJitterModulatesFeedback || ! jitterActive_ || amt <= kJitterEpsilon || feedbackMagnitude <= 0.0f)
 			return feedbackMagnitude;
 
 		return juce::jlimit (0.0f, 1.0f, feedbackMagnitude * (1.0f + jitterFeedbackOut_ * jitterFeedbackDepth_));
