@@ -5638,7 +5638,7 @@ juce::String ECHOTRAudioProcessorEditor::getTimeTextShort() const
     }
     
     const float ms = (float) timeSlider.getValue();
-    return formatEchoTimeValue (ms, false) + " TM";
+    return formatEchoTimeValue (ms, false) + " TIME";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getFeedbackText() const
@@ -5854,7 +5854,7 @@ juce::String ECHOTRAudioProcessorEditor::getLimThresholdTextShort() const
 namespace
 {
     constexpr const char* kTimeLegendFull  = "5.00 s TIME";
-    constexpr const char* kTimeLegendShort = "5.00s TM";
+    constexpr const char* kTimeLegendShort = "5.00s TIME";
     constexpr const char* kTimeLegendInt   = "500.0ms";
 
     constexpr const char* kFeedbackLegendFull  = "100% FBK";
