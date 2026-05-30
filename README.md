@@ -61,7 +61,7 @@ In `CLEAN`, the feedback path stays maximally transparent apart from DC blocking
 Tape-style timing instability applied inside the delay engine.
 At low values it adds subtle wow/flutter movement; at high values it becomes more animated while staying smoothed and deterministic for repeatable playback.
 
-JIT modulates delay time and feedback magnitude together, so the repeats breathe like a slightly unstable mechanical delay rather than adding a post-effect wobble.
+JIT modulates internal delay time inside the delay engine, so the repeats breathe like a slightly unstable mechanical delay rather than adding a post-effect wobble.
 The control uses a perceptual curve: the lower half stays subtle, while the upper range opens into stronger movement without bunching all usable action at the end.
 Short delay times add faster tonal flutter for resonator-style movement, with the highest tonal component gently capped to avoid harsh fizz; longer delays drift more slowly and visibly.
 0% is a true bypass.
@@ -260,4 +260,4 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Ported `drawToggleButton` with automatic text-shrinking from CAB-TR for consistent toggle rendering.
 - Added dual-stage transparent peak limiter with LIM (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with leveler + brickwall stages.
 - TIME numeric prompt supports 3-decimal millisecond precision; the main readout adapts between ms and seconds for consistency with the rest of the series.
-- Added `JIT` control for deterministic tape-style timing, tonal flutter, and feedback instability inside the delay engine.
+- Added `JIT` control for deterministic tape-style timing and tonal flutter inside the delay engine.
