@@ -5654,7 +5654,7 @@ juce::String ECHOTRAudioProcessorEditor::getFeedbackTextShort() const
 juce::String ECHOTRAudioProcessorEditor::getJitterText() const
 {
     const int pct = (int) std::lround (jitterSlider.getValue());
-    return juce::String (pct) + "% JIT";
+    return juce::String (pct) + "% JITTER";
 }
 
 juce::String ECHOTRAudioProcessorEditor::getJitterTextShort() const
@@ -5859,7 +5859,7 @@ namespace
     constexpr const char* kFeedbackLegendShort = "100% FBK";
     constexpr const char* kFeedbackLegendInt   = "100%";
 
-    constexpr const char* kJitterLegendFull  = "100% JIT";
+    constexpr const char* kJitterLegendFull  = "100% JITTER";
     constexpr const char* kJitterLegendShort = "100% JIT";
     constexpr const char* kJitterLegendInt   = "100%";
 
