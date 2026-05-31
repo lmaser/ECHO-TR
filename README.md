@@ -131,6 +131,8 @@ Direct and reverse modes use independent velocity curves calibrated so the perce
 
 **MIDI Channel**: Click the channel display to select channel `1-16`, or `OMNI` (all channels).
 
+**MIDI Delay**: The same prompt also exposes `0-100 ms` of MIDI delay, shifting note-controlled delay capture later relative to the incoming audio without changing the note-to-time mapping.
+
 ### ENV FBK
 
 Envelope feedback. When enabled, feedback resets to zero on every note/time/MOD change, then ramps back to the user's feedback setting.
@@ -227,6 +229,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Standard A440 tuning: `frequency = 440 x 2^((note - 69) / 12)`.
 - Monophonic last-note priority. Note-off falls back to manual TIME knob.
 - Channel filtering: `OMNI (0)` or specific channel (`1-16`).
+- `0-100 ms` MIDI delay available in the prompt, applied to note timing rather than pitch mapping.
 - Priority: MIDI > SYNC > Manual TIME.
 
 ### State Persistence

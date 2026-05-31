@@ -489,9 +489,8 @@ void ECHOTRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	zeroDelayWetBlendTarget_ = 0.0f;
 	zeroDelayWetBlendSmoothed_ = 0.0f;
 	zeroDelayWetBlendReady_ = false;
-	lastMidiNote.store (-1, std::memory_order_relaxed);
-	lastMidiVelocity.store (0, std::memory_order_relaxed);
-	currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+	clearPendingMidiEvents();
+	clearMidiTrackingState();
 	{
 		const float pan = loadAtomicOrDefault (panParam, kPanDefault);
 		lastPan_ = pan;
@@ -749,6 +748,8 @@ void ECHOTRAudioProcessor::releaseResources()
 	autoFbkEnvelope         = 1.0f;
 	autoFbkLastDelaySamples = -1.0f;
 	autoFbkCooldownLeft     = 0;
+	clearPendingMidiEvents();
+	clearMidiTrackingState();
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -1745,6 +1746,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	
 	// ── MIDI note tracking (skip iteration entirely when MIDI disabled) ──
 	const bool midiEnabled = loadBoolParamOrDefault (midiParam, false);
+	const int midiDelaySamples = juce::jmax (0, (int) std::lround ((double) currentSampleRate
+		* (double) juce::jlimit (0, 100, getMidiDelayMs()) / 1000.0));
 	
 	if (midiEnabled && ! midiMessages.isEmpty())
 	{
@@ -1755,50 +1758,35 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			
 			if (selectedMidiChannel > 0 && msg.getChannel() != selectedMidiChannel)
 				continue;
-			
+
+			auto queueMidiEvent = [this, midiDelaySamples, metadata, numSamples] (PendingMidiEvent event)
+			{
+				const int eventSampleInBlock = juce::jlimit (0, juce::jmax (0, numSamples - 1), metadata.samplePosition);
+				event.samplesRemaining = juce::jmax (0, eventSampleInBlock + midiDelaySamples);
+				enqueuePendingMidiEvent (event);
+			};
+
 			if (msg.isAllNotesOff() || msg.isAllSoundOff())
 			{
-				lastMidiNote.store (-1, std::memory_order_relaxed);
-				lastMidiVelocity.store (0, std::memory_order_relaxed);
-				currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
-
-				const float fallbackMs = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
-				const float fallbackSamples = (float) currentSampleRate * (fallbackMs / 1000.0f);
-				smoothedDelaySamples = juce::jlimit (0.0f, (float) (delayBufferLength - 2), fallbackSamples);
+				queueMidiEvent ({ PendingMidiEventType::allNotesOff, -1, 0, 0 });
+				continue;
 			}
-			else if (msg.isNoteOn())
+			if (msg.isNoteOn())
 			{
-				const int noteNumber = msg.getNoteNumber();
-				lastMidiNote.store (noteNumber, std::memory_order_relaxed);
-				lastMidiVelocity.store (msg.getVelocity(), std::memory_order_relaxed);
-				// MIDI note → frequency via std::exp2 (avoids std::pow per noteOn)
-				const float frequency = 440.0f * std::exp2 ((noteNumber - 69) * (1.0f / 12.0f));
-				currentMidiFrequency.store (frequency, std::memory_order_relaxed);
+				queueMidiEvent ({ PendingMidiEventType::noteOn, msg.getNoteNumber(), msg.getVelocity(), 0 });
+				continue;
 			}
-			else if (msg.isNoteOff())
+			if (msg.isNoteOff())
 			{
-				if (msg.getNoteNumber() == lastMidiNote.load (std::memory_order_relaxed))
-				{
-					lastMidiNote.store (-1, std::memory_order_relaxed);
-					lastMidiVelocity.store (0, std::memory_order_relaxed);
-					currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
-					
-					const float fallbackMs = loadAtomicOrDefault (timeMsParam, kTimeMsDefault);
-					const float fallbackSamples = (float) currentSampleRate * (fallbackMs / 1000.0f);
-					smoothedDelaySamples = juce::jlimit (0.0f, (float) (delayBufferLength - 2), fallbackSamples);
-				}
+				queueMidiEvent ({ PendingMidiEventType::noteOff, msg.getNoteNumber(), 0, 0 });
+				continue;
 			}
 		}
 	}
 	else if (! midiEnabled)
 	{
-		// Only reset if MIDI was just disabled (avoids 2 atomic stores per block)
-		if (lastMidiNote.load (std::memory_order_relaxed) >= 0)
-		{
-			lastMidiNote.store (-1, std::memory_order_relaxed);
-			lastMidiVelocity.store (0, std::memory_order_relaxed);
-			currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
-		}
+		clearPendingMidiEvents();
+		clearMidiTrackingState();
 	}
 
 	for (int i = numChannels; i < buffer.getNumChannels(); ++i)
@@ -1820,6 +1808,7 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	chaosStereo_ = (mode >= 1);  // stereo chaos for all non-mono modes
 	
 	float targetDelayMs = timeMsValue;
+	float syncTargetDelayMs = timeMsValue;
 	
 	// Priority: MIDI note > Sync > Manual time
 	if (midiNoteActive)
@@ -1840,7 +1829,8 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			if (pos.hasValue() && pos->getBpm().hasValue())
 				bpm = *pos->getBpm();
 		}
-		targetDelayMs = tempoSyncToMs (timeSyncValue, bpm);
+		syncTargetDelayMs = tempoSyncToMs (timeSyncValue, bpm);
+		targetDelayMs = syncTargetDelayMs;
 	}
 	
 	const float maxAllowedDelayMs = syncEnabled ? kTimeMsMaxSync : kTimeMsMax;
@@ -2477,39 +2467,154 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 	const float sumBusDryLevelStart = smoothedDryLevel;
 
-	// Reverse mode: chunk-based backward playback (works with any mode routing)
-	if (reverseEnabled)
+	const float reverseSmoothVal  = loadAtomicOrDefault (reverseSmoothParam, kReverseSmoothDefault);
+	const float reverseSmoothMult = std::exp2 (reverseSmoothVal);
+	auto processDelaySegment = [&] (juce::AudioBuffer<float>& segmentBuffer, int segmentSamples)
 	{
-		const float smoothVal  = loadAtomicOrDefault (reverseSmoothParam, kReverseSmoothDefault);
-		const float smoothMult = std::exp2 (smoothVal);
-		processReverseDelay (buffer, numSamples, numChannels, delaySamples,
-		                     delayFeedback, inputGain, outputGain, mixValue, revDelaySmoothCoeff,
-		                     smoothMult, mode);
+		const int runtimeMidiNote = lastMidiNote.load (std::memory_order_relaxed);
+		const bool runtimeMidiNoteActive = midiEnabled && (runtimeMidiNote >= 0);
+
+		float runtimeTargetDelayMs = timeMsValue;
+		if (runtimeMidiNoteActive)
+		{
+			const float frequency = currentMidiFrequency.load (std::memory_order_relaxed);
+			if (frequency > 0.1f)
+				runtimeTargetDelayMs = 1000.0f / frequency;
+		}
+		else if (syncEnabled)
+		{
+			runtimeTargetDelayMs = syncTargetDelayMs;
+		}
+
+		runtimeTargetDelayMs = juce::jlimit (0.0f, maxAllowedDelayMs, runtimeTargetDelayMs);
+
+		float runtimeDelaySamples = juce::jmax (0.0f, (float) currentSampleRate * (runtimeTargetDelayMs / 1000.0f));
+		runtimeDelaySamples /= freqMultiplier;
+		runtimeDelaySamples = juce::jlimit (0.0f, (float) (delayBufferLength - 2), runtimeDelaySamples);
+		const float runtimeRequestedDelaySamples = runtimeDelaySamples;
+		const float runtimeLowDelayBlend = smoothStep01 (runtimeRequestedDelaySamples / kMinSafeDelaySamples);
+		const float runtimeLowDelayFeedbackScale = runtimeLowDelayBlend * runtimeLowDelayBlend;
+		zeroDelayWetBlendTarget_ = 1.0f - smoothStep01 (runtimeRequestedDelaySamples / kZeroDelayWetBlendRangeSamples);
+		runtimeDelaySamples = juce::jmax (kMinSafeDelaySamples, runtimeRequestedDelaySamples);
+
+		float runtimeDelaySmoothCoeff = cachedDelaySmoothCoeff;
+		float runtimeRevDelaySmoothCoeff = cachedDelaySmoothCoeff;
+		if (runtimeMidiNoteActive)
+		{
+			const float vel  = (float) lastMidiVelocity.load (std::memory_order_relaxed);
+			const float tLin = juce::jlimit (0.0f, 1.0f, (vel - 1.0f) / 126.0f);
+			constexpr float kTauMax = 0.200f;
+			constexpr float kTauMin = 0.0002f;
+			const float t = std::pow (tLin, 0.05f);
+			const float tau = kTauMax - t * (kTauMax - kTauMin);
+			runtimeDelaySmoothCoeff = std::exp (-1.0f / ((float) currentSampleRate * tau));
+			runtimeRevDelaySmoothCoeff = runtimeDelaySmoothCoeff;
+		}
+
+		constexpr float kRefDelayMs = 500.0f;
+		constexpr float kMinPpsRatio = 0.5f;
+		const float refDelaySamples = static_cast<float> (currentSampleRate) * kRefDelayMs * 0.001f;
+		const float ppsRatio = (runtimeDelaySamples > 0.0f)
+		                     ? juce::jmax (kMinPpsRatio, runtimeDelaySamples / refDelaySamples)
+		                     : 1.0f;
+		const float absFbk = std::abs (targetFeedback);
+		const float absEff = (absFbk > 0.005f) ? std::pow (absFbk, ppsRatio) : 0.0f;
+		float runtimeDelayFeedback = (targetFeedback < 0.0f) ? -absEff : absEff;
+		runtimeDelayFeedback *= autoFbkEnvMix;
+		runtimeDelayFeedback *= runtimeLowDelayFeedbackScale;
+		if (runtimeDelayFeedback > 0.0f)
+		{
+			const float ultraShort = smoothStep01 ((8.0f - runtimeRequestedDelaySamples) / 6.0f);
+			if (ultraShort > 0.0f)
+			{
+				const float maxPositiveFbk = 1.0f - ultraShort * 0.30f;
+				const float kneeWidth = 0.10f + ultraShort * 0.14f;
+				const float kneeStart = juce::jlimit (0.0f, maxPositiveFbk, maxPositiveFbk - kneeWidth);
+				if (runtimeDelayFeedback > kneeStart)
+				{
+					const float t = juce::jlimit (0.0f, 1.0f, (runtimeDelayFeedback - kneeStart) / (1.0f - kneeStart));
+					runtimeDelayFeedback = kneeStart + (maxPositiveFbk - kneeStart) * (1.0f - (1.0f - t) * (1.0f - t));
+				}
+			}
+		}
+
+		// Keep diagnostics aligned with the last processed segment.
+		delaySamples = runtimeDelaySamples;
+		effFbk = runtimeDelayFeedback;
+
+		if (reverseEnabled)
+		{
+			processReverseDelay (segmentBuffer, segmentSamples, numChannels, runtimeDelaySamples,
+			                     runtimeDelayFeedback, inputGain, outputGain, mixValue, runtimeRevDelaySmoothCoeff,
+			                     reverseSmoothMult, mode);
+		}
+		else if (mode == 0)
+		{
+			processMonoDelay (segmentBuffer, segmentSamples, numChannels, runtimeDelaySamples,
+			                  runtimeDelayFeedback, inputGain, outputGain, mixValue, runtimeDelaySmoothCoeff);
+		}
+		else if (mode == 2)
+		{
+			processWideDelay (segmentBuffer, segmentSamples, numChannels, runtimeDelaySamples,
+			                  runtimeDelayFeedback, inputGain, outputGain, mixValue, runtimeDelaySmoothCoeff);
+		}
+		else if (mode == 3)
+		{
+			processDualDelay (segmentBuffer, segmentSamples, numChannels, runtimeDelaySamples,
+			                  runtimeDelayFeedback, inputGain, outputGain, mixValue, runtimeDelaySmoothCoeff);
+		}
+		else if (mode == 4)
+		{
+			processPingPongDelay (segmentBuffer, segmentSamples, numChannels, runtimeDelaySamples,
+			                      runtimeDelayFeedback, inputGain, outputGain, mixValue, runtimeDelaySmoothCoeff);
+		}
+		else
+		{
+			processStereoDelay (segmentBuffer, segmentSamples, numChannels, runtimeDelaySamples,
+			                    runtimeDelayFeedback, inputGain, outputGain, mixValue, runtimeDelaySmoothCoeff);
+		}
+	};
+
+	int segmentStart = 0;
+	while (segmentStart < numSamples)
+	{
+		int nextEventSample = numSamples;
+		for (int eventIndex = 0; eventIndex < pendingMidiEventCount_; ++eventIndex)
+		{
+			const int eventSample = pendingMidiEvents_[(size_t) eventIndex].samplesRemaining;
+			if (eventSample >= segmentStart && eventSample < nextEventSample)
+				nextEventSample = eventSample;
+		}
+
+		if (nextEventSample > segmentStart)
+		{
+			float* segmentPtrs[2] = { nullptr, nullptr };
+			for (int ch = 0; ch < numChannels; ++ch)
+				segmentPtrs[ch] = buffer.getWritePointer (ch, segmentStart);
+
+			juce::AudioBuffer<float> segmentBuffer (segmentPtrs, numChannels, nextEventSample - segmentStart);
+			processDelaySegment (segmentBuffer, nextEventSample - segmentStart);
+			segmentStart = nextEventSample;
+			continue;
+		}
+
+		int writeIndex = 0;
+		for (int eventIndex = 0; eventIndex < pendingMidiEventCount_; ++eventIndex)
+		{
+			const auto event = pendingMidiEvents_[(size_t) eventIndex];
+			if (event.samplesRemaining == nextEventSample)
+				applyPendingMidiEvent (event);
+			else
+				pendingMidiEvents_[(size_t) writeIndex++] = event;
+		}
+		pendingMidiEventCount_ = writeIndex;
 	}
-	else if (mode == 0)
+
+	if (pendingMidiEventCount_ > 0)
 	{
-		processMonoDelay (buffer, numSamples, numChannels, delaySamples, 
-		                  delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
-	}
-	else if (mode == 2) // WIDE
-	{
-		processWideDelay (buffer, numSamples, numChannels, delaySamples,
-		                  delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
-	}
-	else if (mode == 3) // DUAL
-	{
-		processDualDelay (buffer, numSamples, numChannels, delaySamples,
-		                  delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
-	}
-	else if (mode == 4) // PING-PONG
-	{
-		processPingPongDelay (buffer, numSamples, numChannels, delaySamples,
-		                      delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
-	}
-	else // STEREO (default)
-	{
-		processStereoDelay (buffer, numSamples, numChannels, delaySamples,
-		                    delayFeedback, inputGain, outputGain, mixValue, delaySmoothCoeff);
+		for (int eventIndex = 0; eventIndex < pendingMidiEventCount_; ++eventIndex)
+			pendingMidiEvents_[(size_t) eventIndex].samplesRemaining
+				= juce::jmax (0, pendingMidiEvents_[(size_t) eventIndex].samplesRemaining - numSamples);
 	}
 
 	// ── Feedback diagnostic dump (1 line per block) ──
@@ -2760,6 +2865,10 @@ void ECHOTRAudioProcessor::setStateInformation (const void* data, int sizeInByte
 			const auto restoredChannel = apvts.state.getProperty (UiStateKeys::midiPort);
 			if (! restoredChannel.isVoid())
 				midiChannel.store ((int) restoredChannel, std::memory_order_relaxed);
+
+			const auto restoredDelay = apvts.state.getProperty (UiStateKeys::midiDelayMs);
+			if (! restoredDelay.isVoid())
+				midiDelayMs.store (juce::jlimit (0, 100, (int) restoredDelay), std::memory_order_relaxed);
 		}
 	}
 }
@@ -3071,6 +3180,66 @@ int ECHOTRAudioProcessor::getMidiChannel() const noexcept
 		return juce::jlimit (0, 16, (int) fromState);
 	
 	return midiChannel.load (std::memory_order_relaxed);
+}
+
+void ECHOTRAudioProcessor::clearMidiTrackingState() noexcept
+{
+	lastMidiNote.store (-1, std::memory_order_relaxed);
+	lastMidiVelocity.store (0, std::memory_order_relaxed);
+	currentMidiFrequency.store (0.0f, std::memory_order_relaxed);
+}
+
+void ECHOTRAudioProcessor::clearPendingMidiEvents() noexcept
+{
+	pendingMidiEventCount_ = 0;
+}
+
+void ECHOTRAudioProcessor::enqueuePendingMidiEvent (const PendingMidiEvent& event) noexcept
+{
+	if (pendingMidiEventCount_ >= kPendingMidiEventCapacity)
+		return;
+
+	pendingMidiEvents_[(size_t) pendingMidiEventCount_++] = event;
+}
+
+void ECHOTRAudioProcessor::applyPendingMidiEvent (const PendingMidiEvent& event) noexcept
+{
+	switch (event.type)
+	{
+		case PendingMidiEventType::allNotesOff:
+			clearMidiTrackingState();
+			return;
+
+		case PendingMidiEventType::noteOn:
+		{
+			lastMidiNote.store (event.note, std::memory_order_relaxed);
+			lastMidiVelocity.store (event.velocity, std::memory_order_relaxed);
+			const float frequency = 440.0f * std::exp2 ((event.note - 69) * (1.0f / 12.0f));
+			currentMidiFrequency.store (frequency, std::memory_order_relaxed);
+			return;
+		}
+
+		case PendingMidiEventType::noteOff:
+			if (event.note == lastMidiNote.load (std::memory_order_relaxed))
+				clearMidiTrackingState();
+			return;
+	}
+}
+
+void ECHOTRAudioProcessor::setMidiDelayMs (int delayMsValue)
+{
+	const int clamped = juce::jlimit (0, 100, delayMsValue);
+	midiDelayMs.store (clamped, std::memory_order_relaxed);
+	apvts.state.setProperty (UiStateKeys::midiDelayMs, clamped, nullptr);
+}
+
+int ECHOTRAudioProcessor::getMidiDelayMs() const noexcept
+{
+	const auto fromState = apvts.state.getProperty (UiStateKeys::midiDelayMs);
+	if (! fromState.isVoid())
+		return juce::jlimit (0, 100, (int) fromState);
+
+	return midiDelayMs.load (std::memory_order_relaxed);
 }
 
 void ECHOTRAudioProcessor::setUiCustomPaletteColour (int index, juce::Colour colour)
