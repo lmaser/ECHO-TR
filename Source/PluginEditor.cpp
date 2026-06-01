@@ -4028,6 +4028,7 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
             const juce::String text (delayValue);
             if (delayTe->getText() != text)
                 delayTe->setText (text, juce::dontSendNotification);
+            delayTe->selectAll();
             applyLiveMidiDelay (delayValue);
             if (layoutRows) layoutRows();
         };
@@ -4718,7 +4719,7 @@ void ECHOTRAudioProcessorEditor::openReverseSmoothPrompt()
 
         if (multLabel != nullptr)
         {
-            const int textRightX = blockLeft + labelW + spaceW + valueTextW;
+            const int textRightX = teX + ((editorW - textW) / 2) + textW;
             multLabel->setBounds (textRightX, startY, unitW, rowH);
         }
 
