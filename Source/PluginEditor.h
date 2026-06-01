@@ -119,6 +119,24 @@ private:
         bool allowNumericPopup = true;
     };
 
+    class MainGuiPromptToggleButton : public juce::ToggleButton
+    {
+    public:
+        using juce::ToggleButton::ToggleButton;
+
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            if (! e.mods.isPopupMenu())
+                juce::ToggleButton::mouseDown (e);
+        }
+
+        void mouseUp (const juce::MouseEvent& e) override
+        {
+            if (! e.mods.isPopupMenu())
+                juce::ToggleButton::mouseUp (e);
+        }
+    };
+
     BarSlider timeSlider;
     BarSlider modSlider;
     BarSlider feedbackSlider;
@@ -133,12 +151,12 @@ private:
     BarSlider mixSlider;
     BarSlider limThresholdSlider;
 
-    juce::ToggleButton syncButton;
-    juce::ToggleButton midiButton;
-    juce::ToggleButton autoFbkButton;
-    juce::ToggleButton reverseButton;
-    juce::ToggleButton chaosFilterButton;
-    juce::ToggleButton chaosDelayButton;
+    MainGuiPromptToggleButton syncButton;
+    MainGuiPromptToggleButton midiButton;
+    MainGuiPromptToggleButton autoFbkButton;
+    MainGuiPromptToggleButton reverseButton;
+    MainGuiPromptToggleButton chaosFilterButton;
+    MainGuiPromptToggleButton chaosDelayButton;
 
     juce::ComboBox modeInCombo;
     juce::ComboBox modeOutCombo;
@@ -477,6 +495,7 @@ private:
     juce::Rectangle<int> getReverseLabelArea() const;
     juce::Rectangle<int> getMidiLabelArea() const;
     juce::Rectangle<int> getChaosLabelArea() const;
+    juce::Rectangle<int> getChaosDelayLabelArea() const;
     juce::Rectangle<int> getInfoIconArea() const;
     void updateInfoIconCache();
     bool refreshLegendTextCache();

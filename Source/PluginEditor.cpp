@@ -6394,12 +6394,22 @@ juce::Rectangle<int> ECHOTRAudioProcessorEditor::getMidiLabelArea() const
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getChaosLabelArea() const
 {
-    if (! chaosFilterButton.isVisible())
+    if (chaosFilterButton.getWidth() <= 0 || chaosFilterButton.getHeight() <= 0)
         return {};
 
     return makeToggleLabelArea (chaosFilterButton,
                                 chaosDelayButton.getX() - kToggleLegendCollisionPadPx,
                                 "CHSF", "CHSF");
+}
+
+juce::Rectangle<int> ECHOTRAudioProcessorEditor::getChaosDelayLabelArea() const
+{
+    if (chaosDelayButton.getWidth() <= 0 || chaosDelayButton.getHeight() <= 0)
+        return {};
+
+    return makeToggleLabelArea (chaosDelayButton,
+                                getWidth() - kToggleLegendCollisionPadPx,
+                                "CHSD", "CHSD");
 }
 
 juce::Rectangle<int> ECHOTRAudioProcessorEditor::getInfoIconArea() const
@@ -6508,13 +6518,7 @@ void ECHOTRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     // CHS D — right-click opens same prompt, left-click toggles
     if (chaosDelayButton.isVisible())
     {
-        const auto bb = chaosDelayButton.getBounds();
-        const int toggleVisualSide = juce::jlimit (14, juce::jmax (14, bb.getHeight() - 2),
-                                                   (int) std::lround (bb.getHeight() * 0.65));
-        const int toggleHitW = toggleVisualSide + 6;
-        const int lx = bb.getX() + toggleHitW + 4;
-        const juce::Rectangle<int> dLabelArea { lx, bb.getY(), bb.getRight() - lx, bb.getHeight() };
-        if (dLabelArea.contains (p) || chaosDelayDisplay.getBounds().contains (p))
+        if (getChaosDelayLabelArea().contains (p) || chaosDelayDisplay.getBounds().contains (p))
         {
             if (e.mods.isPopupMenu())
                 openChaosDelayPrompt();
@@ -6986,9 +6990,9 @@ void ECHOTRAudioProcessorEditor::resized()
         const int chaosLeftW  = chaosRightX - horizontalLayout.leftX;
         const int chaosRightW = horizontalLayout.leftX + horizontalLayout.contentW - chaosRightX;
         chaosFilterButton.setBounds  (horizontalLayout.leftX, chaosY, chaosLeftW,  chaosH);
-        chaosFilterDisplay.setBounds (horizontalLayout.leftX, chaosY, chaosLeftW,  chaosH);
         chaosDelayButton.setBounds   (chaosRightX,            chaosY, chaosRightW, chaosH);
-        chaosDelayDisplay.setBounds  (chaosRightX,            chaosY, chaosRightW, chaosH);
+        chaosFilterDisplay.setBounds (getChaosLabelArea());
+        chaosDelayDisplay.setBounds  (getChaosDelayLabelArea());
 
         inputSlider.setVisible (true);
         outputSlider.setVisible (true);
