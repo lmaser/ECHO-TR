@@ -3929,6 +3929,7 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
                                     int rowH)
         {
             const auto txt = editor.getText();
+            const int textW = juce::jmax (1, stringWidth (editor.getFont(), txt));
             const int spaceW = juce::jmax (2, stringWidth (editor.getFont(), " "));
             const int labelW = stringWidth (label.getFont(), label.getText()) + 2;
             const int unitW = stringWidth (unitLabel.getFont(), unitLabel.getText()) + 2;
@@ -3974,7 +3975,8 @@ void ECHOTRAudioProcessorEditor::openMidiChannelPrompt()
             label.setBounds (blockLeft, y, labelW, rowH);
             const int teX = blockLeft + labelW + labelGap;
             editor.setBounds (teX, y, editorW, rowH);
-            unitLabel.setBounds (teX + editorW + kUnitGapPx, y, unitW, rowH);
+            const int textRightX = teX + ((editorW - textW) / 2) + textW;
+            unitLabel.setBounds (textRightX + kUnitGapPx, y, unitW, rowH);
         };
 
         layoutRows = [aw, channelTe, delayTe, channelLabel, delayLabel, delayUnitLabel, delayBar,
