@@ -264,3 +264,4 @@ Stereo-linked gain reduction ensures consistent imaging.
 - Added dual-stage transparent peak limiter with LIM (-36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with leveler + brickwall stages.
 - TIME numeric prompt supports 3-decimal millisecond precision; the main readout adapts between ms and seconds for consistency with the rest of the series.
 - Added `JIT` control for deterministic tape-style timing and tonal flutter inside the delay engine.
+- Added `0-100 ms` MIDI delay prompt plus refined Hz/kHz filter-frequency entry.
