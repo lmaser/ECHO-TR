@@ -2443,8 +2443,6 @@ void ECHOTRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// All engines now use pure delay-time compensation.
 	// The compander is gain-neutral, and fbkMag is applied as an
 	// external multiplier — matching CLEAN/SAT1 architecture.
-	const float delayFeedback = effFbk;
-
 	// Scale SAT2 BBD noise injection by raw knob position so near-zero
 	// feedback doesn't accumulate phantom noise through the compensated
 	// loop gain.  At high feedback the noise level is unchanged.

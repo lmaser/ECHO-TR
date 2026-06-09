@@ -1216,8 +1216,11 @@ private:
 
 	inline float applyJitterToFeedbackMagnitude (float feedbackMagnitude) const noexcept
 	{
+		if constexpr (! kJitterModulatesFeedback)
+			return feedbackMagnitude;
+
 		const float amt = juce::jlimit (0.0f, 1.0f, jitterAmountSmoothed_);
-		if (! kJitterModulatesFeedback || ! jitterActive_ || amt <= kJitterEpsilon || feedbackMagnitude <= 0.0f)
+		if (! jitterActive_ || amt <= kJitterEpsilon || feedbackMagnitude <= 0.0f)
 			return feedbackMagnitude;
 
 		return juce::jlimit (0.0f, 1.0f, feedbackMagnitude * (1.0f + jitterFeedbackOut_ * jitterFeedbackDepth_));
